@@ -105,6 +105,10 @@ func runAutoUpdater(ctx context.Context) {
 }
 
 func autoUpdateSkipReason(cfg *config.Config) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("MANAGEMENT_STATIC_IMMUTABLE"))) {
+	case "1", "true", "yes", "on":
+		return "management static asset is immutable", true
+	}
 	if cfg == nil {
 		return "config not yet available", true
 	}

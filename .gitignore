@@ -5,6 +5,7 @@ cli-proxy-api
 # Configuration
 config.yaml
 .env
+.env.stack
 
 # Generated content
 bin/*
@@ -30,6 +31,8 @@ auths/*
 
 # Documentation
 docs/*
+!docs/SELF_BUILD_STACK_CN.md
+!docs/MANAGEMENT_API_PERFORMANCE_AUDIT_CN.md
 AGENTS.md
 CLAUDE.md
 GEMINI.md

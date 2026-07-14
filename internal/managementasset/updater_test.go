@@ -7,6 +7,7 @@ import (
 )
 
 func TestAutoUpdateSkipReason(t *testing.T) {
+	t.Setenv("MANAGEMENT_STATIC_IMMUTABLE", "")
 	tests := []struct {
 		name       string
 		cfg        *config.Config
@@ -58,5 +59,13 @@ func TestAutoUpdateSkipReason(t *testing.T) {
 				t.Fatalf("autoUpdateSkipReason() = (%q, %t), want (%q, %t)", gotReason, gotSkip, tt.wantReason, tt.wantSkip)
 			}
 		})
+	}
+}
+
+func TestAutoUpdateSkipReasonImmutableAsset(t *testing.T) {
+	t.Setenv("MANAGEMENT_STATIC_IMMUTABLE", "true")
+	reason, skip := autoUpdateSkipReason(&config.Config{})
+	if !skip || reason != "management static asset is immutable" {
+		t.Fatalf("autoUpdateSkipReason() = (%q, %t)", reason, skip)
 	}
 }

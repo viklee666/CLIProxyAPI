@@ -2,6 +2,8 @@
 
 [English](README.md) | 中文 | [日本語](README_JA.md)
 
+> 本仓库的一体化自构建方案（CLIProxyAPI + CPA Manager Plus + Nginx）见 [docs/SELF_BUILD_STACK_CN.md](docs/SELF_BUILD_STACK_CN.md)，管理接口性能扫描见 [docs/MANAGEMENT_API_PERFORMANCE_AUDIT_CN.md](docs/MANAGEMENT_API_PERFORMANCE_AUDIT_CN.md)。
+
 一个为 CLI 提供 OpenAI/Gemini/Claude/Codex/Grok 兼容 API 接口的代理服务器。
 
 您可以通过任何与 OpenAI（包括 Responses）、Gemini（包括 Interactions）或 Claude 兼容的客户端或 SDK，以本地方式或多 CLI 账户访问以下提供商。

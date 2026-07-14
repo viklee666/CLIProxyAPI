@@ -19,6 +19,7 @@ import (
 	"github.com/joho/godotenv"
 	configaccess "github.com/router-for-me/CLIProxyAPI/v7/internal/access/config_access"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/modules/managerplus"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cmd"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -554,6 +555,15 @@ func main() {
 		matches := safemode.ExampleAPIKeys(cfg.APIKeys)
 		log.WithField("api_keys", strings.Join(matches, ",")).Error("unsafe example API key configured; proxy API endpoints disabled until api-keys is updated")
 		serverOptions = append(serverOptions, api.WithExampleAPIKeySafeMode())
+	}
+	if managerPlusURL := strings.TrimSpace(os.Getenv("CPA_MANAGER_PLUS_URL")); managerPlusURL != "" {
+		managerPlusMiddleware, errManagerPlus := managerplus.NewMiddleware(managerPlusURL)
+		if errManagerPlus != nil {
+			log.Errorf("failed to configure embedded CPA Manager Plus: %v", errManagerPlus)
+			return
+		}
+		serverOptions = append(serverOptions, api.WithMiddleware(managerPlusMiddleware))
+		log.Infof("embedded CPA Manager Plus bridge enabled: %s", managerPlusURL)
 	}
 
 	// Register the shared token store once so all components use the same persistence backend.

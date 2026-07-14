@@ -321,6 +321,10 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 		c.JSON(500, gin.H{"error": "handler not initialized"})
 		return
 	}
+	if hasAuthFileQuery(c) {
+		h.listAuthFilesQuery(c)
+		return
+	}
 	if h.authManager == nil {
 		h.listAuthFilesFromDisk(c)
 		return

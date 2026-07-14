@@ -20,6 +20,15 @@ auths
 logs
 conv
 config.yaml
+data
+
+# Nested frontend build outputs
+**/node_modules
+**/dist
+**/dist-demo
+**/*.sqlite
+**/*.sqlite-shm
+**/*.sqlite-wal
 
 # Development/editor
 bin
