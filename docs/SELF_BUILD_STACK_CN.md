@@ -11,11 +11,11 @@ Compose 不包含独立的 `cpa-manager-plus` 或反向代理服务，也不构�
 ## 1. 准备配置
 
 ```bash
-cp .env.stack.example .env.stack
+cp .env.example .env
 mkdir -p auths logs plugins data/cpa-manager-plus
 ```
 
-编辑 `.env.stack`：
+编辑 `.env`。Docker Compose 会自动读取该文件，后续命令不需要再指定 `--env-file`：
 
 - `CPA_MANAGEMENT_KEY` 必须与 `config.yaml` 的 `remote-management.secret-key` 一致；
 - `CPA_DOCKER_NETWORK` 填写现有反向代理容器已加入的 Docker 网络名称，当前部署默认是 `shared_proxy`；
@@ -57,21 +57,21 @@ expose:
 请确保 `CPA_DOCKER_NETWORK` 指向已经存在的网络：
 
 ```bash
-docker network inspect "$(grep '^CPA_DOCKER_NETWORK=' .env.stack | cut -d= -f2-)"
+docker network inspect "$(grep '^CPA_DOCKER_NETWORK=' .env | cut -d= -f2-)"
 ```
 
 ## 3. 构建与启动
 
 ```bash
-docker compose --env-file .env.stack build --pull cli-proxy-api
-docker compose --env-file .env.stack up -d cli-proxy-api
-docker compose --env-file .env.stack ps
+docker compose build --pull cli-proxy-api
+docker compose up -d cli-proxy-api
+docker compose ps
 ```
 
 单命令重建：
 
 ```bash
-docker compose --env-file .env.stack up -d --build cli-proxy-api
+docker compose up -d --build cli-proxy-api
 ```
 
 启动过程只管理 `cli-proxy-api`，不会操作外部 `nginx-proxy`。
@@ -97,9 +97,9 @@ CLI 镜像使用 CPAMP 多文件生产构建：`management.html` 只负责启动
 ## 6. 验证
 
 ```bash
-docker compose --env-file .env.stack config --quiet
-docker compose --env-file .env.stack ps
-docker compose --env-file .env.stack logs --tail=200 cli-proxy-api
+docker compose config --quiet
+docker compose ps
+docker compose logs --tail=200 cli-proxy-api
 docker inspect cli-proxy-api --format '{{json .NetworkSettings.Networks}}'
 ```
 

@@ -17,7 +17,7 @@ services:
       CPA_MANAGER_INTEGRATED: "true"
       HTTP_ADDR: 127.0.0.1:18317
       CPA_UPSTREAM_URL: http://127.0.0.1:8317
-      CPA_MANAGEMENT_KEY: ${CPA_MANAGEMENT_KEY:?set CPA_MANAGEMENT_KEY in .env.stack}
+      CPA_MANAGEMENT_KEY: ${CPA_MANAGEMENT_KEY:?set CPA_MANAGEMENT_KEY in .env}
       USAGE_DATA_DIR: /data
       USAGE_DB_PATH: /data/usage.sqlite
       CLIENT_ACCESS_ENABLED: "true"
