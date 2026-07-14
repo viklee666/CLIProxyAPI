@@ -20,6 +20,8 @@ export type VisualConfigFieldPath =
   | 'authAutoRefreshWorkers'
   | 'streaming.keepaliveSeconds'
   | 'streaming.bootstrapRetries'
+  | 'streaming.firstEventTimeoutSeconds'
+  | 'streaming.firstEventTimeoutRetries'
   | 'streaming.nonstreamKeepaliveInterval';
 
 export type VisualConfigValidationErrorCode =
@@ -72,6 +74,8 @@ export type PayloadFilterRule = {
 export interface StreamingConfig {
   keepaliveSeconds: string;
   bootstrapRetries: string;
+  firstEventTimeoutSeconds: string;
+  firstEventTimeoutRetries: string;
   nonstreamKeepaliveInterval: string;
 }
 
@@ -231,6 +235,8 @@ export const DEFAULT_VISUAL_VALUES: VisualConfigValues = {
   streaming: {
     keepaliveSeconds: '',
     bootstrapRetries: '',
+    firstEventTimeoutSeconds: '',
+    firstEventTimeoutRetries: '',
     nonstreamKeepaliveInterval: '',
   },
 };

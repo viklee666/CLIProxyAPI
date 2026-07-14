@@ -56,6 +56,8 @@ const idempotencyKeyMetadataKey = "idempotency_key"
 const (
 	defaultStreamingKeepAliveSeconds = 0
 	defaultStreamingBootstrapRetries = 0
+	defaultFirstEventTimeoutSeconds  = 0
+	defaultFirstEventTimeoutRetries  = 0
 	// Stream interceptor history is intentionally bounded and not configurable in the first SDK surface.
 	maxStreamInterceptorHistoryChunks = 64
 	maxStreamInterceptorHistoryBytes  = 1 << 20
@@ -245,6 +247,31 @@ func StreamingBootstrapRetries(cfg *config.SDKConfig) int {
 	}
 	if retries < 0 {
 		retries = 0
+	}
+	return retries
+}
+
+// StreamingFirstEventTimeout returns the maximum wait for the first non-empty upstream stream event.
+// Returning 0 disables the timeout (default when unset).
+func StreamingFirstEventTimeout(cfg *config.SDKConfig) time.Duration {
+	seconds := defaultFirstEventTimeoutSeconds
+	if cfg != nil {
+		seconds = cfg.Streaming.FirstEventTimeoutSeconds
+	}
+	if seconds <= 0 {
+		return 0
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+// StreamingFirstEventTimeoutRetries returns how many identical retries may follow first-event timeouts.
+func StreamingFirstEventTimeoutRetries(cfg *config.SDKConfig) int {
+	retries := defaultFirstEventTimeoutRetries
+	if cfg != nil {
+		retries = cfg.Streaming.FirstEventTimeoutRetries
+	}
+	if retries < 0 {
+		return 0
 	}
 	return retries
 }
@@ -978,7 +1005,16 @@ func (h *BaseAPIHandler) streamWithPluginExecutor(ctx context.Context, entryProt
 	req, opts := h.pluginExecutorRequest(ctx, entryProtocol, responseProtocol, modelName, originalRequestedModel, rawJSON, alt, true, execOptions)
 	req, opts = h.applyRequestInterceptorsBeforeAuth(ctx, entryProtocol, originalRequestedModel, req, opts, execOptions.SkipInterceptorPluginID)
 	req, opts = h.applyRequestInterceptorsAfterPluginExecutorRoute(ctx, host, executorPluginID, entryProtocol, originalRequestedModel, req, opts, execOptions.SkipInterceptorPluginID)
-	streamResult, errStream := host.ExecutePluginExecutorStream(ctx, executorPluginID, req, opts)
+	streamResult, pendingChunks, streamClosedBeforeRead, streamCancel, errStream := executeStreamThroughFirstEvent(
+		ctx,
+		StreamingFirstEventTimeout(h.Cfg),
+		StreamingFirstEventTimeoutRetries(h.Cfg),
+		entryProtocol,
+		modelName,
+		func(attemptCtx context.Context) (*coreexecutor.StreamResult, error) {
+			return host.ExecutePluginExecutorStream(attemptCtx, executorPluginID, req, opts)
+		},
+	)
 	if errStream != nil {
 		errChan := make(chan *interfaces.ErrorMessage, 1)
 		errChan <- executionErrorMessage(errStream)
@@ -1040,10 +1076,13 @@ func (h *BaseAPIHandler) streamWithPluginExecutor(ctx context.Context, entryProt
 	go func() {
 		defer close(dataChan)
 		defer close(errChan)
+		if streamCancel != nil {
+			defer streamCancel()
+		}
 		chunkIndex := 0
 		var historyChunks [][]byte
 		for {
-			chunk, ok, canceled := nextStreamChunk(ctx, nil, nil, chunks)
+			chunk, ok, canceled := nextStreamChunk(ctx, &pendingChunks, &streamClosedBeforeRead, chunks)
 			if canceled {
 				return
 			}
@@ -1161,7 +1200,16 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	}
 	opts.Metadata = reqMeta
 	req, opts = h.applyRequestInterceptorsBeforeAuth(ctx, entryProtocol, originalRequestedModel, req, opts, execOptions.SkipInterceptorPluginID)
-	streamResult, err := h.AuthManager.ExecuteStream(ctx, providers, req, opts)
+	streamResult, prefetchedChunks, prefetchedClosed, streamCancel, err := executeStreamThroughFirstEvent(
+		ctx,
+		StreamingFirstEventTimeout(h.Cfg),
+		StreamingFirstEventTimeoutRetries(h.Cfg),
+		entryProtocol,
+		normalizedModel,
+		func(attemptCtx context.Context) (*coreexecutor.StreamResult, error) {
+			return h.AuthManager.ExecuteStream(attemptCtx, providers, req, opts)
+		},
+	)
 	if err != nil {
 		err = enrichAuthSelectionError(err, providers, normalizedModel)
 		errChan := make(chan *interfaces.ErrorMessage, 1)
@@ -1230,10 +1278,23 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		streamHeaderInitialized = true
 	}
 
-	pendingChunks := make([]coreexecutor.StreamChunk, 0, 1)
-	streamClosedBeforeRead := false
+	pendingChunks := prefetchedChunks
+	streamClosedBeforeRead := prefetchedClosed
 	streamCanceledBeforeRead := false
 	readInitialStreamChunks := func() {
+		for _, chunk := range pendingChunks {
+			if chunk.Err != nil {
+				return
+			}
+			if len(chunk.Payload) > 0 {
+				applyStreamHeaderInit()
+				return
+			}
+		}
+		if streamClosedBeforeRead {
+			applyStreamHeaderInit()
+			return
+		}
 		for {
 			var chunk coreexecutor.StreamChunk
 			var ok bool
@@ -1267,6 +1328,11 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	go func() {
 		defer close(dataChan)
 		defer close(errChan)
+		defer func() {
+			if streamCancel != nil {
+				streamCancel()
+			}
+		}()
 		if streamCanceledBeforeRead {
 			return
 		}
@@ -1334,15 +1400,29 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 					if !sentPayload {
 						if bootstrapRetries < maxBootstrapRetries && bootstrapEligible(streamErr) {
 							bootstrapRetries++
-							retryResult, retryErr := h.AuthManager.ExecuteStream(ctx, providers, req, opts)
+							if streamCancel != nil {
+								streamCancel()
+								streamCancel = nil
+							}
+							retryResult, retryPending, retryClosed, retryCancel, retryErr := executeStreamThroughFirstEvent(
+								ctx,
+								StreamingFirstEventTimeout(h.Cfg),
+								StreamingFirstEventTimeoutRetries(h.Cfg),
+								entryProtocol,
+								normalizedModel,
+								func(attemptCtx context.Context) (*coreexecutor.StreamResult, error) {
+									return h.AuthManager.ExecuteStream(attemptCtx, providers, req, opts)
+								},
+							)
 							if retryErr == nil {
+								streamCancel = retryCancel
 								rawStreamHeaders = cloneHeader(retryResult.Headers)
 								baseStreamHeaders = cloneHeader(retryResult.Headers)
 								replaceHeader(upstreamHeaders, downstreamHeadersFromExecutor(rawStreamHeaders, passthroughHeadersEnabled))
 								streamHeaderInitialized = false
 								streamHeadersCommitted = false
-								pendingChunks = nil
-								streamClosedBeforeRead = false
+								pendingChunks = retryPending
+								streamClosedBeforeRead = retryClosed
 								chunks = retryResult.Chunks
 								continue outer
 							}

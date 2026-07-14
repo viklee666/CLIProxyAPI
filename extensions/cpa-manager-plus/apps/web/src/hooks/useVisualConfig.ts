@@ -348,6 +348,12 @@ export function getVisualConfigValidationErrors(
     authAutoRefreshWorkers: getNonNegativeIntegerError(values.authAutoRefreshWorkers),
     'streaming.keepaliveSeconds': getNonNegativeIntegerError(values.streaming.keepaliveSeconds),
     'streaming.bootstrapRetries': getNonNegativeIntegerError(values.streaming.bootstrapRetries),
+    'streaming.firstEventTimeoutSeconds': getNonNegativeIntegerError(
+      values.streaming.firstEventTimeoutSeconds
+    ),
+    'streaming.firstEventTimeoutRetries': getNonNegativeIntegerError(
+      values.streaming.firstEventTimeoutRetries
+    ),
     'streaming.nonstreamKeepaliveInterval': getNonNegativeIntegerError(
       values.streaming.nonstreamKeepaliveInterval
     ),
@@ -650,6 +656,20 @@ function getNextDirtyFields(
         nextValues.streaming.bootstrapRetries === baselineValues.streaming.bootstrapRetries
       );
     }
+    if (Object.prototype.hasOwnProperty.call(streamingPatch, 'firstEventTimeoutSeconds')) {
+      updateDirty(
+        'streaming.firstEventTimeoutSeconds',
+        nextValues.streaming.firstEventTimeoutSeconds ===
+          baselineValues.streaming.firstEventTimeoutSeconds
+      );
+    }
+    if (Object.prototype.hasOwnProperty.call(streamingPatch, 'firstEventTimeoutRetries')) {
+      updateDirty(
+        'streaming.firstEventTimeoutRetries',
+        nextValues.streaming.firstEventTimeoutRetries ===
+          baselineValues.streaming.firstEventTimeoutRetries
+      );
+    }
     if (Object.prototype.hasOwnProperty.call(streamingPatch, 'nonstreamKeepaliveInterval')) {
       updateDirty(
         'streaming.nonstreamKeepaliveInterval',
@@ -875,6 +895,12 @@ export function useVisualConfig() {
         streaming: {
           keepaliveSeconds: String(streaming?.['keepalive-seconds'] ?? ''),
           bootstrapRetries: String(streaming?.['bootstrap-retries'] ?? ''),
+          firstEventTimeoutSeconds: String(
+            streaming?.['first-event-timeout-seconds'] ?? ''
+          ),
+          firstEventTimeoutRetries: String(
+            streaming?.['first-event-timeout-retries'] ?? ''
+          ),
           nonstreamKeepaliveInterval: String(parsed['nonstream-keepalive-interval'] ?? ''),
         },
       };
@@ -1246,13 +1272,24 @@ export function useVisualConfig() {
           typeof values.streaming?.bootstrapRetries === 'string'
             ? values.streaming.bootstrapRetries
             : '';
+        const firstEventTimeoutSeconds =
+          typeof values.streaming?.firstEventTimeoutSeconds === 'string'
+            ? values.streaming.firstEventTimeoutSeconds
+            : '';
+        const firstEventTimeoutRetries =
+          typeof values.streaming?.firstEventTimeoutRetries === 'string'
+            ? values.streaming.firstEventTimeoutRetries
+            : '';
         const nonstreamKeepaliveInterval =
           typeof values.streaming?.nonstreamKeepaliveInterval === 'string'
             ? values.streaming.nonstreamKeepaliveInterval
             : '';
 
         const streamingDirty =
-          isDirty('streaming.keepaliveSeconds') || isDirty('streaming.bootstrapRetries');
+          isDirty('streaming.keepaliveSeconds') ||
+          isDirty('streaming.bootstrapRetries') ||
+          isDirty('streaming.firstEventTimeoutSeconds') ||
+          isDirty('streaming.firstEventTimeoutRetries');
         if (streamingDirty) {
           ensureMapInDoc(doc, ['streaming']);
           if (isDirty('streaming.keepaliveSeconds')) {
@@ -1260,6 +1297,20 @@ export function useVisualConfig() {
           }
           if (isDirty('streaming.bootstrapRetries')) {
             setIntFromStringInDoc(doc, ['streaming', 'bootstrap-retries'], bootstrapRetries);
+          }
+          if (isDirty('streaming.firstEventTimeoutSeconds')) {
+            setIntFromStringInDoc(
+              doc,
+              ['streaming', 'first-event-timeout-seconds'],
+              firstEventTimeoutSeconds
+            );
+          }
+          if (isDirty('streaming.firstEventTimeoutRetries')) {
+            setIntFromStringInDoc(
+              doc,
+              ['streaming', 'first-event-timeout-retries'],
+              firstEventTimeoutRetries
+            );
           }
           deleteIfMapEmpty(doc, ['streaming']);
         }

@@ -2579,6 +2579,10 @@
           "keepalive_hint": "Set to 0 or leave empty to disable keepalive",
           "bootstrap_retries": "Bootstrap Retries",
           "bootstrap_hint": "Number of retries during stream startup (before first byte)",
+          "first_event_timeout": "First SSE Event Timeout (seconds)",
+          "first_event_timeout_hint": "Maximum wait for the first upstream SSE event; set to 0 or leave empty to disable",
+          "first_event_timeout_retries": "First Event Timeout Retries",
+          "first_event_timeout_retries_hint": "Number of identical request retries after the first SSE event times out",
           "nonstream_keepalive": "Non-stream Keepalive Interval (seconds)",
           "nonstream_keepalive_hint": "Send blank lines every N seconds for non-streaming responses to prevent idle timeout, set to 0 or leave empty to disable",
           "disabled": "Disabled"

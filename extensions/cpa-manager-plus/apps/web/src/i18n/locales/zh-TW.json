@@ -2579,6 +2579,10 @@
           "keepalive_hint": "設定為 0 或留空表示停用 keepalive",
           "bootstrap_retries": "Bootstrap 重試次數",
           "bootstrap_hint": "串流傳輸啟動時（首包前）的重試次數",
+          "first_event_timeout": "首個 SSE 事件逾時（秒）",
+          "first_event_timeout_hint": "等待上游首個 SSE 事件的最長時間；設定為 0 或留空表示停用",
+          "first_event_timeout_retries": "首事件逾時重試次數",
+          "first_event_timeout_retries_hint": "首個 SSE 事件逾時後，使用完全相同請求重新發起的次數",
           "nonstream_keepalive": "非串流 Keepalive 間隔（秒）",
           "nonstream_keepalive_hint": "非串流回應時每隔 N 秒發送空行以防止閒置逾時，設定為 0 或留空表示停用",
           "disabled": "已停用"

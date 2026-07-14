@@ -67,4 +67,12 @@ type StreamingConfig struct {
 	// to allow auth rotation / transient recovery.
 	// <= 0 disables bootstrap retries. Default is 0.
 	BootstrapRetries int `yaml:"bootstrap-retries,omitempty" json:"bootstrap-retries,omitempty"`
+
+	// FirstEventTimeoutSeconds limits how long each upstream streaming attempt may wait for its first non-empty event.
+	// <= 0 disables the timeout. Default is 0.
+	FirstEventTimeoutSeconds int `yaml:"first-event-timeout-seconds,omitempty" json:"first-event-timeout-seconds,omitempty"`
+
+	// FirstEventTimeoutRetries controls how many identical retries are allowed after a first-event timeout.
+	// <= 0 disables timeout retries. Default is 0.
+	FirstEventTimeoutRetries int `yaml:"first-event-timeout-retries,omitempty" json:"first-event-timeout-retries,omitempty"`
 }

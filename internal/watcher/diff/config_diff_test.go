@@ -301,6 +301,12 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 			ForceModelPrefix:           true,
 			NonStreamKeepAliveInterval: 5,
 			DisableImageGeneration:     config.DisableImageGenerationAll,
+			Streaming: sdkconfig.StreamingConfig{
+				KeepAliveSeconds:         15,
+				BootstrapRetries:         1,
+				FirstEventTimeoutSeconds: 20,
+				FirstEventTimeoutRetries: 2,
+			},
 		},
 	}
 
@@ -320,6 +326,10 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 	expectContains(t, details, "ws-auth: false -> true")
 	expectContains(t, details, "force-model-prefix: false -> true")
 	expectContains(t, details, "nonstream-keepalive-interval: 0 -> 5")
+	expectContains(t, details, "streaming.keepalive-seconds: 0 -> 15")
+	expectContains(t, details, "streaming.bootstrap-retries: 0 -> 1")
+	expectContains(t, details, "streaming.first-event-timeout-seconds: 0 -> 20")
+	expectContains(t, details, "streaming.first-event-timeout-retries: 0 -> 2")
 	expectContains(t, details, "quota-exceeded.switch-project: false -> true")
 	expectContains(t, details, "quota-exceeded.switch-preview-model: false -> true")
 	expectContains(t, details, "quota-exceeded.antigravity-credits: false -> true")

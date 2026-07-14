@@ -2579,6 +2579,10 @@
           "keepalive_hint": "设置为 0 或留空表示禁用 keepalive",
           "bootstrap_retries": "Bootstrap 重试次数",
           "bootstrap_hint": "流式传输启动时（首包前）的重试次数",
+          "first_event_timeout": "首个 SSE 事件超时（秒）",
+          "first_event_timeout_hint": "等待上游首个 SSE 事件的最长时间；设置为 0 或留空表示禁用",
+          "first_event_timeout_retries": "首事件超时重试次数",
+          "first_event_timeout_retries_hint": "首个 SSE 事件超时后，使用完全相同请求重新发起的次数",
           "nonstream_keepalive": "非流式 Keepalive 间隔 (秒)",
           "nonstream_keepalive_hint": "非流式响应时每隔 N 秒发送空行以防止空闲超时，设置为 0 或留空表示禁用",
           "disabled": "已禁用"

@@ -90,6 +90,18 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.NonStreamKeepAliveInterval != newCfg.NonStreamKeepAliveInterval {
 		changes = append(changes, fmt.Sprintf("nonstream-keepalive-interval: %d -> %d", oldCfg.NonStreamKeepAliveInterval, newCfg.NonStreamKeepAliveInterval))
 	}
+	if oldCfg.Streaming.KeepAliveSeconds != newCfg.Streaming.KeepAliveSeconds {
+		changes = append(changes, fmt.Sprintf("streaming.keepalive-seconds: %d -> %d", oldCfg.Streaming.KeepAliveSeconds, newCfg.Streaming.KeepAliveSeconds))
+	}
+	if oldCfg.Streaming.BootstrapRetries != newCfg.Streaming.BootstrapRetries {
+		changes = append(changes, fmt.Sprintf("streaming.bootstrap-retries: %d -> %d", oldCfg.Streaming.BootstrapRetries, newCfg.Streaming.BootstrapRetries))
+	}
+	if oldCfg.Streaming.FirstEventTimeoutSeconds != newCfg.Streaming.FirstEventTimeoutSeconds {
+		changes = append(changes, fmt.Sprintf("streaming.first-event-timeout-seconds: %d -> %d", oldCfg.Streaming.FirstEventTimeoutSeconds, newCfg.Streaming.FirstEventTimeoutSeconds))
+	}
+	if oldCfg.Streaming.FirstEventTimeoutRetries != newCfg.Streaming.FirstEventTimeoutRetries {
+		changes = append(changes, fmt.Sprintf("streaming.first-event-timeout-retries: %d -> %d", oldCfg.Streaming.FirstEventTimeoutRetries, newCfg.Streaming.FirstEventTimeoutRetries))
+	}
 
 	// Quota-exceeded behavior
 	if oldCfg.QuotaExceeded.SwitchProject != newCfg.QuotaExceeded.SwitchProject {

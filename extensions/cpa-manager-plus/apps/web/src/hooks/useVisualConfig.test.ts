@@ -557,4 +557,46 @@ describe('useVisualConfig', () => {
 
     harness.unmount();
   });
+
+  it('loads and saves first SSE event timeout settings', () => {
+    const harness = mountUseVisualConfig();
+    const yaml = [
+      'streaming:',
+      '  keepalive-seconds: 15',
+      '  bootstrap-retries: 1',
+      '  first-event-timeout-seconds: 20',
+      '  first-event-timeout-retries: 2',
+      '',
+    ].join('\n');
+
+    act(() => {
+      expect(harness.getCurrent().loadVisualValuesFromYaml(yaml).ok).toBe(true);
+    });
+    expect(harness.getCurrent().visualValues.streaming).toEqual(
+      expect.objectContaining({
+        firstEventTimeoutSeconds: '20',
+        firstEventTimeoutRetries: '2',
+      })
+    );
+
+    act(() => {
+      harness.getCurrent().setVisualValues({
+        streaming: {
+          ...harness.getCurrent().visualValues.streaming,
+          firstEventTimeoutSeconds: '30',
+          firstEventTimeoutRetries: '3',
+        },
+      });
+    });
+
+    const parsed = parseYaml(harness.getCurrent().applyVisualChangesToYaml(yaml)) as {
+      streaming?: Record<string, unknown>;
+    };
+    expect(parsed.streaming?.['first-event-timeout-seconds']).toBe(30);
+    expect(parsed.streaming?.['first-event-timeout-retries']).toBe(3);
+    expect(parsed.streaming?.['keepalive-seconds']).toBe(15);
+    expect(parsed.streaming?.['bootstrap-retries']).toBe(1);
+
+    harness.unmount();
+  });
 });

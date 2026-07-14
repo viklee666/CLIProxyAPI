@@ -11,6 +11,7 @@ This directory is intentionally isolated from CLIProxyAPI core code. Local integ
 - bounded request-monitor event pages;
 - provider-neutral quota recovery when an explicit reset timestamp exists;
 - Codex inspection five-hour quota cooldown and reset-time recovery;
+- visual configuration fields for the integrated first-SSE-event timeout and identical retry settings;
 - monorepo Docker build paths;
 - integrated-container admin credential synchronization;
 - embedded multi-file panel asset serving;

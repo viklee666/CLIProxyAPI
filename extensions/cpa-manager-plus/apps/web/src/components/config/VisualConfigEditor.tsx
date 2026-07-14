@@ -195,6 +195,9 @@ export function VisualConfigEditor({
   const keepaliveInputId = useId();
   const keepaliveHintId = `${keepaliveInputId}-hint`;
   const keepaliveErrorId = `${keepaliveInputId}-error`;
+  const firstEventTimeoutInputId = useId();
+  const firstEventTimeoutHintId = `${firstEventTimeoutInputId}-hint`;
+  const firstEventTimeoutErrorId = `${firstEventTimeoutInputId}-error`;
   const nonstreamKeepaliveInputId = useId();
   const nonstreamKeepaliveHintId = `${nonstreamKeepaliveInputId}-hint`;
   const nonstreamKeepaliveErrorId = `${nonstreamKeepaliveInputId}-error`;
@@ -210,6 +213,9 @@ export function VisualConfigEditor({
 
   const isKeepaliveDisabled =
     values.streaming.keepaliveSeconds === '' || values.streaming.keepaliveSeconds === '0';
+  const isFirstEventTimeoutDisabled =
+    values.streaming.firstEventTimeoutSeconds === '' ||
+    values.streaming.firstEventTimeoutSeconds === '0';
   const isNonstreamKeepaliveDisabled =
     values.streaming.nonstreamKeepaliveInterval === '' ||
     values.streaming.nonstreamKeepaliveInterval === '0';
@@ -236,6 +242,14 @@ export function VisualConfigEditor({
   const bootstrapRetriesError = getValidationMessage(
     t,
     validationErrors?.['streaming.bootstrapRetries']
+  );
+  const firstEventTimeoutError = getValidationMessage(
+    t,
+    validationErrors?.['streaming.firstEventTimeoutSeconds']
+  );
+  const firstEventTimeoutRetriesError = getValidationMessage(
+    t,
+    validationErrors?.['streaming.firstEventTimeoutRetries']
   );
   const nonstreamKeepaliveError = getValidationMessage(
     t,
@@ -342,6 +356,8 @@ export function VisualConfigEditor({
         errorCount: countErrors([
           'streaming.keepaliveSeconds',
           'streaming.bootstrapRetries',
+          'streaming.firstEventTimeoutSeconds',
+          'streaming.firstEventTimeoutRetries',
           'streaming.nonstreamKeepaliveInterval',
         ]),
       },
@@ -1364,6 +1380,63 @@ export function VisualConfigEditor({
                   disabled={disabled}
                   hint={t('config_management.visual.sections.streaming.bootstrap_hint')}
                   error={bootstrapRetriesError}
+                />
+              </SectionGrid>
+
+              <SectionGrid>
+                <FieldShell
+                  label={t('config_management.visual.sections.streaming.first_event_timeout')}
+                  htmlFor={firstEventTimeoutInputId}
+                  hint={t('config_management.visual.sections.streaming.first_event_timeout_hint')}
+                  hintId={firstEventTimeoutHintId}
+                  error={firstEventTimeoutError}
+                  errorId={firstEventTimeoutErrorId}
+                >
+                  <div className={styles.fieldControl}>
+                    <input
+                      id={firstEventTimeoutInputId}
+                      className="input"
+                      type="number"
+                      placeholder="0"
+                      value={values.streaming.firstEventTimeoutSeconds}
+                      onChange={(e) =>
+                        onChange({
+                          streaming: {
+                            ...values.streaming,
+                            firstEventTimeoutSeconds: e.target.value,
+                          },
+                        })
+                      }
+                      disabled={disabled}
+                    />
+                    {isFirstEventTimeoutDisabled ? (
+                      <span className={styles.inlinePill}>
+                        {t('config_management.visual.sections.streaming.disabled')}
+                      </span>
+                    ) : null}
+                  </div>
+                </FieldShell>
+
+                <Input
+                  label={t(
+                    'config_management.visual.sections.streaming.first_event_timeout_retries'
+                  )}
+                  type="number"
+                  placeholder="0"
+                  value={values.streaming.firstEventTimeoutRetries}
+                  onChange={(e) =>
+                    onChange({
+                      streaming: {
+                        ...values.streaming,
+                        firstEventTimeoutRetries: e.target.value,
+                      },
+                    })
+                  }
+                  disabled={disabled}
+                  hint={t(
+                    'config_management.visual.sections.streaming.first_event_timeout_retries_hint'
+                  )}
+                  error={firstEventTimeoutRetriesError}
                 />
               </SectionGrid>
 
