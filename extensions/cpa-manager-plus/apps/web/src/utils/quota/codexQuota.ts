@@ -42,6 +42,8 @@ export type CodexQuotaWindowInfo = {
   labelParams?: Record<string, string | number>;
   usedPercent: number | null;
   resetLabel: string;
+  resetAtMs?: number | null;
+  cooldownRecommended?: boolean;
   limitWindowSeconds: number | null;
 };
 
@@ -52,6 +54,24 @@ const getWindowSeconds = (window?: CodexUsageWindow | null): number | null => {
 
 export const getCodexQuotaWindowUsedPercent = (window?: CodexUsageWindow | null): number | null =>
   normalizeNumberValue(window?.used_percent ?? window?.usedPercent);
+
+export const resolveCodexQuotaWindowResetAtMs = (
+  window?: CodexUsageWindow | null,
+  nowMs = Date.now()
+): number | null => {
+  if (!window) return null;
+  const resetAt = normalizeNumberValue(window.reset_at ?? window.resetAt);
+  if (resetAt !== null && resetAt > 0) {
+    return Math.floor(resetAt >= 1_000_000_000_000 ? resetAt : resetAt * 1000);
+  }
+  const resetAfter = normalizeNumberValue(
+    window.reset_after_seconds ?? window.resetAfterSeconds
+  );
+  if (resetAfter !== null && resetAfter > 0) {
+    return Math.floor(nowMs + resetAfter * 1000);
+  }
+  return null;
+};
 
 const normalizeWindowId = (raw: string) =>
   raw

@@ -3,6 +3,7 @@ package codexinspection
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -153,6 +154,12 @@ func TestRunPersistsPlanQuotaWindowsAndErrorDetail(t *testing.T) {
 	if windowsByID["monthly"].ResetLabel == "" || windowsByID["monthly"].ResetLabel == "-" {
 		t.Fatalf("monthly reset label = %q, want concrete reset label", windowsByID["monthly"].ResetLabel)
 	}
+	if item.Action != "disable" || !item.IsQuota || item.UsedPercent == nil || *item.UsedPercent != 100 {
+		t.Fatalf("five-hour decision = %#v, want temporary disable", item)
+	}
+	if !windowsByID["five-hour"].CooldownRecommended || windowsByID["five-hour"].ResetAtMS <= time.Now().UnixMilli() {
+		t.Fatalf("five-hour cooldown window = %#v, want future auto recovery", windowsByID["five-hour"])
+	}
 	if windowsByID["credits-weekly-0"].LabelParams["name"] != "credits" {
 		t.Fatalf("additional window params = %#v, want credits name", windowsByID["credits-weekly-0"].LabelParams)
 	}
@@ -267,6 +274,58 @@ func TestRunAutoActionEnableEnablesRecoveredDisabledAccount(t *testing.T) {
 		result.Results[0].ExecutedAction != "enable" ||
 		result.Results[0].Disabled {
 		t.Fatalf("result after enable = %#v", result.Results[0])
+	}
+}
+
+func TestRunAutoActionDisablePersistsFiveHourCooldown(t *testing.T) {
+	var patchedDisabled bool
+	resetAt := time.Now().Add(time.Hour).Unix()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v0/management/auth-files" && r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(`{"files":[{"name":"auth-a.json","auth_index":"auth-1","provider":"codex","account":"alice@example.com","status":"ok","state":"ready"}]}`))
+		case r.URL.Path == "/v0/management/api-call" && r.Method == http.MethodPost:
+			_, _ = fmt.Fprintf(w, `{"status_code":200,"body":{"plan_type":"team","rate_limit":{"primary_window":{"used_percent":100,"limit_window_seconds":18000,"reset_at":%d},"secondary_window":{"used_percent":5,"limit_window_seconds":2592000}}}}`, resetAt)
+		case r.URL.Path == "/v0/management/auth-files/status" && r.Method == http.MethodPatch:
+			var payload struct {
+				Disabled bool `json:"disabled"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode patch payload: %v", err)
+			}
+			patchedDisabled = payload.Disabled
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	db := newCodexInspectionTestStore(t)
+	managerCfg := newCodexInspectionManagerConfig(upstream.URL)
+	managerCfg.CodexInspection.AutoActionMode = model.CodexInspectionAutoActionDisable
+	if err := db.SaveManagerConfig(context.Background(), managerCfg); err != nil {
+		t.Fatalf("save manager config: %v", err)
+	}
+	svc := newCodexInspectionTestService(t, db)
+
+	result, err := svc.Run(context.Background(), RunRequest{TriggerType: "manual", TriggerKey: "manual"})
+	if err != nil {
+		t.Fatalf("run inspection: %v", err)
+	}
+	if !patchedDisabled || len(result.Results) != 1 || result.Results[0].ExecutedAction != "disable" {
+		t.Fatalf("inspection result = %#v patchedDisabled=%v", result.Results, patchedDisabled)
+	}
+	active, err := db.QuotaCooldowns.ListActive(context.Background())
+	if err != nil {
+		t.Fatalf("list cooldowns: %v", err)
+	}
+	if len(active) != 1 ||
+		active[0].Owner != model.QuotaCooldownOwnerCodexInspection ||
+		active[0].AuthFileName != "auth-a.json" ||
+		active[0].AuthIndex != "auth-1" ||
+		active[0].RecoverAtMS != resetAt*1000 {
+		t.Fatalf("active cooldown = %#v", active)
 	}
 }
 
@@ -600,7 +659,55 @@ func TestResolveProbeActionUsesMonthlyWindowAsLongQuota(t *testing.T) {
 		}
 	})
 
-	t.Run("keeps exhausted short window with healthy monthly quota", func(t *testing.T) {
+	t.Run("temporarily disables exhausted short window with healthy monthly quota", func(t *testing.T) {
+		resetAt := time.Now().Add(time.Hour).Unix()
+		rateLimit := &codexRateLimit{
+			PrimaryWindow: &codexWindow{
+				UsedPercent:        ptrFloat(100),
+				LimitWindowSeconds: ptrFloat(codexFiveHourWindow),
+				ResetAt:            ptrFloat(float64(resetAt)),
+			},
+			SecondaryWindow: &codexWindow{
+				UsedPercent:        ptrFloat(5),
+				LimitWindowSeconds: ptrFloat(codexMonthWindow),
+			},
+		}
+		decision := resolveProbeAction(item, http.StatusOK, "", rateLimit, deriveRateLimitUsedPercent(rateLimit), true, threshold)
+
+		if decision.Action != "disable" ||
+			!strings.Contains(decision.ActionReason, "5 小时额度达到阈值，建议禁用至") ||
+			!strings.Contains(decision.ActionReason, "届时自动恢复") ||
+			decision.UsedPercent == nil ||
+			*decision.UsedPercent != 100 ||
+			!decision.IsQuota ||
+			decision.CooldownRecoverAtMS != resetAt*1000 {
+			t.Fatalf("decision = %#v, want temporary disable for exhausted short window", decision)
+		}
+	})
+
+	t.Run("temporarily disables team short window with inferred monthly quota", func(t *testing.T) {
+		rateLimit := &codexRateLimit{
+			PrimaryWindow: &codexWindow{
+				UsedPercent:       ptrFloat(100),
+				ResetAfterSeconds: ptrFloat(3600),
+			},
+			SecondaryWindow: &codexWindow{
+				UsedPercent: ptrFloat(5),
+			},
+		}
+		decision := resolveProbeAction(item, http.StatusOK, "", rateLimit, deriveRateLimitUsedPercent(rateLimit), true, threshold, "team")
+
+		if decision.Action != "disable" ||
+			!strings.Contains(decision.ActionReason, "届时自动恢复") ||
+			decision.UsedPercent == nil ||
+			*decision.UsedPercent != 100 ||
+			!decision.IsQuota ||
+			decision.CooldownRecoverAtMS <= time.Now().UnixMilli() {
+			t.Fatalf("decision = %#v, want team short-window cooldown", decision)
+		}
+	})
+
+	t.Run("keeps exhausted short window without reset time", func(t *testing.T) {
 		rateLimit := &codexRateLimit{
 			PrimaryWindow: &codexWindow{
 				UsedPercent:        ptrFloat(100),
@@ -612,33 +719,10 @@ func TestResolveProbeActionUsesMonthlyWindowAsLongQuota(t *testing.T) {
 			},
 		}
 		decision := resolveProbeAction(item, http.StatusOK, "", rateLimit, deriveRateLimitUsedPercent(rateLimit), true, threshold)
-
 		if decision.Action != "keep" ||
-			decision.ActionReason != "5 小时额度达到阈值，但月额度仍可用，暂不禁用账号" ||
-			decision.UsedPercent == nil ||
-			*decision.UsedPercent != 5 ||
-			decision.IsQuota {
-			t.Fatalf("decision = %#v, want keep exhausted short window with healthy monthly quota", decision)
-		}
-	})
-
-	t.Run("treats team secondary window without duration as monthly quota", func(t *testing.T) {
-		rateLimit := &codexRateLimit{
-			PrimaryWindow: &codexWindow{
-				UsedPercent: ptrFloat(100),
-			},
-			SecondaryWindow: &codexWindow{
-				UsedPercent: ptrFloat(5),
-			},
-		}
-		decision := resolveProbeAction(item, http.StatusOK, "", rateLimit, deriveRateLimitUsedPercent(rateLimit), true, threshold, "team")
-
-		if decision.Action != "keep" ||
-			decision.ActionReason != "5 小时额度达到阈值，但月额度仍可用，暂不禁用账号" ||
-			decision.UsedPercent == nil ||
-			*decision.UsedPercent != 5 ||
-			decision.IsQuota {
-			t.Fatalf("decision = %#v, want team secondary window treated as monthly quota", decision)
+			decision.ActionReason != "5 小时额度达到阈值，但缺少有效的未来 reset_at，暂不自动禁用账号" ||
+			!decision.IsQuota {
+			t.Fatalf("decision = %#v, want safe keep without reset time", decision)
 		}
 	})
 }

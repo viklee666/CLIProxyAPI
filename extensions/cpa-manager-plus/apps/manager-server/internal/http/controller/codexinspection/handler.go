@@ -25,6 +25,21 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 
 	path := strings.Trim(strings.TrimRight(r.URL.Path, "/"), " ")
 	switch {
+	case path == "/v0/management/codex-inspection/cooldown-disable":
+		if r.Method != http.MethodPost {
+			response.MethodNotAllowed(w)
+			return
+		}
+		var req codexsvc.DisableUntilResetRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			response.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := h.App.CodexInspectionService.DisableUntilReset(r.Context(), req); err != nil {
+			response.Error(w, codexInspectionErrorStatus(err), err)
+			return
+		}
+		response.JSON(w, http.StatusOK, map[string]any{"ok": true, "recoverAtMs": req.RecoverAtMS})
 	case path == "/v0/management/codex-inspection/run":
 		if r.Method != http.MethodPost {
 			response.MethodNotAllowed(w)
@@ -116,8 +131,12 @@ func codexInspectionErrorStatus(err error) int {
 	case errors.Is(err, codexsvc.ErrNotConfigured):
 		return http.StatusPreconditionFailed
 	case errors.Is(err, codexsvc.ErrActionIDsRequired),
-		errors.Is(err, codexsvc.ErrNoActionableResults):
+		errors.Is(err, codexsvc.ErrNoActionableResults),
+		errors.Is(err, codexsvc.ErrCooldownResetRequired),
+		errors.Is(err, codexsvc.ErrAuthFileNotFound):
 		return http.StatusBadRequest
+	case errors.Is(err, codexsvc.ErrAuthFileAlreadyDisabled):
+		return http.StatusConflict
 	default:
 		return http.StatusInternalServerError
 	}

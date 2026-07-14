@@ -284,7 +284,9 @@ func (w *RateLimitAutoDisableWorker) enableDue(ctx context.Context, now time.Tim
 }
 
 func (w *RateLimitAutoDisableWorker) recoverCooldown(ctx context.Context, baseURL string, managementKey string, item store.QuotaCooldown, now time.Time) {
-	if item.Owner != model.QuotaCooldownOwnerUsage429 && item.Owner != model.QuotaCooldownOwnerXAIFreeUsage {
+	if item.Owner != model.QuotaCooldownOwnerUsage429 &&
+		item.Owner != model.QuotaCooldownOwnerXAIFreeUsage &&
+		item.Owner != model.QuotaCooldownOwnerCodexInspection {
 		reason := "unknown owner"
 		_ = w.store.MarkQuotaCooldownSkipped(ctx, item.ID, reason)
 		log.Printf("[quota-auto-disable] skip cooldown recovery id=%d authFile=%q reason=%s owner=%q", item.ID, item.AuthFileName, reason, item.Owner)

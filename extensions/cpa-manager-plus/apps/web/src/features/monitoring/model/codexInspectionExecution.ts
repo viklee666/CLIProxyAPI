@@ -1,4 +1,5 @@
 import { authFilesApi } from '@/services/api/authFiles';
+import { usageServiceApi } from '@/services/api/usageService';
 import {
   type CodexInspectionExecutionOutcome,
   type CodexInspectionExecutionResult,
@@ -15,6 +16,8 @@ type ExecuteCodexInspectionActionsOptions = {
   settings: CodexInspectionSettings;
   items: CodexInspectionResultItem[];
   previousFiles: AuthFileItem[];
+  apiBase?: string;
+  managementKey?: string;
   onLog?: LogHandler;
 };
 
@@ -93,10 +96,35 @@ const executeDelete = async (
 
 const executeStatusChange = async (
   item: CodexInspectionResultItem,
-  disabled: boolean
+  disabled: boolean,
+  apiBase?: string,
+  managementKey?: string
 ): Promise<CodexInspectionExecutionOutcome> => {
   try {
-    await authFilesApi.setStatusWithFallback(item.fileName, disabled);
+    const cooldownWindow = disabled
+      ? item.quotaWindows?.find(
+          (window) => window.id === 'five-hour' && window.cooldownRecommended === true
+        )
+      : undefined;
+    if (cooldownWindow) {
+      if (
+        typeof cooldownWindow.resetAtMs !== 'number' ||
+        cooldownWindow.resetAtMs <= Date.now()
+      ) {
+        throw new Error('5 小时额度重置时间已过期，请重新巡检后再执行');
+      }
+      if (!apiBase || !managementKey) {
+        throw new Error('缺少 Manager 连接，无法登记自动恢复时间');
+      }
+      await usageServiceApi.disableCodexInspectionUntilReset(apiBase, managementKey, {
+        fileName: item.fileName,
+        authIndex: item.authIndex,
+        displayAccount: item.displayAccount,
+        recoverAtMs: cooldownWindow.resetAtMs,
+      });
+    } else {
+      await authFilesApi.setStatusWithFallback(item.fileName, disabled);
+    }
     return {
       action: disabled ? 'disable' : 'enable',
       fileName: item.fileName,
@@ -119,6 +147,8 @@ export const executeCodexInspectionActions = async ({
   settings,
   items,
   previousFiles,
+  apiBase,
+  managementKey,
   onLog,
 }: ExecuteCodexInspectionActionsOptions): Promise<CodexInspectionExecutionResult> => {
   const dedupedItems = dedupeExecutionItems(items);
@@ -146,7 +176,7 @@ export const executeCodexInspectionActions = async ({
   if (disableItems.length > 0) {
     onLog?.('info', `开始禁用 ${disableItems.length} 个账号`);
     const disableOutcomes = await runConcurrently(disableItems, settings.deleteWorkers, (item) =>
-      executeStatusChange(item, true)
+      executeStatusChange(item, true, apiBase, managementKey)
     );
     disableOutcomes.forEach((outcome) => {
       onLog?.(

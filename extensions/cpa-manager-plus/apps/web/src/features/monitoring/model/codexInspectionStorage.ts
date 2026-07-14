@@ -106,14 +106,19 @@ const normalizeQuotaWindowLabelParams = (
 
 const serializeQuotaWindow = (
   window: CodexInspectionQuotaWindow
-): CodexInspectionQuotaWindow => ({
-  id: readString(window.id),
-  labelKey: readString(window.labelKey),
-  labelParams: normalizeQuotaWindowLabelParams(window.labelParams),
-  usedPercent: readNullableNumber(window.usedPercent),
-  resetLabel: readString(window.resetLabel),
-  limitWindowSeconds: readNullableNumber(window.limitWindowSeconds),
-});
+): CodexInspectionQuotaWindow => {
+  const resetAtMs = readNullableNumber(window.resetAtMs);
+  return {
+    id: readString(window.id),
+    labelKey: readString(window.labelKey),
+    labelParams: normalizeQuotaWindowLabelParams(window.labelParams),
+    usedPercent: readNullableNumber(window.usedPercent),
+    resetLabel: readString(window.resetLabel),
+    ...(resetAtMs !== null ? { resetAtMs } : {}),
+    ...(window.cooldownRecommended === true ? { cooldownRecommended: true } : {}),
+    limitWindowSeconds: readNullableNumber(window.limitWindowSeconds),
+  };
+};
 
 const hydrateQuotaWindow = (value: unknown): CodexInspectionQuotaWindow | null => {
   if (!isRecord(value)) return null;
@@ -121,12 +126,16 @@ const hydrateQuotaWindow = (value: unknown): CodexInspectionQuotaWindow | null =
   const labelKey = readString(value.labelKey);
   if (!id || !labelKey) return null;
 
+  const resetAtMs = readNullableNumber(value.resetAtMs);
+  const cooldownRecommended = readBoolean(value.cooldownRecommended, false);
   return {
     id,
     labelKey,
     labelParams: normalizeQuotaWindowLabelParams(value.labelParams),
     usedPercent: readNullableNumber(value.usedPercent),
     resetLabel: readString(value.resetLabel),
+    ...(resetAtMs !== null ? { resetAtMs } : {}),
+    ...(cooldownRecommended ? { cooldownRecommended: true } : {}),
     limitWindowSeconds: readNullableNumber(value.limitWindowSeconds),
   };
 };

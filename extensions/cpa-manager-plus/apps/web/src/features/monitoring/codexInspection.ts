@@ -112,6 +112,8 @@ export interface CodexInspectionQuotaWindow {
   labelParams?: Record<string, string | number>;
   usedPercent: number | null;
   resetLabel: string;
+  resetAtMs?: number | null;
+  cooldownRecommended?: boolean;
   limitWindowSeconds: number | null;
 }
 

@@ -34,12 +34,15 @@ const (
 )
 
 var (
-	ErrRunAlreadyActive    = errors.New("codex inspection is already running")
-	ErrNotConfigured       = errors.New("usage service is not configured")
-	ErrRunNotFound         = errors.New("codex inspection run not found")
-	ErrRunNotCompleted     = errors.New("codex inspection run is not completed")
-	ErrActionIDsRequired   = errors.New("codex inspection action result ids are required")
-	ErrNoActionableResults = errors.New("codex inspection has no actionable results")
+	ErrRunAlreadyActive        = errors.New("codex inspection is already running")
+	ErrNotConfigured           = errors.New("usage service is not configured")
+	ErrRunNotFound             = errors.New("codex inspection run not found")
+	ErrRunNotCompleted         = errors.New("codex inspection run is not completed")
+	ErrActionIDsRequired       = errors.New("codex inspection action result ids are required")
+	ErrNoActionableResults     = errors.New("codex inspection has no actionable results")
+	ErrCooldownResetRequired   = errors.New("codex inspection cooldown requires a future reset time")
+	ErrAuthFileNotFound        = errors.New("codex inspection auth file was not found")
+	ErrAuthFileAlreadyDisabled = errors.New("codex inspection auth file is already disabled")
 )
 
 type Service struct {
@@ -82,6 +85,13 @@ type ExecuteActionsResult struct {
 	Detail   RunDetail       `json:"detail"`
 }
 
+type DisableUntilResetRequest struct {
+	FileName       string `json:"fileName"`
+	AuthIndex      string `json:"authIndex,omitempty"`
+	DisplayAccount string `json:"displayAccount,omitempty"`
+	RecoverAtMS    int64  `json:"recoverAtMs"`
+}
+
 type authFile map[string]any
 
 type account struct {
@@ -105,10 +115,11 @@ type apiCallResponse struct {
 }
 
 type inspectionDecision struct {
-	Action       string
-	ActionReason string
-	UsedPercent  *float64
-	IsQuota      bool
+	Action              string
+	ActionReason        string
+	UsedPercent         *float64
+	IsQuota             bool
+	CooldownRecoverAtMS int64
 }
 
 type fileActionGroup struct {
@@ -658,6 +669,7 @@ func (s *Service) inspectSingleAccount(
 	base.IsQuota = decision.IsQuota
 	base.PlanType = planType
 	base.QuotaWindows = buildCodexInspectionQuotaWindows(payload, planType)
+	markCodexInspectionCooldown(base.QuotaWindows, decision.CooldownRecoverAtMS)
 	base.Error = ""
 	if statusCode < 200 || statusCode >= 300 {
 		base.ErrorKind = "http_status"
@@ -889,12 +901,106 @@ func (s *Service) executeAction(ctx context.Context, setup store.Setup, item mod
 		return s.deleteAuthFileOnly(ctx, setup, "/v0/management/auth-files", item.FileName)
 	case "disable", "enable":
 		disabled := item.Action == "disable"
+		if disabled {
+			if recoverAtMS := codexInspectionCooldownRecoverAtMS(item); recoverAtMS > 0 {
+				return s.disableWithCooldown(ctx, setup, item, recoverAtMS)
+			}
+		}
 		payload := map[string]any{"name": item.FileName, "disabled": disabled}
 		err, _ := s.patchAuthFile(ctx, setup, "/v0/management/auth-files/status", payload)
 		return err
 	default:
 		return nil
 	}
+}
+
+func (s *Service) DisableUntilReset(ctx context.Context, request DisableUntilResetRequest) error {
+	request.FileName = strings.TrimSpace(request.FileName)
+	request.AuthIndex = strings.TrimSpace(request.AuthIndex)
+	request.DisplayAccount = strings.TrimSpace(request.DisplayAccount)
+	if request.FileName == "" {
+		return ErrAuthFileNotFound
+	}
+	if request.RecoverAtMS <= time.Now().UnixMilli() {
+		return ErrCooldownResetRequired
+	}
+	if s == nil || s.managerConfigService == nil {
+		return ErrNotConfigured
+	}
+	setup, ok, err := s.managerConfigService.ResolveSetup(ctx)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrNotConfigured
+	}
+	files, err := s.fetchAuthFiles(ctx, setup)
+	if err != nil {
+		return err
+	}
+	currentByFile := map[string][]account{}
+	for _, file := range files {
+		item := toAccount(file)
+		currentByFile[item.FileName] = append(currentByFile[item.FileName], item)
+	}
+	current, found := matchCurrentAccount(currentByFile[request.FileName], model.CodexInspectionResult{
+		FileName:  request.FileName,
+		AuthIndex: request.AuthIndex,
+	})
+	if !found {
+		return ErrAuthFileNotFound
+	}
+	if current.Disabled {
+		return ErrAuthFileAlreadyDisabled
+	}
+	return s.disableWithCooldown(ctx, setup, model.CodexInspectionResult{
+		FileName:       request.FileName,
+		AuthIndex:      firstNonEmpty(request.AuthIndex, current.AuthIndex),
+		DisplayAccount: firstNonEmpty(request.DisplayAccount, current.DisplayAccount),
+		Provider:       firstNonEmpty(current.Provider, "codex"),
+		Action:         "disable",
+	}, request.RecoverAtMS)
+}
+
+func (s *Service) disableWithCooldown(ctx context.Context, setup store.Setup, item model.CodexInspectionResult, recoverAtMS int64) error {
+	if recoverAtMS <= time.Now().UnixMilli() {
+		return ErrCooldownResetRequired
+	}
+	if s == nil || s.store == nil || s.store.QuotaCooldowns == nil {
+		return errors.New("codex inspection cooldown store is unavailable")
+	}
+	payload := map[string]any{"name": item.FileName, "disabled": true}
+	if err, _ := s.patchAuthFile(ctx, setup, "/v0/management/auth-files/status", payload); err != nil {
+		return err
+	}
+	_, err := s.store.UpsertQuotaCooldown(ctx, store.QuotaCooldownUpsert{
+		AuthFileName:     item.FileName,
+		AuthIndex:        item.AuthIndex,
+		AccountSnapshot:  item.DisplayAccount,
+		Provider:         strings.ToLower(firstNonEmpty(item.Provider, "codex")),
+		RecoverAtMS:      recoverAtMS,
+		Owner:            model.QuotaCooldownOwnerCodexInspection,
+		EventHash:        fmt.Sprintf("codex-inspection:%s:%d", firstNonEmpty(item.AuthIndex, item.FileName), recoverAtMS),
+		PreDisabledState: false,
+		DisabledAtMS:     time.Now().UnixMilli(),
+	})
+	if err == nil {
+		return nil
+	}
+	rollbackPayload := map[string]any{"name": item.FileName, "disabled": false}
+	if rollbackErr, _ := s.patchAuthFile(ctx, setup, "/v0/management/auth-files/status", rollbackPayload); rollbackErr != nil {
+		return fmt.Errorf("persist codex inspection cooldown: %w; rollback enable failed: %v", err, rollbackErr)
+	}
+	return fmt.Errorf("persist codex inspection cooldown: %w", err)
+}
+
+func codexInspectionCooldownRecoverAtMS(item model.CodexInspectionResult) int64 {
+	for _, window := range item.QuotaWindows {
+		if window.ID == "five-hour" && window.CooldownRecommended {
+			return window.ResetAtMS
+		}
+	}
+	return 0
 }
 
 func (s *Service) deleteAuthFileOnly(ctx context.Context, setup store.Setup, path string, fileName string) error {
@@ -1016,58 +1122,85 @@ func resolveWindowAwareProbeAction(item account, statusCode int, bodyText string
 	}
 	classified := classifyWindows(rateLimit, planType)
 	longWindow := classified.longWindow()
-	if longWindow == nil || longWindow.UsedPercent == nil {
-		return nil
-	}
-	longWindowUsedPercent := *longWindow.UsedPercent
-	longWindowLabel := classified.longWindowLabel(longWindow)
 	fiveHour := classified.FiveHour
 	fiveHourOverThreshold := fiveHour != nil && fiveHour.UsedPercent != nil && *fiveHour.UsedPercent >= threshold
+	var longWindowUsedPercent *float64
+	if longWindow != nil {
+		longWindowUsedPercent = longWindow.UsedPercent
+	}
+	usedPercent := longWindowUsedPercent
+	if usedPercent == nil && fiveHour != nil {
+		usedPercent = fiveHour.UsedPercent
+	}
 
 	if statusCode == http.StatusUnauthorized {
-		decision := resolveUnauthorizedProbeAction(bodyText, ptrFloat(longWindowUsedPercent))
+		decision := resolveUnauthorizedProbeAction(bodyText, usedPercent)
 		return &decision
 	}
-	if longWindowUsedPercent >= threshold {
+	if longWindowUsedPercent != nil && *longWindowUsedPercent >= threshold {
+		longWindowLabel := classified.longWindowLabel(longWindow)
 		if item.Disabled {
 			return &inspectionDecision{
 				Action:       "keep",
 				ActionReason: fmt.Sprintf("%s达到阈值，但账号已禁用", longWindowLabel),
-				UsedPercent:  ptrFloat(longWindowUsedPercent),
+				UsedPercent:  ptrFloat(*longWindowUsedPercent),
 				IsQuota:      true,
 			}
 		}
 		return &inspectionDecision{
 			Action:       "disable",
 			ActionReason: fmt.Sprintf("%s达到阈值，建议禁用账号", longWindowLabel),
-			UsedPercent:  ptrFloat(longWindowUsedPercent),
+			UsedPercent:  ptrFloat(*longWindowUsedPercent),
 			IsQuota:      true,
 		}
 	}
-	if item.Disabled {
-		reason := fmt.Sprintf("%s仍可用，建议立即启用账号", longWindowLabel)
-		if fiveHourOverThreshold {
-			reason = fmt.Sprintf("5 小时额度达到阈值，但%s仍可用，建议立即启用账号", longWindowLabel)
-		}
-		return &inspectionDecision{
-			Action:       "enable",
-			ActionReason: reason,
-			UsedPercent:  ptrFloat(longWindowUsedPercent),
-			IsQuota:      false,
-		}
-	}
 	if fiveHourOverThreshold {
+		fiveHourUsedPercent := fiveHour.UsedPercent
+		recoverAtMS := resolveCodexWindowResetAtMS(fiveHour, time.Now())
+		if item.Disabled {
+			reason := "5 小时额度达到阈值，账号已禁用；不接管现有禁用状态"
+			if recoverAtMS > time.Now().UnixMilli() {
+				reason = fmt.Sprintf("5 小时额度达到阈值，账号已禁用；现有禁用状态不由巡检自动恢复（本次重置时间 %s）", formatUnixMilliseconds(recoverAtMS))
+			}
+			return &inspectionDecision{
+				Action:       "keep",
+				ActionReason: reason,
+				UsedPercent:  fiveHourUsedPercent,
+				IsQuota:      true,
+			}
+		}
+		if recoverAtMS > time.Now().UnixMilli() {
+			return &inspectionDecision{
+				Action:              "disable",
+				ActionReason:        fmt.Sprintf("5 小时额度达到阈值，建议禁用至 %s，届时自动恢复", formatUnixMilliseconds(recoverAtMS)),
+				UsedPercent:         fiveHourUsedPercent,
+				IsQuota:             true,
+				CooldownRecoverAtMS: recoverAtMS,
+			}
+		}
 		return &inspectionDecision{
 			Action:       "keep",
-			ActionReason: fmt.Sprintf("5 小时额度达到阈值，但%s仍可用，暂不禁用账号", longWindowLabel),
-			UsedPercent:  ptrFloat(longWindowUsedPercent),
+			ActionReason: "5 小时额度达到阈值，但缺少有效的未来 reset_at，暂不自动禁用账号",
+			UsedPercent:  fiveHourUsedPercent,
+			IsQuota:      true,
+		}
+	}
+	if longWindow == nil || longWindowUsedPercent == nil {
+		return nil
+	}
+	longWindowLabel := classified.longWindowLabel(longWindow)
+	if item.Disabled {
+		return &inspectionDecision{
+			Action:       "enable",
+			ActionReason: fmt.Sprintf("%s仍可用，建议立即启用账号", longWindowLabel),
+			UsedPercent:  ptrFloat(*longWindowUsedPercent),
 			IsQuota:      false,
 		}
 	}
 	return &inspectionDecision{
 		Action:       "keep",
 		ActionReason: fmt.Sprintf("%s仍可用，无需处理", longWindowLabel),
-		UsedPercent:  ptrFloat(longWindowUsedPercent),
+		UsedPercent:  ptrFloat(*longWindowUsedPercent),
 		IsQuota:      false,
 	}
 }
@@ -1921,8 +2054,23 @@ func addCodexWindowInfo(
 		LabelParams:        copyCodexLabelParams(labelParams),
 		UsedPercent:        usedPercent,
 		ResetLabel:         resetLabel,
+		ResetAtMS:          resolveCodexWindowResetAtMS(window, time.Now()),
 		LimitWindowSeconds: window.LimitWindowSeconds,
 	})
+}
+
+func markCodexInspectionCooldown(windows []model.CodexInspectionQuotaWindow, recoverAtMS int64) {
+	if recoverAtMS <= 0 {
+		return
+	}
+	for i := range windows {
+		if windows[i].ID != "five-hour" {
+			continue
+		}
+		windows[i].ResetAtMS = recoverAtMS
+		windows[i].CooldownRecommended = true
+		return
+	}
 }
 
 func addAdditionalRateLimitWindows(windows *[]model.CodexInspectionQuotaWindow, additionalRateLimits []map[string]any, teamPlan bool) {
@@ -1974,28 +2122,35 @@ func readMapSlice(record map[string]any, keys ...string) []map[string]any {
 }
 
 func formatCodexResetLabel(window *codexWindow) string {
-	if window == nil {
+	resetAtMS := resolveCodexWindowResetAtMS(window, time.Now())
+	if resetAtMS <= 0 {
 		return "-"
 	}
-	if window.ResetAt != nil && *window.ResetAt > 0 {
-		return formatUnixSeconds(*window.ResetAt)
-	}
-	if window.ResetAfterSeconds != nil && *window.ResetAfterSeconds > 0 {
-		targetSeconds := float64(time.Now().Unix()) + math.Floor(*window.ResetAfterSeconds)
-		return formatUnixSeconds(targetSeconds)
-	}
-	return "-"
+	return formatUnixMilliseconds(resetAtMS)
 }
 
-func formatUnixSeconds(seconds float64) string {
-	if seconds <= 0 {
+func resolveCodexWindowResetAtMS(window *codexWindow, now time.Time) int64 {
+	if window == nil {
+		return 0
+	}
+	if window.ResetAt != nil && *window.ResetAt > 0 {
+		value := *window.ResetAt
+		if value >= 1_000_000_000_000 {
+			return int64(math.Floor(value))
+		}
+		return int64(math.Floor(value * 1000))
+	}
+	if window.ResetAfterSeconds != nil && *window.ResetAfterSeconds > 0 {
+		return now.UnixMilli() + int64(math.Floor(*window.ResetAfterSeconds*1000))
+	}
+	return 0
+}
+
+func formatUnixMilliseconds(milliseconds int64) string {
+	if milliseconds <= 0 {
 		return "-"
 	}
-	unixSeconds := int64(math.Floor(seconds))
-	if unixSeconds <= 0 {
-		return "-"
-	}
-	return time.Unix(unixSeconds, 0).Local().Format("01/02 15:04")
+	return time.UnixMilli(milliseconds).Local().Format("01/02 15:04")
 }
 
 func formatCodexWindowDuration(seconds *float64) string {

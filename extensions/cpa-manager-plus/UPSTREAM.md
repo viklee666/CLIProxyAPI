@@ -10,6 +10,7 @@ This directory is intentionally isolated from CLIProxyAPI core code. Local integ
 - targeted auth snapshot collection;
 - bounded request-monitor event pages;
 - provider-neutral quota recovery when an explicit reset timestamp exists;
+- Codex inspection five-hour quota cooldown and reset-time recovery;
 - monorepo Docker build paths;
 - integrated-container admin credential synchronization;
 - embedded multi-file panel asset serving;

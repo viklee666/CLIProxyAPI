@@ -89,12 +89,13 @@ describe('inspectSingleAccount', () => {
     expect(result.isQuota).toBe(true);
   });
 
-  it('keeps an enabled account when only the short window is exhausted', async () => {
+  it('temporarily disables an enabled account when the short window is exhausted', async () => {
     mockRequestCodexUsageRaw.mockResolvedValue(
       createUsageResult(5, {
         primary_window: {
           used_percent: 100,
           limit_window_seconds: 18_000,
+          reset_after_seconds: 3_600,
         },
         secondary_window: {
           used_percent: 5,
@@ -105,10 +106,20 @@ describe('inspectSingleAccount', () => {
 
     const result = await inspectSingleAccount(baseAccount, settings);
 
-    expect(result.action).toBe('keep');
-    expect(result.actionReason).toBe('5 小时额度达到阈值，但月额度仍可用，暂不禁用账号');
-    expect(result.usedPercent).toBe(5);
-    expect(result.isQuota).toBe(false);
+    expect(result.action).toBe('disable');
+    expect(result.actionReason).toContain('5 小时额度达到阈值，建议禁用至');
+    expect(result.actionReason).toContain('届时自动恢复');
+    expect(result.usedPercent).toBe(100);
+    expect(result.isQuota).toBe(true);
+    expect(result.quotaWindows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'five-hour',
+          cooldownRecommended: true,
+          resetAtMs: expect.any(Number),
+        }),
+      ])
+    );
   });
 
   it('treats team secondary windows without duration as monthly quota', async () => {
@@ -125,6 +136,7 @@ describe('inspectSingleAccount', () => {
         rate_limit: {
           primary_window: {
             used_percent: 100,
+            reset_after_seconds: 3_600,
           },
           secondary_window: {
             used_percent: 5,
@@ -135,13 +147,36 @@ describe('inspectSingleAccount', () => {
 
     const result = await inspectSingleAccount(baseAccount, settings);
 
-    expect(result.action).toBe('keep');
-    expect(result.actionReason).toBe('5 小时额度达到阈值，但月额度仍可用，暂不禁用账号');
-    expect(result.usedPercent).toBe(5);
+    expect(result.action).toBe('disable');
+    expect(result.actionReason).toContain('届时自动恢复');
+    expect(result.usedPercent).toBe(100);
     expect((result.quotaWindows ?? []).map((window) => window.id)).toEqual([
       'five-hour',
       'monthly',
     ]);
+  });
+
+  it('does not disable an exhausted short window without a future reset time', async () => {
+    mockRequestCodexUsageRaw.mockResolvedValue(
+      createUsageResult(5, {
+        primary_window: {
+          used_percent: 100,
+          limit_window_seconds: 18_000,
+        },
+        secondary_window: {
+          used_percent: 5,
+          limit_window_seconds: 2_592_000,
+        },
+      })
+    );
+
+    const result = await inspectSingleAccount(baseAccount, settings);
+
+    expect(result.action).toBe('keep');
+    expect(result.actionReason).toBe(
+      '5 小时额度达到阈值，但缺少有效的未来 reset_at，暂不自动禁用账号'
+    );
+    expect(result.isQuota).toBe(true);
   });
 
   it('deletes an account when the workspace is deactivated', async () => {

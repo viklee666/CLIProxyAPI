@@ -447,6 +447,8 @@ export function CodexInspectionPage() {
           settings: currentResult.settings,
           items: targets,
           previousFiles: currentResult.files,
+          apiBase,
+          managementKey,
           onLog: appendLog,
         });
 
@@ -489,7 +491,7 @@ export function CodexInspectionPage() {
         setExecuting(false);
       }
     },
-    [appendLog, connectionFingerprint, result, resultConnectionFingerprint, showNotification, t]
+    [apiBase, appendLog, connectionFingerprint, managementKey, result, resultConnectionFingerprint, showNotification, t]
   );
 
   useEffect(() => {

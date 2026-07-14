@@ -623,6 +623,8 @@ function toServerResultItem(
       labelParams: window.labelParams,
       usedPercent: window.usedPercent ?? null,
       resetLabel: window.resetLabel ?? '',
+      ...(typeof window.resetAtMs === 'number' ? { resetAtMs: window.resetAtMs } : {}),
+      ...(window.cooldownRecommended === true ? { cooldownRecommended: true } : {}),
       limitWindowSeconds: window.limitWindowSeconds ?? null,
     })),
     errorKind: item.errorKind,

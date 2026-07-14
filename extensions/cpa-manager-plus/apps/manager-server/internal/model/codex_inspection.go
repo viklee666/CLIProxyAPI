@@ -79,12 +79,14 @@ type CodexInspectionRun struct {
 }
 
 type CodexInspectionQuotaWindow struct {
-	ID                 string         `json:"id"`
-	LabelKey           string         `json:"labelKey"`
-	LabelParams        map[string]any `json:"labelParams,omitempty"`
-	UsedPercent        *float64       `json:"usedPercent,omitempty"`
-	ResetLabel         string         `json:"resetLabel"`
-	LimitWindowSeconds *float64       `json:"limitWindowSeconds,omitempty"`
+	ID                  string         `json:"id"`
+	LabelKey            string         `json:"labelKey"`
+	LabelParams         map[string]any `json:"labelParams,omitempty"`
+	UsedPercent         *float64       `json:"usedPercent,omitempty"`
+	ResetLabel          string         `json:"resetLabel"`
+	ResetAtMS           int64          `json:"resetAtMs,omitempty"`
+	CooldownRecommended bool           `json:"cooldownRecommended,omitempty"`
+	LimitWindowSeconds  *float64       `json:"limitWindowSeconds,omitempty"`
 }
 
 type CodexInspectionResult struct {

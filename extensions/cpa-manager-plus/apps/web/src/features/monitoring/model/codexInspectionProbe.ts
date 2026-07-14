@@ -5,6 +5,7 @@ import {
   buildCodexQuotaWindowInfos,
   classifyCodexRateLimitWindows,
   deriveCodexRateLimitUsedPercent,
+  formatCodexResetLabel,
   getCodexQuotaWindowUsedPercent,
   isCodexRateLimitReached,
   isDisabledAuthFile,
@@ -12,6 +13,7 @@ import {
   resolveAuthProvider,
   resolveCodexChatgptAccountId,
   resolveCodexPlanType,
+  resolveCodexQuotaWindowResetAtMs,
 } from '@/utils/quota';
 import { normalizeAuthIndex } from '@/utils/usage';
 import {
@@ -82,7 +84,7 @@ const withRetry = async <T>(retries: number, task: () => Promise<T>): Promise<T>
 type CodexInspectionDecision = Pick<
   CodexInspectionResultItem,
   'action' | 'actionReason' | 'usedPercent' | 'isQuota'
->;
+> & { cooldownRecoverAtMs?: number | null };
 
 type UnauthorizedReason = 'unknown' | 'expired' | 'invalidated';
 
@@ -205,16 +207,18 @@ const resolveWindowAwareProbeAction = (
       teamPlan: normalizePlanType(planType) === 'team',
     });
   const longWindowUsedPercent = getCodexQuotaWindowUsedPercent(longWindow);
-  if (!longWindow || longWindowUsedPercent === null) return null;
-
   const fiveHourUsedPercent = getCodexQuotaWindowUsedPercent(fiveHourWindow);
   const longWindowLabel =
     longWindow === weeklyWindow ? '周额度' : longWindow === monthlyWindow ? '月额度' : '长期额度';
-  const longWindowOverThreshold = longWindowUsedPercent >= threshold;
+  const longWindowOverThreshold =
+    longWindowUsedPercent !== null && longWindowUsedPercent >= threshold;
   const fiveHourOverThreshold = fiveHourUsedPercent !== null && fiveHourUsedPercent >= threshold;
 
   if (statusCode === 401) {
-    return resolveUnauthorizedProbeAction(bodyText, longWindowUsedPercent);
+    return resolveUnauthorizedProbeAction(
+      bodyText,
+      longWindowUsedPercent ?? fiveHourUsedPercent
+    );
   }
 
   if (longWindowOverThreshold) {
@@ -234,21 +238,42 @@ const resolveWindowAwareProbeAction = (
     };
   }
 
-  if (account.disabled) {
+  if (fiveHourOverThreshold) {
+    const recoverAtMs = resolveCodexQuotaWindowResetAtMs(fiveHourWindow);
+    const hasFutureReset = recoverAtMs !== null && recoverAtMs > Date.now();
+    if (account.disabled) {
+      return {
+        action: 'keep',
+        actionReason: hasFutureReset
+          ? `5 小时额度达到阈值，账号已禁用；现有禁用状态不由巡检自动恢复（本次重置时间 ${formatCodexResetLabel(fiveHourWindow)}）`
+          : '5 小时额度达到阈值，账号已禁用；不接管现有禁用状态',
+        usedPercent: fiveHourUsedPercent,
+        isQuota: true,
+      };
+    }
+    if (hasFutureReset) {
+      return {
+        action: 'disable',
+        actionReason: `5 小时额度达到阈值，建议禁用至 ${formatCodexResetLabel(fiveHourWindow)}，届时自动恢复`,
+        usedPercent: fiveHourUsedPercent,
+        isQuota: true,
+        cooldownRecoverAtMs: recoverAtMs,
+      };
+    }
     return {
-      action: 'enable',
-      actionReason: fiveHourOverThreshold
-        ? `5 小时额度达到阈值，但${longWindowLabel}仍可用，建议立即启用账号`
-        : `${longWindowLabel}仍可用，建议立即启用账号`,
-      usedPercent: longWindowUsedPercent,
-      isQuota: false,
+      action: 'keep',
+      actionReason: '5 小时额度达到阈值，但缺少有效的未来 reset_at，暂不自动禁用账号',
+      usedPercent: fiveHourUsedPercent,
+      isQuota: true,
     };
   }
 
-  if (fiveHourOverThreshold) {
+  if (!longWindow || longWindowUsedPercent === null) return null;
+
+  if (account.disabled) {
     return {
-      action: 'keep',
-      actionReason: `5 小时额度达到阈值，但${longWindowLabel}仍可用，暂不禁用账号`,
+      action: 'enable',
+      actionReason: `${longWindowLabel}仍可用，建议立即启用账号`,
       usedPercent: longWindowUsedPercent,
       isQuota: false,
     };
@@ -365,6 +390,15 @@ export const inspectSingleAccount = async (
       settings.usedPercentThreshold,
       planType
     );
+    const resolvedQuotaWindows = quotaWindows.map((window) =>
+      decision.cooldownRecoverAtMs && window.id === 'five-hour'
+        ? {
+            ...window,
+            resetAtMs: decision.cooldownRecoverAtMs,
+            cooldownRecommended: true,
+          }
+        : window
+    );
 
     const successLevel =
       decision.action === 'delete'
@@ -390,7 +424,7 @@ export const inspectSingleAccount = async (
       isQuota: decision.isQuota,
       error: '',
       planType,
-      quotaWindows,
+      quotaWindows: resolvedQuotaWindows,
       errorKind:
         result.statusCode >= 200 && result.statusCode < 300 ? '' : 'http_status',
       errorDetail:

@@ -480,7 +480,7 @@ func TestRateLimitAutoDisableWorkerXAIEventDisablesAndRecoversEndToEnd(t *testin
 	}
 }
 
-func TestRateLimitAutoDisableWorkerRecoversXAICooldownWithoutTouchingManualDisable(t *testing.T) {
+func TestRateLimitAutoDisableWorkerRecoversOwnedCooldownsWithoutTouchingManualDisable(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -492,8 +492,9 @@ func TestRateLimitAutoDisableWorkerRecoversXAICooldownWithoutTouchingManualDisab
 		patches  int
 	}
 	states := map[string]*authState{
-		"xai-owned.json":  {disabled: true},
-		"xai-manual.json": {disabled: true},
+		"xai-owned.json":        {disabled: true},
+		"xai-manual.json":       {disabled: true},
+		"inspection-owned.json": {disabled: true},
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer test-management-key" {
@@ -531,6 +532,7 @@ func TestRateLimitAutoDisableWorkerRecoversXAICooldownWithoutTouchingManualDisab
 	for _, cooldown := range []store.QuotaCooldownUpsert{
 		{AuthFileName: "xai-owned.json", AuthIndex: "xai-owned.json", Provider: "xai", RecoverAtMS: now.Add(-time.Minute).UnixMilli(), Owner: model.QuotaCooldownOwnerXAIFreeUsage, EventHash: "owned", PreDisabledState: false, DisabledAtMS: now.Add(-25 * time.Hour).UnixMilli()},
 		{AuthFileName: "xai-manual.json", AuthIndex: "xai-manual.json", Provider: "xai", RecoverAtMS: now.Add(-time.Minute).UnixMilli(), Owner: model.QuotaCooldownOwnerXAIFreeUsage, EventHash: "manual", PreDisabledState: true, DisabledAtMS: now.Add(-25 * time.Hour).UnixMilli()},
+		{AuthFileName: "inspection-owned.json", AuthIndex: "inspection-owned.json", Provider: "codex", RecoverAtMS: now.Add(-time.Minute).UnixMilli(), Owner: model.QuotaCooldownOwnerCodexInspection, EventHash: "inspection", PreDisabledState: false, DisabledAtMS: now.Add(-6 * time.Hour).UnixMilli()},
 	} {
 		if _, err := st.UpsertQuotaCooldown(ctx, cooldown); err != nil {
 			t.Fatalf("upsert cooldown: %v", err)
@@ -545,6 +547,9 @@ func TestRateLimitAutoDisableWorkerRecoversXAICooldownWithoutTouchingManualDisab
 	}
 	if !states["xai-manual.json"].disabled || states["xai-manual.json"].patches != 0 {
 		t.Fatalf("manual state = %#v, want untouched disabled", states["xai-manual.json"])
+	}
+	if states["inspection-owned.json"].disabled || states["inspection-owned.json"].patches != 1 {
+		t.Fatalf("inspection-owned state = %#v, want enabled once", states["inspection-owned.json"])
 	}
 }
 

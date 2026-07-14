@@ -234,7 +234,21 @@ export interface CodexInspectionQuotaWindow {
   labelParams?: Record<string, string | number>;
   usedPercent?: number | null;
   resetLabel?: string;
+  resetAtMs?: number | null;
+  cooldownRecommended?: boolean;
   limitWindowSeconds?: number | null;
+}
+
+export interface CodexInspectionCooldownDisableRequest {
+  fileName: string;
+  authIndex?: string | null;
+  displayAccount?: string;
+  recoverAtMs: number;
+}
+
+export interface CodexInspectionCooldownDisableResponse {
+  ok: boolean;
+  recoverAtMs: number;
 }
 
 export interface CodexInspectionResult {
@@ -1599,6 +1613,28 @@ export const usageServiceApi = {
         { resultIds },
         {
           timeout: CODEX_INSPECTION_RUN_TIMEOUT_MS,
+          headers: authHeaders(managementKey),
+        }
+      );
+      return response.data;
+    });
+  },
+
+  disableCodexInspectionUntilReset: async (
+    base: string,
+    managementKey: string | undefined,
+    request: CodexInspectionCooldownDisableRequest
+  ): Promise<CodexInspectionCooldownDisableResponse> => {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      return { ok: true, recoverAtMs: request.recoverAtMs };
+    }
+
+    return withUsageServiceError(async () => {
+      const response = await axios.post<CodexInspectionCooldownDisableResponse>(
+        buildUrl(base, '/v0/management/codex-inspection/cooldown-disable'),
+        request,
+        {
+          timeout: USAGE_SERVICE_TIMEOUT_MS,
           headers: authHeaders(managementKey),
         }
       );

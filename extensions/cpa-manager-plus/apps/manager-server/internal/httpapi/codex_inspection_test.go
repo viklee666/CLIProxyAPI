@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
@@ -142,6 +143,55 @@ func TestCodexInspectionManualActionsRoute(t *testing.T) {
 		actionResult.Detail.Results[0].ExecutedAction != "enable" ||
 		actionResult.Detail.Results[0].Disabled {
 		t.Fatalf("updated results = %#v", actionResult.Detail.Results)
+	}
+}
+
+func TestCodexInspectionCooldownDisableRoute(t *testing.T) {
+	var patchedDisabled bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v0/management/auth-files" && r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(`{"files":[{"name":"auth-a.json","auth_index":"auth-1","provider":"codex","account":"alice@example.com","disabled":false}]}`))
+		case r.URL.Path == "/v0/management/auth-files/status" && r.Method == http.MethodPatch:
+			var payload struct {
+				Name     string `json:"name"`
+				Disabled bool   `json:"disabled"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode patch payload: %v", err)
+			}
+			if payload.Name != "auth-a.json" {
+				t.Fatalf("patch file = %q", payload.Name)
+			}
+			patchedDisabled = payload.Disabled
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	cfg := testutil.NewConfig(t)
+	handler, db := newCompatHandler(t, cfg, nil)
+	if err := db.SaveManagerConfig(context.Background(), newCodexInspectionHTTPManagerConfig(upstream.URL)); err != nil {
+		t.Fatalf("save manager config: %v", err)
+	}
+	recoverAtMS := time.Now().Add(time.Hour).UnixMilli()
+	body := `{"fileName":"auth-a.json","authIndex":"auth-1","displayAccount":"alice@example.com","recoverAtMs":` + strconv.FormatInt(recoverAtMS, 10) + `}`
+	rr := testutil.Request(t, handler, http.MethodPost, "/v0/management/codex-inspection/cooldown-disable", body, testutil.AdminKey)
+	testutil.RequireStatus(t, rr, http.StatusOK)
+	if !patchedDisabled {
+		t.Fatal("cooldown route did not disable auth file")
+	}
+	active, err := db.QuotaCooldowns.ListActive(context.Background())
+	if err != nil {
+		t.Fatalf("list cooldowns: %v", err)
+	}
+	if len(active) != 1 ||
+		active[0].Owner != model.QuotaCooldownOwnerCodexInspection ||
+		active[0].RecoverAtMS != recoverAtMS ||
+		active[0].AuthIndex != "auth-1" {
+		t.Fatalf("active cooldown = %#v", active)
 	}
 }
 
