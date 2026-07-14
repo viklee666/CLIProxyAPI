@@ -28,6 +28,7 @@ import (
 	managementHandlers "github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/management"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/middleware"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/clientaccess"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
@@ -84,6 +85,7 @@ type serverOptionConfig struct {
 	postAuthPersistHook   auth.PostAuthHook
 	pluginHost            *pluginhost.Host
 	configReloadHook      func(context.Context, *config.Config)
+	clientAccessService   *clientaccess.Service
 	exampleAPIKeySafeMode bool
 }
 
@@ -181,6 +183,13 @@ func WithPluginHost(host *pluginhost.Host) ServerOption {
 func WithConfigReloadHook(hook func(context.Context, *config.Config)) ServerOption {
 	return func(cfg *serverOptionConfig) {
 		cfg.configReloadHook = hook
+	}
+}
+
+// WithClientAccessService attaches the persistent client key and group service.
+func WithClientAccessService(service *clientaccess.Service) ServerOption {
+	return func(cfg *serverOptionConfig) {
+		cfg.clientAccessService = service
 	}
 }
 
@@ -357,6 +366,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	applySignatureCacheConfig(nil, cfg)
 	// Initialize management handler
 	s.mgmt = managementHandlers.NewHandler(cfg, configFilePath, authManager)
+	s.mgmt.SetClientAccessService(optionState.clientAccessService)
 	s.mgmt.SetPluginHost(optionState.pluginHost)
 	s.mgmt.SetConfigReloadHook(optionState.configReloadHook)
 	if optionState.localPassword != "" {
@@ -839,6 +849,19 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.DELETE("/api-keys", s.mgmt.DeleteAPIKeys)
 		mgmt.GET("/api-key-usage", s.mgmt.GetAPIKeyUsage)
 		mgmt.GET("/usage-queue", s.mgmt.GetUsageQueue)
+
+		mgmt.GET("/client-access/groups", s.mgmt.ListClientAccessGroups)
+		mgmt.POST("/client-access/groups", s.mgmt.CreateClientAccessGroup)
+		mgmt.GET("/client-access/groups/:id", s.mgmt.GetClientAccessGroup)
+		mgmt.PATCH("/client-access/groups/:id", s.mgmt.UpdateClientAccessGroup)
+		mgmt.DELETE("/client-access/groups/:id", s.mgmt.DeleteClientAccessGroup)
+		mgmt.GET("/client-access/keys", s.mgmt.ListClientAccessKeys)
+		mgmt.POST("/client-access/keys", s.mgmt.CreateClientAccessKey)
+		mgmt.GET("/client-access/keys/:id", s.mgmt.GetClientAccessKey)
+		mgmt.PATCH("/client-access/keys/:id", s.mgmt.UpdateClientAccessKey)
+		mgmt.DELETE("/client-access/keys/:id", s.mgmt.DeleteClientAccessKey)
+		mgmt.GET("/client-access/credential-bindings", s.mgmt.ListClientAccessCredentialBindings)
+		mgmt.PUT("/client-access/credential-bindings", s.mgmt.ReplaceClientAccessCredentialBindings)
 
 		mgmt.GET("/gemini-api-key", s.mgmt.GetGeminiKeys)
 		mgmt.PUT("/gemini-api-key", s.mgmt.PutGeminiKeys)
@@ -1974,6 +1997,9 @@ func AuthMiddleware(manager *sdkaccess.Manager) gin.HandlerFunc {
 		result, err := manager.Authenticate(c.Request.Context(), c.Request)
 		if err == nil {
 			if result != nil {
+				if result.Release != nil {
+					defer result.Release()
+				}
 				c.Set("userApiKey", result.Principal)
 				c.Set("accessProvider", result.Provider)
 				if len(result.Metadata) > 0 {

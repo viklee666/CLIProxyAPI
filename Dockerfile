@@ -63,6 +63,8 @@ ENV HTTP_ADDR=127.0.0.1:18317
 ENV CPA_UPSTREAM_URL=http://127.0.0.1:8317
 ENV USAGE_DATA_DIR=/data
 ENV USAGE_DB_PATH=/data/usage.sqlite
+ENV CLIENT_ACCESS_ENABLED=true
+ENV CLIENT_ACCESS_DB_PATH=/data/client-access.sqlite
 
 RUN chmod +x /CLIProxyAPI/entrypoint.sh && \
     cp /usr/share/zoneinfo/${TZ} /etc/localtime && echo "${TZ}" > /etc/timezone

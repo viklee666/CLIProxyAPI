@@ -41,6 +41,12 @@ api-keys:
   - "your-api-key-2"
   - "your-api-key-3"
 
+# Persistent advanced client keys and credential groups. Legacy api-keys remain supported.
+# A restart is required after changing enabled or database-path.
+client-access:
+  enabled: false
+  database-path: "data/client-access.sqlite"
+
 # Enable debug logging
 debug: false
 

@@ -121,6 +121,12 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.Routing.Strategy != newCfg.Routing.Strategy {
 		changes = append(changes, fmt.Sprintf("routing.strategy: %s -> %s", oldCfg.Routing.Strategy, newCfg.Routing.Strategy))
 	}
+	if oldCfg.ClientAccess.Enabled != newCfg.ClientAccess.Enabled {
+		changes = append(changes, fmt.Sprintf("client-access.enabled: %t -> %t", oldCfg.ClientAccess.Enabled, newCfg.ClientAccess.Enabled))
+	}
+	if strings.TrimSpace(oldCfg.ClientAccess.DatabasePath) != strings.TrimSpace(newCfg.ClientAccess.DatabasePath) {
+		changes = append(changes, "client-access.database-path: updated")
+	}
 	if !reflect.DeepEqual(oldCfg.Payload, newCfg.Payload) {
 		changes = appendPayloadConfigChanges(changes, oldCfg.Payload, newCfg.Payload)
 	}

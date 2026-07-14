@@ -11,6 +11,7 @@ import (
 
 	configaccess "github.com/router-for-me/CLIProxyAPI/v7/internal/access/config_access"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/clientaccess"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
@@ -224,6 +225,18 @@ func (b *Builder) Build() (*Service, error) {
 	}
 	accessManager.SetProviders(sdkaccess.RegisteredProviders())
 
+	var clientAccessService *clientaccess.Service
+	if clientaccess.Enabled(b.cfg.ClientAccess.Enabled) {
+		clientAccessPath := clientaccess.ResolveDatabasePath(b.configPath, b.cfg.ClientAccess.DatabasePath)
+		var errClientAccess error
+		clientAccessService, errClientAccess = clientaccess.New(clientAccessPath)
+		if errClientAccess != nil {
+			return nil, fmt.Errorf("cliproxy: initialize client access: %w", errClientAccess)
+		}
+		sdkaccess.RegisterProvider(clientaccess.ProviderType, clientAccessService)
+		accessManager.SetProviders(sdkaccess.RegisteredProviders())
+	}
+
 	coreManager := b.coreManager
 	if coreManager == nil {
 		tokenStore := sdkAuth.GetTokenStore()
@@ -266,6 +279,9 @@ func (b *Builder) Build() (*Service, error) {
 	coreManager.SetRoundTripperProvider(newDefaultRoundTripperProvider())
 	coreManager.SetConfig(b.cfg)
 	coreManager.SetOAuthModelAlias(b.cfg.OAuthModelAlias)
+	if clientAccessService != nil {
+		coreManager.SetCredentialGroupResolver(clientAccessService)
+	}
 	if pluginHost != nil {
 		coreManager.SetPluginScheduler(pluginHost)
 	}
@@ -281,6 +297,7 @@ func (b *Builder) Build() (*Service, error) {
 		accessManager:  accessManager,
 		coreManager:    coreManager,
 		pluginHost:     pluginHost,
+		clientAccess:   clientAccessService,
 		serverOptions:  append([]api.ServerOption(nil), b.serverOptions...),
 	}
 	if b.postAuthHook != nil {
@@ -293,6 +310,9 @@ func (b *Builder) Build() (*Service, error) {
 			service.reloadConfigFromWatcher()
 		}),
 	)
+	if clientAccessService != nil {
+		service.serverOptions = append(service.serverOptions, api.WithClientAccessService(clientAccessService))
+	}
 	return service, nil
 }
 

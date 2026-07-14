@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -287,6 +288,7 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	// Only include it if the client explicitly provides it.
 	key := ""
 	requestPath := ""
+	meta := make(map[string]any)
 	if ctx != nil {
 		if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
 			key = strings.TrimSpace(ginCtx.GetHeader("Idempotency-Key"))
@@ -294,10 +296,31 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 			if requestPath == "" && ginCtx.Request.URL != nil {
 				requestPath = strings.TrimSpace(ginCtx.Request.URL.Path)
 			}
+			if rawAccessMetadata, exists := ginCtx.Get("accessMetadata"); exists {
+				if accessMetadata, okMetadata := rawAccessMetadata.(map[string]string); okMetadata {
+					for _, metadataKey := range []string{
+						coreexecutor.ClientKeyIDMetadataKey,
+						coreexecutor.ClientGroupIDsMetadataKey,
+						coreexecutor.ClientAllowAllGroupsMetadataKey,
+						coreexecutor.ClientAllowUngroupedMetadataKey,
+					} {
+						value := strings.TrimSpace(accessMetadata[metadataKey])
+						if value == "" {
+							continue
+						}
+						if metadataKey == coreexecutor.ClientAllowAllGroupsMetadataKey || metadataKey == coreexecutor.ClientAllowUngroupedMetadataKey {
+							if parsed, errParse := strconv.ParseBool(value); errParse == nil {
+								meta[metadataKey] = parsed
+								continue
+							}
+						}
+						meta[metadataKey] = value
+					}
+				}
+			}
 		}
 	}
 
-	meta := make(map[string]any)
 	if key != "" {
 		meta[idempotencyKeyMetadataKey] = key
 	}

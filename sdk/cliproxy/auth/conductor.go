@@ -178,6 +178,11 @@ type Selector interface {
 	Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error)
 }
 
+// CredentialGroupResolver applies request-scoped client group access to credentials.
+type CredentialGroupResolver interface {
+	ResolveCredentialAccess(authIndex string, allowedGroupIDs []int64, allowAllGroups, allowUngrouped bool) (allowed bool, priority int, priorityOverride bool)
+}
+
 type PluginScheduler interface {
 	PickAuth(context.Context, pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, bool, error)
 }
@@ -227,6 +232,9 @@ type Manager struct {
 	scheduler     *authScheduler
 	// pluginScheduler runs outside m.mu before falling back to native selection.
 	pluginScheduler PluginScheduler
+
+	credentialGroupResolverMu sync.RWMutex
+	credentialGroupResolver   CredentialGroupResolver
 	// homeRuntimeAuths caches auths returned by Home so websocket sessions can
 	// reuse an established upstream credential without dispatching every turn.
 	homeRuntimeAuths map[string]map[string]*Auth
@@ -297,6 +305,134 @@ func (m *Manager) SetPluginScheduler(scheduler PluginScheduler) {
 	m.mu.Lock()
 	m.pluginScheduler = scheduler
 	m.mu.Unlock()
+}
+
+func (m *Manager) SetCredentialGroupResolver(resolver CredentialGroupResolver) {
+	if m == nil {
+		return
+	}
+	m.credentialGroupResolverMu.Lock()
+	m.credentialGroupResolver = resolver
+	m.credentialGroupResolverMu.Unlock()
+}
+
+type clientCredentialAccess struct {
+	active         bool
+	allowAll       bool
+	allowUngrouped bool
+	groupIDs       []int64
+}
+
+func clientCredentialAccessFromMetadata(metadata map[string]any) clientCredentialAccess {
+	if len(metadata) == 0 || strings.TrimSpace(contextStringValue(metadata[cliproxyexecutor.ClientKeyIDMetadataKey])) == "" {
+		return clientCredentialAccess{}
+	}
+	access := clientCredentialAccess{
+		active:         true,
+		allowAll:       contextBoolValue(metadata[cliproxyexecutor.ClientAllowAllGroupsMetadataKey]),
+		allowUngrouped: contextBoolValue(metadata[cliproxyexecutor.ClientAllowUngroupedMetadataKey]),
+	}
+	access.groupIDs = contextInt64Slice(metadata[cliproxyexecutor.ClientGroupIDsMetadataKey])
+	return access
+}
+
+func contextBoolValue(raw any) bool {
+	switch value := raw.(type) {
+	case bool:
+		return value
+	case string:
+		parsed, errParse := strconv.ParseBool(strings.TrimSpace(value))
+		return errParse == nil && parsed
+	default:
+		return false
+	}
+}
+
+func contextInt64Slice(raw any) []int64 {
+	appendValue := func(out []int64, value int64) []int64 {
+		if value <= 0 {
+			return out
+		}
+		for _, current := range out {
+			if current == value {
+				return out
+			}
+		}
+		return append(out, value)
+	}
+	values := make([]int64, 0)
+	switch typed := raw.(type) {
+	case string:
+		for _, part := range strings.Split(typed, ",") {
+			if parsed, errParse := strconv.ParseInt(strings.TrimSpace(part), 10, 64); errParse == nil {
+				values = appendValue(values, parsed)
+			}
+		}
+	case []int64:
+		for _, value := range typed {
+			values = appendValue(values, value)
+		}
+	case []int:
+		for _, value := range typed {
+			values = appendValue(values, int64(value))
+		}
+	case []any:
+		for _, value := range typed {
+			switch item := value.(type) {
+			case int64:
+				values = appendValue(values, item)
+			case int:
+				values = appendValue(values, int64(item))
+			case float64:
+				values = appendValue(values, int64(item))
+			case string:
+				if parsed, errParse := strconv.ParseInt(strings.TrimSpace(item), 10, 64); errParse == nil {
+					values = appendValue(values, parsed)
+				}
+			}
+		}
+	}
+	return values
+}
+
+func (m *Manager) credentialGroupFilteringRequired(metadata map[string]any) bool {
+	access := clientCredentialAccessFromMetadata(metadata)
+	if !access.active || access.allowAll {
+		return false
+	}
+	m.credentialGroupResolverMu.RLock()
+	resolver := m.credentialGroupResolver
+	m.credentialGroupResolverMu.RUnlock()
+	return resolver != nil
+}
+
+func (m *Manager) credentialGroupCandidate(candidate *Auth, metadata map[string]any) (*Auth, bool) {
+	if candidate == nil {
+		return nil, false
+	}
+	access := clientCredentialAccessFromMetadata(metadata)
+	if !access.active || access.allowAll {
+		return candidate, true
+	}
+	m.credentialGroupResolverMu.RLock()
+	resolver := m.credentialGroupResolver
+	m.credentialGroupResolverMu.RUnlock()
+	if resolver == nil {
+		return candidate, true
+	}
+	allowed, priority, override := resolver.ResolveCredentialAccess(candidate.Index, access.groupIDs, access.allowAll, access.allowUngrouped)
+	if !allowed {
+		return nil, false
+	}
+	if !override {
+		return candidate, true
+	}
+	copyAuth := candidate.Clone()
+	if copyAuth.Attributes == nil {
+		copyAuth.Attributes = make(map[string]string)
+	}
+	copyAuth.Attributes["priority"] = strconv.Itoa(priority)
+	return copyAuth, true
 }
 
 func (m *Manager) hasPluginScheduler() bool {
@@ -4568,6 +4704,10 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		if candidate == nil || executorKeyFromAuth(candidate) != provider || candidate.Disabled {
 			continue
 		}
+		candidate, allowedByGroup := m.credentialGroupCandidate(candidate, opts.Metadata)
+		if !allowedByGroup {
+			continue
+		}
 		if pinnedAuthID != "" && candidate.ID != pinnedAuthID {
 			continue
 		}
@@ -4633,6 +4773,9 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 	if m.HomeEnabled() {
 		auth, exec, _, err := m.pickNextViaHome(ctx, model, opts, tried)
 		return auth, exec, err
+	}
+	if m.credentialGroupFilteringRequired(opts.Metadata) {
+		return m.pickNextLegacy(ctx, provider, model, opts, tried)
 	}
 
 	if m.hasPluginScheduler() || !m.useSchedulerFastPath() {
@@ -4728,6 +4871,10 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		if candidate == nil || candidate.Disabled {
 			continue
 		}
+		candidate, allowedByGroup := m.credentialGroupCandidate(candidate, opts.Metadata)
+		if !allowedByGroup {
+			continue
+		}
 		if pinnedAuthID != "" && candidate.ID != pinnedAuthID {
 			continue
 		}
@@ -4797,6 +4944,9 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, string, error) {
 	if m.HomeEnabled() {
 		return m.pickNextViaHome(ctx, model, opts, tried)
+	}
+	if m.credentialGroupFilteringRequired(opts.Metadata) {
+		return m.pickNextMixedLegacy(ctx, providers, model, opts, tried)
 	}
 
 	if m.hasPluginScheduler() || !m.useSchedulerFastPath() {

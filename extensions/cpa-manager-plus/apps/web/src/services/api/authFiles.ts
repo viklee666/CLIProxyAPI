@@ -365,7 +365,7 @@ const dedupeAuthFilesResponse = (payload: AuthFilesResponse): AuthFilesResponse 
   return {
     ...payload,
     files: normalizedFiles,
-    total: normalizedFiles.length,
+    total: typeof payload.total === 'number' ? payload.total : normalizedFiles.length,
   };
 };
 

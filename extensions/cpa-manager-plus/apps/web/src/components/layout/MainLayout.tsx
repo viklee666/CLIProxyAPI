@@ -14,6 +14,8 @@ import { PageTransition } from '@/components/common/PageTransition';
 import { MainRoutes } from '@/router/MainRoutes';
 import {
   IconGithub,
+  IconKey,
+  IconModelCluster,
   IconSidebarAuthFiles,
   IconSidebarConfig,
   IconSidebarDashboard,
@@ -69,6 +71,8 @@ const sidebarIcons: Record<string, ReactNode> = {
   config: <IconSidebarConfig size={SIDEBAR_ICON_SIZE} />,
   logs: <IconSidebarLogs size={SIDEBAR_ICON_SIZE} />,
   system: <IconSidebarSystem size={SIDEBAR_ICON_SIZE} />,
+  clientGroups: <IconModelCluster size={SIDEBAR_ICON_SIZE} />,
+  clientKeys: <IconKey size={SIDEBAR_ICON_SIZE} />,
 };
 
 // Header action icons - smaller size for header buttons
@@ -598,6 +602,18 @@ export function MainLayout({ routeBase = '', demoMode = false }: MainLayoutProps
         label: t('nav.quota_management'),
         shortLabel: navShortLabel('nav.quota_management', t('nav.quota_management')),
         icon: sidebarIcons.quota,
+      },
+      {
+        path: '/client-groups',
+        label: t('nav.client_groups'),
+        shortLabel: navShortLabel('nav.client_groups', t('nav.client_groups')),
+        icon: sidebarIcons.clientGroups,
+      },
+      {
+        path: '/client-keys',
+        label: t('nav.client_keys'),
+        shortLabel: navShortLabel('nav.client_keys', t('nav.client_keys')),
+        icon: sidebarIcons.clientKeys,
       },
       {
         path: '/codex-inspection',

@@ -33,6 +33,8 @@ import { LogsPage } from '@/pages/LogsPage';
 import { PluginResourcePage } from '@/pages/PluginResourcePage';
 import { PluginsPage } from '@/pages/PluginsPage';
 import { SystemPage } from '@/pages/SystemPage';
+import { ClientGroupsPage } from '@/pages/ClientGroupsPage';
+import { ClientKeysPage } from '@/pages/ClientKeysPage';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 import { CodexInspectionModeTabs } from '@/features/monitoring/components/CodexInspectionModeTabs';
 import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
@@ -153,7 +155,9 @@ const mainRoutes: RouteObject[] = [
   { path: '/', element: <DashboardPage /> },
   { path: '/dashboard', element: <DashboardPage /> },
   { path: '/settings', element: <Navigate to="/config" replace /> },
-  { path: '/api-keys', element: <Navigate to="/config" replace /> },
+  { path: '/api-keys', element: <Navigate to="/client-keys" replace /> },
+  { path: '/client-groups', element: <ClientGroupsPage /> },
+  { path: '/client-keys', element: <ClientKeysPage /> },
   { path: '/ai-providers/gemini/new', element: <AiProvidersGeminiEditPage /> },
   { path: '/ai-providers/gemini/:index', element: <AiProvidersGeminiEditPage /> },
   { path: '/ai-providers/codex/new', element: <AiProvidersCodexEditPage /> },

@@ -15,6 +15,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/buildinfo"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/clientaccess"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginstore"
@@ -60,6 +61,7 @@ type Handler struct {
 	pluginStoreHTTPClient   pluginstore.HTTPDoer
 	pluginReleaseCacheMu    sync.Mutex
 	pluginReleaseCache      map[string]pluginReleaseCacheEntry
+	clientAccess            *clientaccess.Service
 }
 
 type configReloadSnapshot struct {
@@ -137,6 +139,15 @@ func (h *Handler) SetAuthManager(manager *coreauth.Manager) {
 	}
 	h.mu.Lock()
 	h.authManager = manager
+	h.mu.Unlock()
+}
+
+func (h *Handler) SetClientAccessService(service *clientaccess.Service) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.clientAccess = service
 	h.mu.Unlock()
 }
 

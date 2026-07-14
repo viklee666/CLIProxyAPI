@@ -29,6 +29,9 @@ const (
 // Config represents the application's configuration, loaded from a YAML file.
 type Config struct {
 	SDKConfig `yaml:",inline"`
+
+	// ClientAccess configures persistent advanced client API keys and credential groups.
+	ClientAccess ClientAccessConfig `yaml:"client-access" json:"client-access"`
 	// Host is the network host/interface on which the API server will bind.
 	// Default is empty ("") to bind all interfaces (IPv4 + IPv6). Use "127.0.0.1" or "localhost" for local-only access.
 	Host string `yaml:"host" json:"-"`
@@ -170,6 +173,13 @@ type Config struct {
 
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
+}
+
+type ClientAccessConfig struct {
+	// Enabled activates the persistent client access provider and management API.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// DatabasePath stores advanced keys, groups, bindings, and quota counters.
+	DatabasePath string `yaml:"database-path,omitempty" json:"database-path,omitempty"`
 }
 
 // PluginsConfig holds dynamic plugin system settings.

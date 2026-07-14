@@ -14,6 +14,8 @@ const (
 	AuthErrorCodeInvalidCredential AuthErrorCode = "invalid_credential"
 	AuthErrorCodeNotHandled        AuthErrorCode = "not_handled"
 	AuthErrorCodeInternal          AuthErrorCode = "internal_error"
+	AuthErrorCodeAccessDenied      AuthErrorCode = "access_denied"
+	AuthErrorCodeRateLimited       AuthErrorCode = "rate_limited"
 )
 
 // AuthError carries authentication failure details and HTTP status.
@@ -80,6 +82,22 @@ func NewInternalAuthError(message string, cause error) *AuthError {
 		normalizedMessage = "Authentication service error"
 	}
 	return newAuthError(AuthErrorCodeInternal, normalizedMessage, http.StatusInternalServerError, cause)
+}
+
+func NewAccessDeniedError(message string) *AuthError {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		message = "API key access denied"
+	}
+	return newAuthError(AuthErrorCodeAccessDenied, message, http.StatusForbidden, nil)
+}
+
+func NewRateLimitedError(message string) *AuthError {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		message = "API key rate limit exceeded"
+	}
+	return newAuthError(AuthErrorCodeRateLimited, message, http.StatusTooManyRequests, nil)
 }
 
 func IsAuthErrorCode(authErr *AuthError, code AuthErrorCode) bool {

@@ -28,6 +28,17 @@ const ReasoningEffortMetadataKey = "reasoning_effort"
 const ServiceTierMetadataKey = "service_tier"
 
 const (
+	// ClientKeyIDMetadataKey identifies a persistent advanced client key.
+	ClientKeyIDMetadataKey = "client_key_id"
+	// ClientGroupIDsMetadataKey carries the credential groups allowed for this request.
+	ClientGroupIDsMetadataKey = "client_group_ids"
+	// ClientAllowAllGroupsMetadataKey bypasses credential group filtering.
+	ClientAllowAllGroupsMetadataKey = "client_allow_all_groups"
+	// ClientAllowUngroupedMetadataKey permits credentials without group bindings.
+	ClientAllowUngroupedMetadataKey = "client_allow_ungrouped"
+)
+
+const (
 	// PinnedAuthMetadataKey locks execution to a specific auth ID.
 	PinnedAuthMetadataKey = "pinned_auth_id"
 	// SelectedAuthMetadataKey stores the auth ID selected by the scheduler.

@@ -18,6 +18,8 @@ type Result struct {
 	Provider  string
 	Principal string
 	Metadata  map[string]string
+	// Release frees request-scoped resources acquired during authentication.
+	Release func()
 }
 
 var (

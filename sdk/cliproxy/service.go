@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/clientaccess"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/homeplugins"
@@ -98,6 +99,8 @@ type Service struct {
 
 	// pluginHost owns dynamic plugin lifecycle and runtime capability adapters.
 	pluginHost *pluginhost.Host
+
+	clientAccess *clientaccess.Service
 
 	// shutdownOnce ensures shutdown is called only once.
 	shutdownOnce sync.Once
@@ -1858,6 +1861,17 @@ func (s *Service) Shutdown(ctx context.Context) error {
 					shutdownErr = err
 				}
 			}
+		}
+
+		if s.clientAccess != nil {
+			sdkaccess.UnregisterProvider(clientaccess.ProviderType)
+			if errClose := s.clientAccess.Close(); errClose != nil {
+				log.Errorf("failed to close client access database: %v", errClose)
+				if shutdownErr == nil {
+					shutdownErr = errClose
+				}
+			}
+			s.clientAccess = nil
 		}
 
 		if s.pluginHost != nil {
