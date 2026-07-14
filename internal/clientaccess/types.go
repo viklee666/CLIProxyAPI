@@ -13,6 +13,7 @@ const (
 	MetadataKeyGroupIDs       = "client_group_ids"
 	MetadataKeyAllowAllGroups = "client_allow_all_groups"
 	MetadataKeyAllowUngrouped = "client_allow_ungrouped"
+	MetadataKeyReservationID  = "client_reservation_id"
 )
 
 type Group struct {
@@ -52,6 +53,7 @@ type Key struct {
 	RequestWindow7dAt  *time.Time `json:"request_window_7d_at,omitempty"`
 	TokenLimitTotal    int64      `json:"token_limit_total"`
 	TokenUsedTotal     int64      `json:"token_used_total"`
+	TokenReserved      int64      `json:"token_reserved"`
 	TokenLimit5h       int64      `json:"token_limit_5h"`
 	TokenUsed5h        int64      `json:"token_used_5h"`
 	TokenWindow5hAt    *time.Time `json:"token_window_5h_at,omitempty"`
@@ -155,4 +157,20 @@ type Page[T any] struct {
 	Total    int64 `json:"total"`
 	Page     int   `json:"page"`
 	PageSize int   `json:"page_size"`
+}
+
+// QuotaExceededError describes the first persistent quota that blocked a request.
+type QuotaExceededError struct {
+	Resource string
+	Window   string
+	Limit    int64
+	Used     int64
+	ResetAt  *time.Time
+}
+
+func (e *QuotaExceededError) Error() string {
+	if e == nil {
+		return "quota exceeded"
+	}
+	return e.Resource + " " + e.Window + " quota exceeded"
 }

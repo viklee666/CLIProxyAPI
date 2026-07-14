@@ -230,7 +230,18 @@
     "assign_credentials": "批次分配憑證",
     "search_credentials": "搜尋憑證名稱、提供者或 auth_index",
     "bindings_saved": "憑證分組已儲存",
-    "ungrouped": "未分組"
+    "ungrouped": "未分組",
+    "request_quota": "請求額度",
+    "token_quota": "Token 額度",
+    "request_limits": "請求額度（0 表示不限）",
+    "token_limits": "Token 額度（0 表示不限）",
+    "total": "總量",
+    "reset_requests": "重設請求用量",
+    "reset_tokens": "重設 Token 用量",
+    "reset_requests_short": "重設請求",
+    "reset_tokens_short": "重設 Token",
+    "reset_usage_confirm": "確定重設 {{name}} 的持久化用量？",
+    "usage_reset": "用量已重設"
   },
   "account_actions": {
     "eyebrow": "帳號異常",

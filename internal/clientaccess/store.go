@@ -8,13 +8,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
 
 type Store struct {
-	db *sql.DB
+	db      *sql.DB
+	quotaMu sync.Mutex
 }
 
 func Open(path string) (*Store, error) {
@@ -116,9 +118,19 @@ func (s *Store) migrate(ctx context.Context) error {
 			created_at_ms INTEGER NOT NULL,
 			PRIMARY KEY (auth_index, group_id)
 		)`,
+		`CREATE TABLE IF NOT EXISTS client_access_token_reservations (
+			id TEXT PRIMARY KEY,
+			key_id INTEGER NOT NULL REFERENCES client_access_keys(id) ON DELETE CASCADE,
+			reserved_tokens INTEGER NOT NULL DEFAULT 0,
+			settled INTEGER NOT NULL DEFAULT 0,
+			created_at_ms INTEGER NOT NULL,
+			updated_at_ms INTEGER NOT NULL,
+			expires_at_ms INTEGER NOT NULL
+		)`,
 		`CREATE INDEX IF NOT EXISTS idx_client_access_keys_enabled ON client_access_keys(enabled)`,
 		`CREATE INDEX IF NOT EXISTS idx_client_access_key_groups_group ON client_access_key_groups(group_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_client_access_credential_groups_group ON client_access_credential_groups(group_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_client_access_token_reservations_key ON client_access_token_reservations(key_id, settled, expires_at_ms)`,
 	}
 	for _, statement := range statements {
 		if _, errExec := s.db.ExecContext(ctx, statement); errExec != nil {
@@ -430,6 +442,12 @@ func (s *Store) GetKey(ctx context.Context, id int64) (Key, error) {
 		return Key{}, errGroups
 	}
 	item.GroupIDs = ids
+	normalizeExpiredKeyUsage(&item, time.Now().UTC())
+	reserved, errReserved := s.ReservedTokens(ctx, item.ID, time.Now())
+	if errReserved != nil {
+		return Key{}, errReserved
+	}
+	item.TokenReserved = reserved
 	return item, nil
 }
 
@@ -455,6 +473,7 @@ func (s *Store) ListAllStoredKeys(ctx context.Context) ([]storedKey, error) {
 			return nil, errGroups
 		}
 		item.GroupIDs = ids
+		normalizeExpiredKeyUsage(&item, time.Now().UTC())
 		items = append(items, storedKey{Key: item, Hash: hash})
 	}
 	return items, rows.Err()
@@ -494,6 +513,11 @@ func (s *Store) ListKeys(ctx context.Context, opts ListOptions) (Page[Key], erro
 			return Page[Key]{}, errGroups
 		}
 		item.GroupIDs = ids
+		reserved, errReserved := s.ReservedTokens(ctx, item.ID, time.Now())
+		if errReserved != nil {
+			return Page[Key]{}, errReserved
+		}
+		item.TokenReserved = reserved
 		items = append(items, item)
 	}
 	if errRows := rows.Err(); errRows != nil {
@@ -503,6 +527,8 @@ func (s *Store) ListKeys(ctx context.Context, opts ListOptions) (Page[Key], erro
 }
 
 func (s *Store) UpdateKey(ctx context.Context, id int64, input KeyUpdate) (Key, error) {
+	s.quotaMu.Lock()
+	defer s.quotaMu.Unlock()
 	current, errGet := s.GetKey(ctx, id)
 	if errGet != nil {
 		return Key{}, errGet
@@ -562,6 +588,9 @@ func (s *Store) UpdateKey(ctx context.Context, id int64, input KeyUpdate) (Key, 
 	tokenReset := ""
 	if input.ResetTokenUsage {
 		tokenReset = `, token_used_total = 0, token_used_5h = 0, token_window_5h_ms = NULL, token_used_1d = 0, token_window_1d_ms = NULL, token_used_7d = 0, token_window_7d_ms = NULL`
+		if _, errDeleteReservations := tx.ExecContext(ctx, `DELETE FROM client_access_token_reservations WHERE key_id = ?`, id); errDeleteReservations != nil {
+			return Key{}, fmt.Errorf("reset token reservations: %w", errDeleteReservations)
+		}
 	}
 	_, errExec := tx.ExecContext(ctx, `UPDATE client_access_keys SET name = ?, enabled = ?, allow_all_groups = ?, allow_ungrouped = ?, expires_at_ms = ?, rpm_limit = ?, concurrency_limit = ?,
 		request_limit_total = ?, request_limit_5h = ?, request_limit_1d = ?, request_limit_7d = ?,
@@ -584,6 +613,8 @@ func (s *Store) UpdateKey(ctx context.Context, id int64, input KeyUpdate) (Key, 
 }
 
 func (s *Store) DeleteKey(ctx context.Context, id int64) error {
+	s.quotaMu.Lock()
+	defer s.quotaMu.Unlock()
 	result, errExec := s.db.ExecContext(ctx, `DELETE FROM client_access_keys WHERE id = ?`, id)
 	if errExec != nil {
 		return errExec

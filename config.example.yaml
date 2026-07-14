@@ -42,10 +42,11 @@ api-keys:
   - "your-api-key-3"
 
 # Persistent advanced client keys and credential groups. Legacy api-keys remain supported.
-# A restart is required after changing enabled or database-path.
+# A restart is required after changing enabled, database-path, or token-reservation.
 client-access:
   enabled: false
   database-path: "data/client-access.sqlite"
+  token-reservation: 1024 # provisional tokens held while each request is in flight
 
 # Enable debug logging
 debug: false

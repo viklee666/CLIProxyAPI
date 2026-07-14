@@ -230,7 +230,18 @@
     "assign_credentials": "Назначить учетные данные",
     "search_credentials": "Поиск по имени, провайдеру или индексу",
     "bindings_saved": "Группы учетных данных сохранены",
-    "ungrouped": "Без группы"
+    "ungrouped": "Без группы",
+    "request_quota": "Лимит запросов",
+    "token_quota": "Лимит токенов",
+    "request_limits": "Лимиты запросов (0 = без лимита)",
+    "token_limits": "Лимиты токенов (0 = без лимита)",
+    "total": "Всего",
+    "reset_requests": "Сбросить запросы",
+    "reset_tokens": "Сбросить токены",
+    "reset_requests_short": "Сброс запросов",
+    "reset_tokens_short": "Сброс токенов",
+    "reset_usage_confirm": "Сбросить сохраненную статистику для {{name}}?",
+    "usage_reset": "Статистика сброшена"
   },
   "account_actions": {
     "eyebrow": "Проблемы аккаунтов",

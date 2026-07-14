@@ -1847,6 +1847,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 			}
 		}
 
+		usage.StopDefault()
 		if s.clientAccess != nil {
 			sdkaccess.UnregisterProvider(clientaccess.ProviderType)
 			if errClose := s.clientAccess.Close(); errClose != nil {
@@ -1876,7 +1877,6 @@ func (s *Service) Shutdown(ctx context.Context) error {
 			}
 		}
 
-		usage.StopDefault()
 	})
 	return shutdownErr
 }

@@ -22,6 +22,7 @@ services:
       USAGE_DB_PATH: /data/usage.sqlite
       CLIENT_ACCESS_ENABLED: "true"
       CLIENT_ACCESS_DB_PATH: /data/client-access.sqlite
+      CLIENT_ACCESS_TOKEN_RESERVATION: ${CLIENT_ACCESS_TOKEN_RESERVATION:-1024}
       CPA_MANAGER_DATA_KEY_PATH: /data/data.key
       USAGE_COLLECTOR_MODE: ${USAGE_COLLECTOR_MODE:-auto}
       USAGE_RESP_QUEUE: ${USAGE_RESP_QUEUE:-usage}

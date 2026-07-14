@@ -180,6 +180,8 @@ type ClientAccessConfig struct {
 	Enabled bool `yaml:"enabled" json:"enabled"`
 	// DatabasePath stores advanced keys, groups, bindings, and quota counters.
 	DatabasePath string `yaml:"database-path,omitempty" json:"database-path,omitempty"`
+	// TokenReservation is the provisional token amount held for each in-flight request.
+	TokenReservation int64 `yaml:"token-reservation,omitempty" json:"token-reservation,omitempty"`
 }
 
 // PluginsConfig holds dynamic plugin system settings.

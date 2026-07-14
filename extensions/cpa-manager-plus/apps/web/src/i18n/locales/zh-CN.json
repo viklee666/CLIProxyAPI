@@ -230,7 +230,18 @@
     "assign_credentials": "批量分配凭证",
     "search_credentials": "搜索凭证名称、提供商或 auth_index",
     "bindings_saved": "凭证分组已保存",
-    "ungrouped": "未分组"
+    "ungrouped": "未分组",
+    "request_quota": "请求额度",
+    "token_quota": "Token 额度",
+    "request_limits": "请求额度（0 表示不限）",
+    "token_limits": "Token 额度（0 表示不限）",
+    "total": "总量",
+    "reset_requests": "重置请求用量",
+    "reset_tokens": "重置 Token 用量",
+    "reset_requests_short": "重置请求",
+    "reset_tokens_short": "重置 Token",
+    "reset_usage_confirm": "确定重置 {{name}} 的持久化用量？",
+    "usage_reset": "用量已重置"
   },
   "account_actions": {
     "eyebrow": "账号异常",

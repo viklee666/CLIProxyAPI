@@ -130,6 +130,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if strings.TrimSpace(oldCfg.ClientAccess.DatabasePath) != strings.TrimSpace(newCfg.ClientAccess.DatabasePath) {
 		changes = append(changes, "client-access.database-path: updated")
 	}
+	if oldCfg.ClientAccess.TokenReservation != newCfg.ClientAccess.TokenReservation {
+		changes = append(changes, fmt.Sprintf("client-access.token-reservation: %d -> %d", oldCfg.ClientAccess.TokenReservation, newCfg.ClientAccess.TokenReservation))
+	}
 	if !reflect.DeepEqual(oldCfg.Payload, newCfg.Payload) {
 		changes = appendPayloadConfigChanges(changes, oldCfg.Payload, newCfg.Payload)
 	}

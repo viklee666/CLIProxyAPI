@@ -11,9 +11,10 @@ import (
 func TestContextWithRequestedModelAliasIncludesReasoningEffort(t *testing.T) {
 	ctx := contextWithRequestedModelAlias(context.Background(), cliproxyexecutor.Options{
 		Metadata: map[string]any{
-			cliproxyexecutor.RequestedModelMetadataKey:  "client-model",
-			cliproxyexecutor.ReasoningEffortMetadataKey: "medium",
-			cliproxyexecutor.ServiceTierMetadataKey:     "priority",
+			cliproxyexecutor.RequestedModelMetadataKey:      "client-model",
+			cliproxyexecutor.ReasoningEffortMetadataKey:     "medium",
+			cliproxyexecutor.ServiceTierMetadataKey:         "priority",
+			cliproxyexecutor.ClientReservationIDMetadataKey: "car_test",
 		},
 	}, "fallback-model")
 
@@ -26,5 +27,8 @@ func TestContextWithRequestedModelAliasIncludesReasoningEffort(t *testing.T) {
 	gotServiceTier := coreusage.ServiceTierFromContext(ctx)
 	if gotServiceTier != "priority" {
 		t.Fatalf("service tier = %q, want %q", gotServiceTier, "priority")
+	}
+	if got := coreusage.ClientReservationIDFromContext(ctx); got != "car_test" {
+		t.Fatalf("client reservation id = %q, want %q", got, "car_test")
 	}
 }

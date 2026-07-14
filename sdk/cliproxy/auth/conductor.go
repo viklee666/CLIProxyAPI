@@ -3302,6 +3302,11 @@ func contextWithRequestedModelAlias(ctx context.Context, opts cliproxyexecutor.O
 	if serviceTier != "" {
 		ctx = coreusage.WithServiceTier(ctx, serviceTier)
 	}
+	if opts.Metadata != nil {
+		if reservationID := contextStringValue(opts.Metadata[cliproxyexecutor.ClientReservationIDMetadataKey]); reservationID != "" {
+			ctx = coreusage.WithClientReservationID(ctx, reservationID)
+		}
+	}
 	return ctx
 }
 

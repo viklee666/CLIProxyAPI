@@ -2,12 +2,16 @@ package clientaccess
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
 
 func newTestService(t *testing.T) *Service {
@@ -22,6 +26,258 @@ func newTestService(t *testing.T) *Service {
 		}
 	})
 	return service
+}
+
+func TestServicePersistentRequestQuotaAndWindowReset(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "client-access.sqlite")
+	service, errNew := New(path)
+	if errNew != nil {
+		t.Fatalf("New() error = %v", errNew)
+	}
+	created, errCreate := service.CreateKey(context.Background(), KeyCreate{
+		Name:              "request-limited",
+		CustomSecret:      "sk-cpa-request-quota-test",
+		RequestLimitTotal: 2,
+		RequestLimit5h:    1,
+	})
+	if errCreate != nil {
+		t.Fatalf("CreateKey() error = %v", errCreate)
+	}
+	first, authErr := authenticateSecret(service, created.Secret)
+	if authErr != nil {
+		t.Fatalf("first Authenticate() error = %v", authErr)
+	}
+	first.Release()
+	if _, authErr = authenticateSecret(service, created.Secret); authErr == nil || authErr.Code != sdkaccess.AuthErrorCodeRateLimited {
+		t.Fatalf("second Authenticate() error = %#v", authErr)
+	}
+	if authErr.Headers.Get("Retry-After") == "" || authErr.Headers.Get("X-RateLimit-Reset") == "" {
+		t.Fatalf("quota reset headers = %#v", authErr.Headers)
+	}
+	past := time.Now().Add(-6 * time.Hour).UnixMilli()
+	if _, errExec := service.store.db.Exec(`UPDATE client_access_keys SET request_window_5h_ms = ?, request_used_5h = 1 WHERE id = ?`, past, created.ID); errExec != nil {
+		t.Fatalf("expire request window: %v", errExec)
+	}
+	third, authErr := authenticateSecret(service, created.Secret)
+	if authErr != nil {
+		t.Fatalf("Authenticate(after reset) error = %v", authErr)
+	}
+	third.Release()
+	if errClose := service.Close(); errClose != nil {
+		t.Fatalf("Close() error = %v", errClose)
+	}
+
+	reopened, errReopen := New(path)
+	if errReopen != nil {
+		t.Fatalf("New(reopen) error = %v", errReopen)
+	}
+	defer func() { _ = reopened.Close() }()
+	if _, authErr = authenticateSecret(reopened, created.Secret); authErr == nil || authErr.Code != sdkaccess.AuthErrorCodeRateLimited {
+		t.Fatalf("Authenticate(reopened total limit) error = %#v", authErr)
+	}
+	key, errGet := reopened.GetKey(context.Background(), created.ID)
+	if errGet != nil {
+		t.Fatalf("GetKey() error = %v", errGet)
+	}
+	if key.RequestUsedTotal != 2 || key.RequestUsed5h != 1 || key.RequestWindow5hAt == nil {
+		t.Fatalf("persisted request usage = %+v", key)
+	}
+}
+
+func TestServiceTokenReservationSettlementAndPersistence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "client-access.sqlite")
+	service, errNew := New(path, WithTokenReservation(80))
+	if errNew != nil {
+		t.Fatalf("New() error = %v", errNew)
+	}
+	created, errCreate := service.CreateKey(context.Background(), KeyCreate{
+		Name:            "token-limited",
+		CustomSecret:    "sk-cpa-token-quota-test",
+		TokenLimitTotal: 100,
+	})
+	if errCreate != nil {
+		t.Fatalf("CreateKey() error = %v", errCreate)
+	}
+	first, firstErr := authenticateSecret(service, created.Secret)
+	if firstErr != nil {
+		t.Fatalf("first Authenticate() error = %v", firstErr)
+	}
+	second, secondErr := authenticateSecret(service, created.Secret)
+	if secondErr != nil {
+		t.Fatalf("second Authenticate() error = %v", secondErr)
+	}
+	if _, thirdErr := authenticateSecret(service, created.Secret); thirdErr == nil || thirdErr.Code != sdkaccess.AuthErrorCodeRateLimited {
+		t.Fatalf("third Authenticate() error = %#v", thirdErr)
+	}
+	first.Release()
+	service.HandleUsage(context.Background(), coreusage.Record{
+		APIKey:              created.Secret,
+		ClientReservationID: first.Metadata[MetadataKeyReservationID],
+		Detail:              coreusage.Detail{TotalTokens: 30},
+	})
+	key, errGet := service.GetKey(context.Background(), created.ID)
+	if errGet != nil {
+		t.Fatalf("GetKey() error = %v", errGet)
+	}
+	if key.TokenUsedTotal != 30 || key.TokenReserved != 20 {
+		t.Fatalf("settled token usage = %+v", key)
+	}
+	service.HandleUsage(context.Background(), coreusage.Record{
+		APIKey:              created.Secret,
+		ClientReservationID: first.Metadata[MetadataKeyReservationID],
+		Detail:              coreusage.Detail{InputTokens: 5, OutputTokens: 5},
+	})
+	key, errGet = service.GetKey(context.Background(), created.ID)
+	if errGet != nil {
+		t.Fatalf("GetKey(after additional usage) error = %v", errGet)
+	}
+	if key.TokenUsedTotal != 40 {
+		t.Fatalf("additional token usage = %d", key.TokenUsedTotal)
+	}
+	second.Release()
+	service.HandleUsage(context.Background(), coreusage.Record{
+		APIKey:              created.Secret,
+		ClientReservationID: second.Metadata[MetadataKeyReservationID],
+		Detail:              coreusage.Detail{TotalTokens: 20},
+	})
+	if errClose := service.Close(); errClose != nil {
+		t.Fatalf("Close() error = %v", errClose)
+	}
+
+	reopened, errReopen := New(path, WithTokenReservation(80))
+	if errReopen != nil {
+		t.Fatalf("New(reopen) error = %v", errReopen)
+	}
+	defer func() { _ = reopened.Close() }()
+	key, errGet = reopened.GetKey(context.Background(), created.ID)
+	if errGet != nil {
+		t.Fatalf("GetKey(reopened) error = %v", errGet)
+	}
+	if key.TokenUsedTotal != 60 || key.TokenReserved != 0 {
+		t.Fatalf("persisted token usage = %+v", key)
+	}
+}
+
+func TestServiceRequestQuotaReservationIsAtomic(t *testing.T) {
+	service := newTestService(t)
+	created, errCreate := service.CreateKey(context.Background(), KeyCreate{
+		Name:              "atomic",
+		CustomSecret:      "sk-cpa-atomic-quota-test",
+		RequestLimitTotal: 5,
+	})
+	if errCreate != nil {
+		t.Fatalf("CreateKey() error = %v", errCreate)
+	}
+	const attempts = 20
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	succeeded := 0
+	for i := 0; i < attempts; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			result, authErr := authenticateSecret(service, created.Secret)
+			if authErr != nil {
+				return
+			}
+			result.Release()
+			mu.Lock()
+			succeeded++
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	if succeeded != 5 {
+		t.Fatalf("successful reservations = %d, want 5", succeeded)
+	}
+	key, errGet := service.GetKey(context.Background(), created.ID)
+	if errGet != nil {
+		t.Fatalf("GetKey() error = %v", errGet)
+	}
+	if key.RequestUsedTotal != 5 {
+		t.Fatalf("RequestUsedTotal = %d", key.RequestUsedTotal)
+	}
+}
+
+func TestServiceAllPersistentQuotaWindows(t *testing.T) {
+	tests := []struct {
+		name   string
+		window string
+		create func(secret string) KeyCreate
+	}{
+		{name: "request-1d", window: "1d", create: func(secret string) KeyCreate {
+			return KeyCreate{Name: "request-1d", CustomSecret: secret, RequestLimit1d: 1}
+		}},
+		{name: "request-7d", window: "7d", create: func(secret string) KeyCreate {
+			return KeyCreate{Name: "request-7d", CustomSecret: secret, RequestLimit7d: 1}
+		}},
+		{name: "token-5h", window: "5h", create: func(secret string) KeyCreate {
+			return KeyCreate{Name: "token-5h", CustomSecret: secret, TokenLimit5h: 1}
+		}},
+		{name: "token-1d", window: "1d", create: func(secret string) KeyCreate {
+			return KeyCreate{Name: "token-1d", CustomSecret: secret, TokenLimit1d: 1}
+		}},
+		{name: "token-7d", window: "7d", create: func(secret string) KeyCreate {
+			return KeyCreate{Name: "token-7d", CustomSecret: secret, TokenLimit7d: 1}
+		}},
+	}
+	for index, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			service := newTestService(t)
+			secret := fmt.Sprintf("sk-cpa-window-quota-%02d", index)
+			created, errCreate := service.CreateKey(context.Background(), testCase.create(secret))
+			if errCreate != nil {
+				t.Fatalf("CreateKey() error = %v", errCreate)
+			}
+			first, firstErr := authenticateSecret(service, created.Secret)
+			if firstErr != nil {
+				t.Fatalf("first Authenticate() error = %v", firstErr)
+			}
+			if strings.HasPrefix(testCase.name, "token-") {
+				service.HandleUsage(context.Background(), coreusage.Record{
+					APIKey:              created.Secret,
+					ClientReservationID: first.Metadata[MetadataKeyReservationID],
+					Detail:              coreusage.Detail{TotalTokens: 1},
+				})
+			}
+			first.Release()
+			_, secondErr := authenticateSecret(service, created.Secret)
+			if secondErr == nil || secondErr.Code != sdkaccess.AuthErrorCodeRateLimited || !strings.Contains(secondErr.Message, testCase.window) {
+				t.Fatalf("second Authenticate() error = %#v", secondErr)
+			}
+		})
+	}
+}
+
+func TestServiceResetTokenUsageClearsReservations(t *testing.T) {
+	service := newTestService(t)
+	created, errCreate := service.CreateKey(context.Background(), KeyCreate{
+		Name:            "reset-token",
+		CustomSecret:    "sk-cpa-reset-token-usage",
+		TokenLimitTotal: 100,
+	})
+	if errCreate != nil {
+		t.Fatalf("CreateKey() error = %v", errCreate)
+	}
+	result, authErr := authenticateSecret(service, created.Secret)
+	if authErr != nil {
+		t.Fatalf("Authenticate() error = %v", authErr)
+	}
+	key, errGet := service.GetKey(context.Background(), created.ID)
+	if errGet != nil {
+		t.Fatalf("GetKey() error = %v", errGet)
+	}
+	if key.TokenReserved == 0 {
+		t.Fatalf("TokenReserved = %d", key.TokenReserved)
+	}
+	updated, errUpdate := service.UpdateKey(context.Background(), created.ID, KeyUpdate{ResetTokenUsage: true})
+	if errUpdate != nil {
+		t.Fatalf("UpdateKey(reset) error = %v", errUpdate)
+	}
+	if updated.TokenUsedTotal != 0 || updated.TokenReserved != 0 {
+		t.Fatalf("reset key = %+v", updated)
+	}
+	result.Release()
 }
 
 func authenticateSecret(service *Service, secret string) (*sdkaccess.Result, *sdkaccess.AuthError) {

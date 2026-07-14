@@ -36,6 +36,8 @@ const (
 	ClientAllowAllGroupsMetadataKey = "client_allow_all_groups"
 	// ClientAllowUngroupedMetadataKey permits credentials without group bindings.
 	ClientAllowUngroupedMetadataKey = "client_allow_ungrouped"
+	// ClientReservationIDMetadataKey correlates token reservation settlement with usage.
+	ClientReservationIDMetadataKey = "client_reservation_id"
 )
 
 const (

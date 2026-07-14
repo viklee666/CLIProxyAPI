@@ -265,11 +265,15 @@ func (b *Builder) Build() (*Service, error) {
 	if clientaccess.Enabled(b.cfg.ClientAccess.Enabled) {
 		clientAccessPath := clientaccess.ResolveDatabasePath(b.configPath, b.cfg.ClientAccess.DatabasePath)
 		var errClientAccess error
-		clientAccessService, errClientAccess = clientaccess.New(clientAccessPath)
+		clientAccessService, errClientAccess = clientaccess.New(
+			clientAccessPath,
+			clientaccess.WithTokenReservation(clientaccess.ResolveTokenReservation(b.cfg.ClientAccess.TokenReservation)),
+		)
 		if errClientAccess != nil {
 			return nil, fmt.Errorf("cliproxy: initialize client access: %w", errClientAccess)
 		}
 		sdkaccess.RegisterProvider(clientaccess.ProviderType, clientAccessService)
+		usage.RegisterNamedPlugin("client-access", clientAccessService)
 		accessManager.SetProviders(sdkaccess.RegisteredProviders())
 	}
 

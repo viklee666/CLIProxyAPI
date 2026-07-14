@@ -2015,6 +2015,11 @@ func AuthMiddleware(manager *sdkaccess.Manager) gin.HandlerFunc {
 		}
 
 		statusCode := err.HTTPStatusCode()
+		for key, values := range err.Headers {
+			for _, value := range values {
+				c.Header(key, value)
+			}
+		}
 		if statusCode >= http.StatusInternalServerError {
 			log.Errorf("authentication middleware error: %v", err)
 		}

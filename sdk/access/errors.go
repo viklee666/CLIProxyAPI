@@ -3,7 +3,9 @@ package access
 import (
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // AuthErrorCode classifies authentication failures.
@@ -24,6 +26,7 @@ type AuthError struct {
 	Message    string
 	StatusCode int
 	Cause      error
+	Headers    http.Header
 }
 
 func (e *AuthError) Error() string {
@@ -98,6 +101,22 @@ func NewRateLimitedError(message string) *AuthError {
 		message = "API key rate limit exceeded"
 	}
 	return newAuthError(AuthErrorCodeRateLimited, message, http.StatusTooManyRequests, nil)
+}
+
+// NewRateLimitedErrorUntil creates a 429 error with an optional Retry-After reset time.
+func NewRateLimitedErrorUntil(message string, resetAt *time.Time) *AuthError {
+	authErr := NewRateLimitedError(message)
+	if resetAt == nil || resetAt.IsZero() {
+		return authErr
+	}
+	seconds := int64(time.Until(resetAt.UTC()).Seconds())
+	if seconds < 0 {
+		seconds = 0
+	}
+	authErr.Headers = make(http.Header)
+	authErr.Headers.Set("Retry-After", strconv.FormatInt(seconds, 10))
+	authErr.Headers.Set("X-RateLimit-Reset", strconv.FormatInt(resetAt.UTC().Unix(), 10))
+	return authErr
 }
 
 func IsAuthErrorCode(authErr *AuthError, code AuthErrorCode) bool {

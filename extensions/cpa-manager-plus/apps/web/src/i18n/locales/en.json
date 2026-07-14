@@ -230,7 +230,18 @@
     "assign_credentials": "Assign credentials",
     "search_credentials": "Search credential names, providers, or auth indexes",
     "bindings_saved": "Credential groups saved",
-    "ungrouped": "Ungrouped"
+    "ungrouped": "Ungrouped",
+    "request_quota": "Request quota",
+    "token_quota": "Token quota",
+    "request_limits": "Request limits (0 = unlimited)",
+    "token_limits": "Token limits (0 = unlimited)",
+    "total": "Total",
+    "reset_requests": "Reset request usage",
+    "reset_tokens": "Reset token usage",
+    "reset_requests_short": "Reset requests",
+    "reset_tokens_short": "Reset tokens",
+    "reset_usage_confirm": "Reset persisted usage for {{name}}?",
+    "usage_reset": "Usage reset"
   },
   "account_actions": {
     "eyebrow": "Account issues",

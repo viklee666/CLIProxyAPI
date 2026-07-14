@@ -18,6 +18,7 @@ func TestRequestExecutionMetadataCopiesClientAccessMetadata(t *testing.T) {
 		coreexecutor.ClientGroupIDsMetadataKey:       "1,3",
 		coreexecutor.ClientAllowAllGroupsMetadataKey: "false",
 		coreexecutor.ClientAllowUngroupedMetadataKey: "true",
+		coreexecutor.ClientReservationIDMetadataKey:  "car_test",
 	})
 	ctx := context.WithValue(context.Background(), "gin", ginContext)
 	metadata := requestExecutionMetadata(ctx)
@@ -32,5 +33,8 @@ func TestRequestExecutionMetadataCopiesClientAccessMetadata(t *testing.T) {
 	}
 	if metadata[coreexecutor.ClientAllowUngroupedMetadataKey] != true {
 		t.Fatalf("allow ungrouped = %#v", metadata[coreexecutor.ClientAllowUngroupedMetadataKey])
+	}
+	if metadata[coreexecutor.ClientReservationIDMetadataKey] != "car_test" {
+		t.Fatalf("reservation id = %#v", metadata[coreexecutor.ClientReservationIDMetadataKey])
 	}
 }

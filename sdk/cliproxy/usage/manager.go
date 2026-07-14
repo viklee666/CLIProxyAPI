@@ -24,7 +24,9 @@ type Record struct {
 	AuthID       string
 	AuthIndex    string
 	AuthType     string
-	Source       string
+	// ClientReservationID correlates advanced client-key token settlement.
+	ClientReservationID string
+	Source              string
 	// ReasoningEffort stores the translated upstream thinking level for request event logs.
 	ReasoningEffort string
 	// ServiceTier stores the client-requested service tier for request event logs.
@@ -64,6 +66,35 @@ type Detail struct {
 type requestedModelAliasContextKey struct{}
 type reasoningEffortContextKey struct{}
 type serviceTierContextKey struct{}
+type clientReservationContextKey struct{}
+
+// WithClientReservationID stores a client-access token reservation ID for usage sinks.
+func WithClientReservationID(ctx context.Context, reservationID string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	reservationID = strings.TrimSpace(reservationID)
+	if reservationID == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, clientReservationContextKey{}, reservationID)
+}
+
+// ClientReservationIDFromContext returns the client-access token reservation ID.
+func ClientReservationIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	raw := ctx.Value(clientReservationContextKey{})
+	switch value := raw.(type) {
+	case string:
+		return strings.TrimSpace(value)
+	case []byte:
+		return strings.TrimSpace(string(value))
+	default:
+		return ""
+	}
+}
 
 // WithRequestedModelAlias stores the client-requested model name for usage sinks.
 func WithRequestedModelAlias(ctx context.Context, alias string) context.Context {
@@ -172,6 +203,7 @@ type Manager struct {
 	once     sync.Once
 	stopOnce sync.Once
 	cancel   context.CancelFunc
+	done     chan struct{}
 
 	mu     sync.Mutex
 	cond   *sync.Cond
@@ -185,7 +217,7 @@ type Manager struct {
 
 // NewManager constructs a manager with a buffered queue.
 func NewManager(buffer int) *Manager {
-	m := &Manager{}
+	m := &Manager{done: make(chan struct{})}
 	m.cond = sync.NewCond(&m.mu)
 	return m
 }
@@ -210,6 +242,7 @@ func (m *Manager) Stop() {
 	if m == nil {
 		return
 	}
+	m.Start(context.Background())
 	m.stopOnce.Do(func() {
 		if m.cancel != nil {
 			m.cancel()
@@ -219,6 +252,21 @@ func (m *Manager) Stop() {
 		m.mu.Unlock()
 		m.cond.Broadcast()
 	})
+}
+
+// StopAndWait stops the dispatcher and waits until the queued records are drained.
+func (m *Manager) StopAndWait(ctx context.Context) {
+	if m == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	m.Stop()
+	select {
+	case <-m.done:
+	case <-ctx.Done():
+	}
 }
 
 // Register appends a plugin to the delivery list.
@@ -274,6 +322,7 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
 }
 
 func (m *Manager) run(ctx context.Context) {
+	defer close(m.done)
 	for {
 		m.mu.Lock()
 		for !m.closed && len(m.queue) == 0 {
@@ -333,4 +382,8 @@ func PublishRecord(ctx context.Context, record Record) { DefaultManager().Publis
 func StartDefault(ctx context.Context) { DefaultManager().Start(ctx) }
 
 // StopDefault stops the default manager's dispatcher.
-func StopDefault() { DefaultManager().Stop() }
+func StopDefault() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	DefaultManager().StopAndWait(ctx)
+}

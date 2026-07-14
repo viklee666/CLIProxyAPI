@@ -22,23 +22,24 @@ import (
 )
 
 type UsageReporter struct {
-	provider     string
-	executorType string
-	model        string
-	alias        string
-	authID       string
-	authIndex    string
-	authType     string
-	apiKey       string
-	source       string
-	reasoning    string
-	serviceTier  string
-	requestedAt  time.Time
-	ttftMu       sync.RWMutex
-	ttft         time.Duration
-	ttftStart    time.Time
-	ttftSet      bool
-	once         sync.Once
+	provider      string
+	executorType  string
+	model         string
+	alias         string
+	authID        string
+	authIndex     string
+	authType      string
+	apiKey        string
+	source        string
+	reasoning     string
+	serviceTier   string
+	reservationID string
+	requestedAt   time.Time
+	ttftMu        sync.RWMutex
+	ttft          time.Duration
+	ttftStart     time.Time
+	ttftSet       bool
+	once          sync.Once
 }
 
 type usageExecutor interface {
@@ -62,15 +63,16 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		alias = model
 	}
 	reporter := &UsageReporter{
-		provider:    provider,
-		model:       model,
-		alias:       strings.TrimSpace(alias),
-		requestedAt: time.Now(),
-		apiKey:      apiKey,
-		source:      resolveUsageSource(auth, apiKey),
-		authType:    resolveUsageAuthType(auth),
-		reasoning:   usage.ReasoningEffortFromContext(ctx),
-		serviceTier: usage.ServiceTierFromContext(ctx),
+		provider:      provider,
+		model:         model,
+		alias:         strings.TrimSpace(alias),
+		requestedAt:   time.Now(),
+		apiKey:        apiKey,
+		source:        resolveUsageSource(auth, apiKey),
+		authType:      resolveUsageAuthType(auth),
+		reasoning:     usage.ReasoningEffortFromContext(ctx),
+		serviceTier:   usage.ServiceTierFromContext(ctx),
+		reservationID: usage.ClientReservationIDFromContext(ctx),
 	}
 	if auth != nil {
 		reporter.authID = auth.ID
@@ -269,6 +271,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		AuthID:              r.authID,
 		AuthIndex:           r.authIndex,
 		AuthType:            r.authType,
+		ClientReservationID: r.reservationID,
 		ReasoningEffort:     r.reasoning,
 		ServiceTier:         r.serviceTier,
 		RequestServiceTier:  r.serviceTier,

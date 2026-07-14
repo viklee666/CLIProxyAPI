@@ -54,7 +54,7 @@
 
 .table {
   width: 100%;
-  min-width: 860px;
+  min-width: 1420px;
   border-collapse: collapse;
 
   th,
@@ -217,4 +217,56 @@
   overflow-wrap: anywhere;
   color: var(--text-primary);
   font-family: monospace;
+}
+
+.sectionTitle {
+  margin: 4px 0 0;
+  color: var(--text-primary);
+  font-size: 14px;
+}
+
+.quotaStack,
+.actionStack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.quotaLine {
+  display: grid;
+  grid-template-columns: 36px minmax(90px, auto);
+  gap: 2px 8px;
+  min-width: 150px;
+  color: var(--text-secondary);
+  font-size: 11px;
+
+  b {
+    color: var(--text-primary);
+    font-weight: 500;
+    text-align: right;
+  }
+
+  i {
+    grid-column: 1 / -1;
+    display: block;
+    height: 3px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: var(--surface-subtle);
+  }
+
+  em {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--color-primary);
+  }
+
+  small {
+    grid-column: 1 / -1;
+    overflow: hidden;
+    color: var(--text-tertiary);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 }

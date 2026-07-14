@@ -303,6 +303,7 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 						coreexecutor.ClientGroupIDsMetadataKey,
 						coreexecutor.ClientAllowAllGroupsMetadataKey,
 						coreexecutor.ClientAllowUngroupedMetadataKey,
+						coreexecutor.ClientReservationIDMetadataKey,
 					} {
 						value := strings.TrimSpace(accessMetadata[metadataKey])
 						if value == "" {

@@ -18,9 +18,15 @@ import (
 	"time"
 
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
+	log "github.com/sirupsen/logrus"
 )
 
-const keyPrefix = "sk-cpa-"
+const (
+	keyPrefix                     = "sk-cpa-"
+	defaultTokenReservation int64 = 1024
+	reservationReleaseGrace       = 5 * time.Second
+)
 
 type authKey struct {
 	Key
@@ -39,11 +45,30 @@ type runtimeState struct {
 }
 
 type Service struct {
-	store *Store
+	store            *Store
+	tokenReservation int64
+	releaseCtx       context.Context
+	releaseCancel    context.CancelFunc
+	releaseWG        sync.WaitGroup
 
 	snapshot  atomic.Pointer[authSnapshot]
 	runtimeMu sync.Mutex
 	runtime   map[int64]*runtimeState
+}
+
+type Option func(*Service)
+
+// WithTokenReservation sets provisional tokens held by each in-flight request.
+func WithTokenReservation(tokens int64) Option {
+	return func(service *Service) {
+		if service == nil {
+			return
+		}
+		if tokens <= 0 {
+			tokens = defaultTokenReservation
+		}
+		service.tokenReservation = tokens
+	}
 }
 
 func Enabled(configEnabled bool) bool {
@@ -80,12 +105,36 @@ func ResolveDatabasePath(configPath, configuredPath string) string {
 	return filepath.Join(base, "data", "client-access.sqlite")
 }
 
-func New(path string) (*Service, error) {
+func ResolveTokenReservation(configured int64) int64 {
+	if raw := strings.TrimSpace(os.Getenv("CLIENT_ACCESS_TOKEN_RESERVATION")); raw != "" {
+		if parsed, errParse := strconv.ParseInt(raw, 10, 64); errParse == nil && parsed > 0 {
+			return parsed
+		}
+	}
+	if configured > 0 {
+		return configured
+	}
+	return defaultTokenReservation
+}
+
+func New(path string, options ...Option) (*Service, error) {
 	store, errOpen := Open(path)
 	if errOpen != nil {
 		return nil, errOpen
 	}
-	service := &Service{store: store, runtime: make(map[int64]*runtimeState)}
+	releaseCtx, releaseCancel := context.WithCancel(context.Background())
+	service := &Service{
+		store:            store,
+		runtime:          make(map[int64]*runtimeState),
+		tokenReservation: defaultTokenReservation,
+		releaseCtx:       releaseCtx,
+		releaseCancel:    releaseCancel,
+	}
+	for _, option := range options {
+		if option != nil {
+			option(service)
+		}
+	}
 	if errReload := service.reload(context.Background()); errReload != nil {
 		_ = store.Close()
 		return nil, fmt.Errorf("load client access keys: %w", errReload)
@@ -97,6 +146,10 @@ func (s *Service) Close() error {
 	if s == nil || s.store == nil {
 		return nil
 	}
+	if s.releaseCancel != nil {
+		s.releaseCancel()
+	}
+	s.releaseWG.Wait()
 	return s.store.Close()
 }
 
@@ -160,7 +213,31 @@ func (s *Service) Authenticate(_ context.Context, request *http.Request) (*sdkac
 	if authErr != nil {
 		return nil, authErr
 	}
-	go s.touchLastUsed(key.ID, now)
+	reservationID, errReservationID := generateReservationID()
+	if errReservationID != nil {
+		release()
+		return nil, sdkaccess.NewInternalAuthError("create quota reservation", errReservationID)
+	}
+	_, _, errReserve := s.store.ReserveUsage(request.Context(), key.ID, reservationID, s.tokenReservation, now)
+	if errReserve != nil {
+		release()
+		var quotaErr *QuotaExceededError
+		if errors.As(errReserve, &quotaErr) {
+			message := fmt.Sprintf("API key %s %s quota exceeded (%d/%d)", quotaErr.Resource, quotaErr.Window, quotaErr.Used, quotaErr.Limit)
+			if quotaErr.ResetAt != nil {
+				message += "; resets at " + quotaErr.ResetAt.UTC().Format(time.RFC3339)
+			}
+			return nil, sdkaccess.NewRateLimitedErrorUntil(message, quotaErr.ResetAt)
+		}
+		return nil, sdkaccess.NewInternalAuthError("reserve API key quota", errReserve)
+	}
+	var releaseOnce sync.Once
+	releaseRequest := func() {
+		releaseOnce.Do(func() {
+			release()
+			s.scheduleReservationRelease(reservationID)
+		})
+	}
 	return &sdkaccess.Result{
 		Provider:  ProviderIdentifier,
 		Principal: secret,
@@ -171,9 +248,31 @@ func (s *Service) Authenticate(_ context.Context, request *http.Request) (*sdkac
 			MetadataKeyGroupIDs:       joinInt64s(key.GroupIDs),
 			MetadataKeyAllowAllGroups: strconv.FormatBool(key.AllowAllGroups),
 			MetadataKeyAllowUngrouped: strconv.FormatBool(key.AllowUngrouped),
+			MetadataKeyReservationID:  reservationID,
 		},
-		Release: release,
+		Release: releaseRequest,
 	}, nil
+}
+
+func (s *Service) scheduleReservationRelease(reservationID string) {
+	if s == nil || s.store == nil || reservationID == "" {
+		return
+	}
+	s.releaseWG.Add(1)
+	go func() {
+		defer s.releaseWG.Done()
+		timer := time.NewTimer(reservationReleaseGrace)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-s.releaseCtx.Done():
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, errSettle := s.store.SettleTokenReservation(ctx, reservationID, 0, time.Now().UTC()); errSettle != nil && s.releaseCtx.Err() == nil {
+			log.WithError(errSettle).Warn("client access: failed to release token reservation")
+		}
+	}()
 }
 
 func (s *Service) acquireRuntime(key *authKey, now time.Time) (func(), *sdkaccess.AuthError) {
@@ -211,12 +310,6 @@ func (s *Service) acquireRuntime(key *authKey, now time.Time) (func(), *sdkacces
 	}, nil
 }
 
-func (s *Service) touchLastUsed(id int64, now time.Time) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	_ = s.store.TouchKey(ctx, id, now)
-}
-
 func (s *Service) currentConcurrency(id int64) int {
 	s.runtimeMu.Lock()
 	defer s.runtimeMu.Unlock()
@@ -224,6 +317,35 @@ func (s *Service) currentConcurrency(id int64) int {
 		return state.active
 	}
 	return 0
+}
+
+// HandleUsage settles provisional tokens and persists actual usage.
+func (s *Service) HandleUsage(_ context.Context, record coreusage.Record) {
+	if s == nil || s.store == nil {
+		return
+	}
+	actualTokens := record.Detail.TotalTokens
+	if actualTokens == 0 {
+		actualTokens = record.Detail.InputTokens + record.Detail.OutputTokens + record.Detail.ReasoningTokens
+	}
+	if actualTokens < 0 {
+		actualTokens = 0
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	found := false
+	var errSettle error
+	if reservationID := strings.TrimSpace(record.ClientReservationID); reservationID != "" {
+		found, errSettle = s.store.SettleTokenReservation(ctx, reservationID, actualTokens, time.Now().UTC())
+	}
+	if errSettle == nil && !found {
+		if secret := strings.TrimSpace(record.APIKey); secret != "" {
+			_, errSettle = s.store.AddTokenUsageByHash(ctx, hashSecret(secret), actualTokens, time.Now().UTC())
+		}
+	}
+	if errSettle != nil {
+		log.WithError(errSettle).Warn("client access: failed to settle token usage")
+	}
 }
 
 func (s *Service) CreateGroup(ctx context.Context, input GroupCreate) (Group, error) {
@@ -372,6 +494,14 @@ func generateSecret() (string, error) {
 		return "", fmt.Errorf("generate API key: %w", errRead)
 	}
 	return keyPrefix + base64.RawURLEncoding.EncodeToString(random), nil
+}
+
+func generateReservationID() (string, error) {
+	random := make([]byte, 18)
+	if _, errRead := rand.Read(random); errRead != nil {
+		return "", fmt.Errorf("generate reservation ID: %w", errRead)
+	}
+	return "car_" + base64.RawURLEncoding.EncodeToString(random), nil
 }
 
 func validateSecret(secret string) error {

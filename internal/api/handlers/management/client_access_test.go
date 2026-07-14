@@ -61,6 +61,7 @@ func TestClientAccessManagementCRUDAndBindings(t *testing.T) {
 
 	ctx, recorder = clientAccessContext(http.MethodPost, "/v0/management/client-access/keys", map[string]any{
 		"name": "desktop", "secret": "sk-cpa-management-test", "allow_all_groups": false, "group_ids": []int64{group.ID},
+		"request_limit_total": 2, "token_limit_total": 100,
 	})
 	handler.CreateClientAccessKey(ctx)
 	if recorder.Code != http.StatusCreated {
@@ -70,8 +71,14 @@ func TestClientAccessManagementCRUDAndBindings(t *testing.T) {
 	if errDecode := json.Unmarshal(recorder.Body.Bytes(), &key); errDecode != nil {
 		t.Fatalf("decode key: %v", errDecode)
 	}
-	if key.Secret != "sk-cpa-management-test" || key.ID == 0 {
+	if key.Secret != "sk-cpa-management-test" || key.ID == 0 || key.RequestLimitTotal != 2 || key.TokenLimitTotal != 100 {
 		t.Fatalf("created key = %+v", key)
+	}
+
+	ctx, recorder = clientAccessContext(http.MethodPatch, "/v0/management/client-access/keys/1", map[string]any{"reset_request_usage": true, "reset_token_usage": true}, gin.Param{Key: "id", Value: "1"})
+	handler.UpdateClientAccessKey(ctx)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("reset key usage status = %d, body=%s", recorder.Code, recorder.Body.String())
 	}
 
 	ctx, recorder = clientAccessContext(http.MethodPut, "/v0/management/client-access/credential-bindings", map[string]any{
