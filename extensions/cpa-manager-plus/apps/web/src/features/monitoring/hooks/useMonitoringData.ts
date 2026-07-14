@@ -55,6 +55,10 @@ import type {
 } from '../model/types';
 import { loadMonitoringMetaPayload } from '../services/monitoringMetaService';
 import { useMonitoringAnalytics } from './useMonitoringAnalytics';
+import {
+  applyCredentialStatuses,
+  useCredentialStatusStore,
+} from '@/stores/useCredentialStatusStore';
 
 export type {
   MonitoringAccountModelSpendRow,
@@ -299,7 +303,12 @@ export function useMonitoringData({
   searchApiKeyHash,
   scopeFilters,
 }: UseMonitoringDataParams): UseMonitoringDataReturn {
-  const [authFiles, setAuthFiles] = useState<AuthFileItem[]>([]);
+  const [authFileSnapshots, setAuthFiles] = useState<AuthFileItem[]>([]);
+  const credentialStatuses = useCredentialStatusStore((state) => state.snapshots);
+  const authFiles = useMemo(
+    () => applyCredentialStatuses(authFileSnapshots, credentialStatuses),
+    [authFileSnapshots, credentialStatuses]
+  );
   const [channels, setChannels] = useState<MonitoringChannelMeta[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');

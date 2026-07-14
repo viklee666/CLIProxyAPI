@@ -1246,8 +1246,9 @@ func (h *Handler) PatchAuthFileStatus(c *gin.Context) {
 	}
 
 	var req struct {
-		Name     string `json:"name"`
-		Disabled *bool  `json:"disabled"`
+		Name      string `json:"name"`
+		AuthIndex string `json:"auth_index"`
+		Disabled  *bool  `json:"disabled"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
@@ -1255,6 +1256,7 @@ func (h *Handler) PatchAuthFileStatus(c *gin.Context) {
 	}
 
 	name := strings.TrimSpace(req.Name)
+	authIndex := strings.TrimSpace(req.AuthIndex)
 	if name == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
 		return
@@ -1266,14 +1268,15 @@ func (h *Handler) PatchAuthFileStatus(c *gin.Context) {
 
 	ctx := c.Request.Context()
 
-	// Find auth by name or ID
+	// Find auth by name or ID. When auth_index is supplied, require an exact
+	// match so a multi-account source file does not toggle the wrong credential.
 	var targetAuth *coreauth.Auth
-	if auth, ok := h.authManager.GetByID(name); ok {
+	if auth, ok := h.authManager.GetByID(name); ok && (authIndex == "" || auth.Index == authIndex) {
 		targetAuth = auth
 	} else {
 		auths := h.authManager.List()
 		for _, auth := range auths {
-			if auth.FileName == name {
+			if auth.FileName == name && (authIndex == "" || auth.Index == authIndex) {
 				targetAuth = auth
 				break
 			}
@@ -1340,7 +1343,12 @@ func (h *Handler) PatchAuthFileStatus(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"status": "ok", "disabled": *req.Disabled})
+	c.JSON(http.StatusOK, gin.H{
+		"status":     "ok",
+		"name":       name,
+		"auth_index": targetAuth.Index,
+		"disabled":   *req.Disabled,
+	})
 }
 
 // patchPluginVirtualSourceStatus toggles disabled on a plugin multi-auth source file and all

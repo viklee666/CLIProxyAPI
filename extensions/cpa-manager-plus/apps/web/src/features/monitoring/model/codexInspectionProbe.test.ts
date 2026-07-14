@@ -156,6 +156,25 @@ describe('inspectSingleAccount', () => {
     ]);
   });
 
+  it('suggests deleting an account when usage inspection returns 403', async () => {
+    mockRequestCodexUsageRaw.mockResolvedValue({
+      result: {
+        statusCode: 403,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '{"error":"forbidden"}',
+        body: { error: 'forbidden' },
+      },
+      payload: null,
+    });
+
+    const result = await inspectSingleAccount(baseAccount, settings);
+
+    expect(result.action).toBe('delete');
+    expect(result.actionReason).toContain('403');
+    expect(result.isQuota).toBe(false);
+  });
+
   it('does not disable an exhausted short window without a future reset time', async () => {
     mockRequestCodexUsageRaw.mockResolvedValue(
       createUsageResult(5, {

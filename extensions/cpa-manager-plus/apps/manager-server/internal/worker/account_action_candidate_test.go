@@ -101,6 +101,46 @@ func TestAccountActionCandidateFromEventDeletesAccountDeactivatedHeader(t *testi
 	}
 }
 
+func TestAccountActionCandidateFromForbiddenEventSuggestsDelete(t *testing.T) {
+	event := usage.Event{
+		Failed:           true,
+		FailStatusCode:   http.StatusForbidden,
+		EventHash:        "evt-forbidden",
+		Provider:         "codex",
+		AuthFileSnapshot: "codex-auth.json",
+		AuthIndex:        "auth-1",
+		FailSummary:      "forbidden",
+	}
+	candidate, ok := accountActionCandidateFromEvent(event, time.Now())
+	if !ok {
+		t.Fatal("candidate not detected")
+	}
+	if candidate.ActionType != model.AccountActionTypeDelete {
+		t.Fatalf("action type = %q, want delete", candidate.ActionType)
+	}
+	if !accountActionAutoDisableEligible(candidate.ActionType) {
+		t.Fatal("403 delete candidate should be eligible for auto-disable")
+	}
+}
+
+func TestAccountActionCandidateFromCloudflareForbiddenRequiresReview(t *testing.T) {
+	event := usage.Event{
+		Failed:           true,
+		FailStatusCode:   http.StatusForbidden,
+		EventHash:        "evt-cloudflare",
+		Provider:         "claude",
+		AuthFileSnapshot: "claude-auth.json",
+		FailBody:         `<html><title>Just a moment...</title></html>`,
+	}
+	candidate, ok := accountActionCandidateFromEvent(event, time.Now())
+	if !ok {
+		t.Fatal("candidate not detected")
+	}
+	if candidate.ActionType != model.AccountActionTypeReview {
+		t.Fatalf("action type = %q, want review", candidate.ActionType)
+	}
+}
+
 func TestAccountActionCandidateWorkerSavesQueueOnly(t *testing.T) {
 	st, err := store.Open(t.TempDir() + "/usage.sqlite")
 	if err != nil {

@@ -30,6 +30,7 @@ const (
 	codexMonthWindow    = 2_592_000
 	codexMinMonthWindow = 28 * 24 * 60 * 60
 	codexMaxMonthWindow = 31 * 24 * 60 * 60
+	authFilesPageSize   = 500
 	maxStoredBodyText   = 2048
 )
 
@@ -489,8 +490,35 @@ func (s *Service) failRun(ctx context.Context, run model.CodexInspectionRun, cau
 }
 
 func (s *Service) fetchAuthFiles(ctx context.Context, setup store.Setup) ([]authFile, error) {
-	files, _, err := s.fetchAuthFilesAt(ctx, setup, "/v0/management/auth-files")
-	return files, err
+	files := make([]authFile, 0, authFilesPageSize)
+	firstPageIdentity := ""
+	for page := 1; ; page++ {
+		path := fmt.Sprintf("/v0/management/auth-files?view=summary&page=%d&page_size=%d", page, authFilesPageSize)
+		pageFiles, _, err := s.fetchAuthFilesAt(ctx, setup, path)
+		if err != nil {
+			return nil, err
+		}
+		if page == 1 && len(pageFiles) > 0 {
+			firstPageIdentity = authFileIdentity(pageFiles[0])
+		} else if page > 1 && len(pageFiles) > 0 && authFileIdentity(pageFiles[0]) == firstPageIdentity {
+			// Compatibility with older CPA versions that ignore pagination and
+			// return the complete list for every request.
+			return files, nil
+		}
+		files = append(files, pageFiles...)
+		if len(pageFiles) < authFilesPageSize {
+			return files, nil
+		}
+	}
+}
+
+func authFileIdentity(file authFile) string {
+	return firstNonEmpty(
+		normalizeAuthIndex(file["auth_index"]),
+		normalizeAuthIndex(file["authIndex"]),
+		readString(file, "name"),
+		readString(file, "id"),
+	)
 }
 
 func (s *Service) fetchAuthFilesAt(ctx context.Context, setup store.Setup, path string) ([]authFile, int, error) {
@@ -1091,6 +1119,14 @@ func (l runLogger) log(ctx context.Context, level string, message string, detail
 func resolveProbeAction(item account, statusCode int, bodyText string, rateLimit *codexRateLimit, usedPercent *float64, isQuota bool, threshold float64, planTypes ...string) inspectionDecision {
 	if isDeactivatedWorkspaceResponse(statusCode, bodyText) {
 		return resolveDeactivatedWorkspaceProbeAction(usedPercent)
+	}
+	if statusCode == http.StatusForbidden {
+		return inspectionDecision{
+			Action:       "delete",
+			ActionReason: "接口返回 403，账号无权访问或凭证已失效，建议删除账号",
+			UsedPercent:  usedPercent,
+			IsQuota:      false,
+		}
 	}
 	planType := ""
 	if len(planTypes) > 0 {

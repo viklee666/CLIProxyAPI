@@ -727,6 +727,24 @@ func TestResolveProbeActionUsesMonthlyWindowAsLongQuota(t *testing.T) {
 	})
 }
 
+func TestResolveProbeActionDeletesForbiddenCredential(t *testing.T) {
+	decision := resolveProbeAction(
+		account{FileName: "codex-auth.json", Provider: "codex"},
+		http.StatusForbidden,
+		`{"error":"forbidden"}`,
+		nil,
+		nil,
+		false,
+		100,
+	)
+	if decision.Action != "delete" || decision.IsQuota {
+		t.Fatalf("decision = %#v, want non-quota delete", decision)
+	}
+	if !strings.Contains(decision.ActionReason, "403") {
+		t.Fatalf("action reason = %q, want 403", decision.ActionReason)
+	}
+}
+
 func TestRunSuggestsDeleteForDeactivatedWorkspace(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {

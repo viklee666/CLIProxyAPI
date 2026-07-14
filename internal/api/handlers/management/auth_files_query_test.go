@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -178,5 +179,64 @@ func TestListAuthFilesQueryLargeSetReturnsBoundedPage(t *testing.T) {
 	}
 	if recorder.Body.Len() > 100_000 {
 		t.Fatalf("paged summary payload too large: %d bytes", recorder.Body.Len())
+	}
+}
+
+func TestListAuthFilesQueryReturnsOnlyStatusesUpdatedAfterCursor(t *testing.T) {
+	t.Parallel()
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "shared.json")
+	if err := writeTestJSON(path, `{"type":"codex"}`); err != nil {
+		t.Fatalf("write auth file: %v", err)
+	}
+	cursor := time.Now().Add(-time.Minute).Truncate(time.Millisecond)
+	oldAuth := &coreauth.Auth{
+		ID:         "old-auth",
+		FileName:   "old.json",
+		Provider:   "codex",
+		UpdatedAt:  cursor.Add(-time.Second),
+		Attributes: map[string]string{"path": path},
+	}
+	newAuth := &coreauth.Auth{
+		ID:         "new-auth",
+		FileName:   "new.json",
+		Provider:   "codex",
+		UpdatedAt:  cursor.Add(time.Second),
+		Attributes: map[string]string{"path": path},
+	}
+	for _, auth := range []*coreauth.Auth{oldAuth, newAuth} {
+		if _, err := manager.Register(context.Background(), auth); err != nil {
+			t.Fatalf("register auth: %v", err)
+		}
+	}
+
+	h := &Handler{authManager: manager}
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(
+		http.MethodGet,
+		"/v0/management/auth-files?view=snapshot&updated_after_ms="+strconv.FormatInt(cursor.UnixMilli(), 10),
+		nil,
+	)
+
+	h.ListAuthFiles(ctx)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Files        []map[string]any `json:"files"`
+		Total        int              `json:"total"`
+		ServerTimeMS int64            `json:"server_time_ms"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Total != 1 || len(response.Files) != 1 || response.Files[0]["name"] != "new.json" {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+	if response.ServerTimeMS <= cursor.UnixMilli() {
+		t.Fatalf("server time = %d, cursor = %d", response.ServerTimeMS, cursor.UnixMilli())
 	}
 }

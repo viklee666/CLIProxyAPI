@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ChangeEvent, type RefObject } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   authFilesApi,
@@ -7,6 +7,10 @@ import {
 } from '@/services/api';
 import { apiClient } from '@/services/api/client';
 import { useNotificationStore } from '@/stores';
+import {
+  applyCredentialStatuses,
+  useCredentialStatusStore,
+} from '@/stores/useCredentialStatusStore';
 import type { AuthFileItem } from '@/types';
 import { formatFileSize } from '@/utils/format';
 import { MAX_AUTH_FILE_SIZE } from '@/utils/constants';
@@ -192,6 +196,11 @@ export function useAuthFilesData(query?: AuthFilesListQuery): UseAuthFilesDataRe
   const [batchStatusUpdating, setBatchStatusUpdating] = useState(false);
   const [batchFieldsUpdating, setBatchFieldsUpdating] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
+  const credentialStatuses = useCredentialStatusStore((state) => state.snapshots);
+  const syncedFiles = useMemo(
+    () => applyCredentialStatuses(files, credentialStatuses),
+    [credentialStatuses, files]
+  );
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const batchStatusPendingRef = useRef(false);
@@ -618,16 +627,30 @@ export function useAuthFilesData(query?: AuthFilesListQuery): UseAuthFilesDataRe
   const handleStatusToggle = useCallback(
     async (item: AuthFileItem, enabled: boolean) => {
       const name = item.name;
+      const selectionKey = getAuthFileSelectionKey(item);
+      const authIndex = normalizePatchTargetAuthIndex(
+        (item['auth_index'] ?? item.authIndex) as AuthFilePatchTarget['authIndex']
+      );
       const nextDisabled = !enabled;
       const previousDisabled = item.disabled === true;
 
       setStatusUpdating((prev) => ({ ...prev, [name]: true }));
-      setFiles((prev) => prev.map((f) => (f.name === name ? { ...f, disabled: nextDisabled } : f)));
+      setFiles((prev) =>
+        prev.map((file) =>
+          getAuthFileSelectionKey(file) === selectionKey
+            ? { ...file, disabled: nextDisabled }
+            : file
+        )
+      );
 
       try {
-        const res = await authFilesApi.setStatus(name, nextDisabled);
+        const res = await authFilesApi.setStatus(name, nextDisabled, authIndex);
         setFiles((prev) =>
-          prev.map((f) => (f.name === name ? { ...f, disabled: res.disabled } : f))
+          prev.map((file) =>
+            getAuthFileSelectionKey(file) === selectionKey
+              ? { ...file, disabled: res.disabled }
+              : file
+          )
         );
         showNotification(
           enabled
@@ -638,7 +661,11 @@ export function useAuthFilesData(query?: AuthFilesListQuery): UseAuthFilesDataRe
       } catch (err: unknown) {
         const errorMessage = err instanceof Error ? err.message : '';
         setFiles((prev) =>
-          prev.map((f) => (f.name === name ? { ...f, disabled: previousDisabled } : f))
+          prev.map((file) =>
+            getAuthFileSelectionKey(file) === selectionKey
+              ? { ...file, disabled: previousDisabled }
+              : file
+          )
         );
         showNotification(`${t('notification.update_failed')}: ${errorMessage}`, 'error');
       } finally {
@@ -891,7 +918,7 @@ export function useAuthFilesData(query?: AuthFilesListQuery): UseAuthFilesDataRe
   );
 
   return {
-    files,
+    files: syncedFiles,
     total,
     providerFacets,
     serverPaged,

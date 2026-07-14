@@ -126,6 +126,7 @@ import {
 } from '@/features/authFiles/uiState';
 import type { AuthJsonInputType } from '@/features/authFiles/sessionAuthConverter';
 import type { AuthFileItem, CodexQuotaState } from '@/types';
+import { disableCredentialAfterForbidden } from '@/services/credentialStatusActions';
 import {
   captureQuotaCacheGeneration,
   commitIfQuotaCacheCurrent,
@@ -792,6 +793,7 @@ export function AuthFilesPage() {
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : t('common.unknown_error');
         const status = getStatusFromError(err);
+        await disableCredentialAfterForbidden(file, status);
         commitIfQuotaCacheCurrent(cacheGeneration, () => {
           setCodexQuota((prev) => ({
             ...prev,

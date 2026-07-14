@@ -114,7 +114,11 @@ describe('executeCodexInspectionActions', () => {
       managementKey: 'management-key',
     });
 
-    expect(mockedAuthFilesApi.setStatusWithFallback).toHaveBeenCalledWith('auth-a.json', true);
+    expect(mockedAuthFilesApi.setStatusWithFallback).toHaveBeenCalledWith(
+      'auth-a.json',
+      true,
+      'auth-1'
+    );
     expect(mockedUsageServiceApi.disableCodexInspectionUntilReset).not.toHaveBeenCalled();
   });
 

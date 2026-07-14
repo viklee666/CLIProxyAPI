@@ -11,6 +11,7 @@ import {
   useQuotaStore,
 } from '@/stores';
 import { getStatusFromError } from '@/utils/quota';
+import { disableCredentialAfterForbidden } from '@/services/credentialStatusActions';
 import {
   buildQuotaFailureState,
   getQuotaStoreKey,
@@ -106,6 +107,7 @@ export function useQuotaLoader<TState, TData>(config: QuotaConfig<TState, TData>
             } catch (err: unknown) {
               const message = err instanceof Error ? err.message : t('common.unknown_error');
               const errorStatus = getStatusFromError(err);
+              await disableCredentialAfterForbidden(file, errorStatus);
               return { storeKey, file, status: 'error', error: message, errorStatus };
             }
           }

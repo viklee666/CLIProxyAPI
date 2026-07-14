@@ -45,6 +45,7 @@ export interface AuthFileItem {
 
 export interface AuthFilesResponse {
   files: AuthFileItem[];
+  server_time_ms?: number;
   total?: number;
   page?: number;
   page_size?: number;

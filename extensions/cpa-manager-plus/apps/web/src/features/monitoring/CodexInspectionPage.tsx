@@ -64,6 +64,11 @@ import {
   type SummaryCard,
 } from '@/features/monitoring/model/codexInspectionPresentation';
 import { useAuthStore, useConfigStore, useNotificationStore } from '@/stores';
+import {
+  applyCredentialStatuses,
+  findCredentialStatus,
+  useCredentialStatusStore,
+} from '@/stores/useCredentialStatusStore';
 import styles from './CodexInspectionPage.module.scss';
 
 export function CodexInspectionPage() {
@@ -74,6 +79,7 @@ export function CodexInspectionPage() {
   const connectionStatus = useAuthStore((state) => state.connectionStatus);
   const showNotification = useNotificationStore((state) => state.showNotification);
   const showConfirmation = useNotificationStore((state) => state.showConfirmation);
+  const credentialStatuses = useCredentialStatusStore((state) => state.snapshots);
   const connectionFingerprint = useMemo(
     () => createCodexInspectionConnectionFingerprint(apiBase, managementKey),
     [apiBase, managementKey]
@@ -137,6 +143,48 @@ export function CodexInspectionPage() {
       }
     ) => Promise<void>) | null
   >(null);
+
+  useEffect(() => {
+    setResult((current) => {
+      if (!current) return current;
+      let changed = false;
+      const files = applyCredentialStatuses(current.files, credentialStatuses);
+      if (files.some((file, index) => file !== current.files[index])) changed = true;
+      const results = current.results.map((item) => {
+        const snapshot = findCredentialStatus(credentialStatuses, {
+          name: item.fileName,
+          authIndex: item.authIndex,
+        });
+        if (
+          !snapshot ||
+          (item.disabled === snapshot.disabled &&
+            item.status === snapshot.status &&
+            (!snapshot.state || item.state === snapshot.state))
+        ) {
+          return item;
+        }
+        changed = true;
+        return {
+          ...item,
+          disabled: snapshot.disabled,
+          status: snapshot.status,
+          ...(snapshot.state ? { state: snapshot.state } : {}),
+        };
+      });
+      if (!changed) return current;
+      const disabledCount = results.filter((item) => item.disabled).length;
+      return {
+        ...current,
+        files,
+        results,
+        summary: {
+          ...current.summary,
+          disabledCount,
+          enabledCount: results.length - disabledCount,
+        },
+      };
+    });
+  }, [credentialStatuses]);
 
   useEffect(() => {
     if (restoredConnectionFingerprintRef.current === connectionFingerprint) return;

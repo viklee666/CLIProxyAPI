@@ -25,6 +25,7 @@ type authFileQuery struct {
 	page      int
 	pageSize  int
 	paged     bool
+	updatedAt time.Time
 	search    string
 	providers map[string]struct{}
 	names     map[string]struct{}
@@ -50,6 +51,7 @@ type authFileCandidate struct {
 	disabled    bool
 	unavailable bool
 	runtimeOnly bool
+	updatedAt   time.Time
 }
 
 func hasAuthFileQuery(c *gin.Context) bool {
@@ -60,7 +62,7 @@ func hasAuthFileQuery(c *gin.Context) bool {
 	for _, key := range []string{
 		"view", "page", "page_size", "limit", "search", "provider", "type",
 		"name", "auth_index", "disabled", "problem", "healthy", "runtime_only",
-		"sort", "order",
+		"sort", "order", "updated_after_ms",
 	} {
 		if _, ok := query[key]; ok {
 			return true
@@ -112,6 +114,15 @@ func parseAuthFileQuery(c *gin.Context) (authFileQuery, error) {
 			parsed = maxAuthFilesPageSize
 		}
 		q.pageSize = parsed
+	}
+	if rawUpdatedAfter, ok := c.GetQuery("updated_after_ms"); ok {
+		milliseconds, err := strconv.ParseInt(strings.TrimSpace(rawUpdatedAfter), 10, 64)
+		if err != nil || milliseconds < 0 {
+			return q, fmt.Errorf("updated_after_ms must be a non-negative unix millisecond timestamp")
+		}
+		if milliseconds > 0 {
+			q.updatedAt = time.UnixMilli(milliseconds)
+		}
 	}
 
 	var err error
@@ -185,6 +196,7 @@ func (h *Handler) listAuthFilesQuery(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	responseTime := time.Now()
 
 	var candidates []authFileCandidate
 	if h.authManager != nil {
@@ -236,9 +248,10 @@ func (h *Handler) listAuthFilesQuery(c *gin.Context) {
 	}
 
 	response := gin.H{
-		"files":  files,
-		"total":  total,
-		"facets": gin.H{"providers": providerCounts},
+		"files":          files,
+		"total":          total,
+		"facets":         gin.H{"providers": providerCounts},
+		"server_time_ms": responseTime.UnixMilli(),
 	}
 	if q.paged {
 		totalPages := 0
@@ -304,6 +317,7 @@ func (h *Handler) authFileCandidatesFromManager() []authFileCandidate {
 			disabled:    auth.Disabled || auth.Status == coreauth.StatusDisabled,
 			unavailable: auth.Unavailable,
 			runtimeOnly: runtimeOnly,
+			updatedAt:   auth.UpdatedAt,
 		})
 	}
 	return result
@@ -356,12 +370,16 @@ func (h *Handler) authFileCandidatesFromDisk() ([]authFileCandidate, error) {
 			disabled:  disabled,
 			status:    map[bool]string{true: "disabled", false: "active"}[disabled],
 			statusMsg: "",
+			updatedAt: info.ModTime(),
 		})
 	}
 	return result, nil
 }
 
 func (c authFileCandidate) matches(q authFileQuery, includeProvider bool) bool {
+	if !q.updatedAt.IsZero() && (c.updatedAt.IsZero() || !c.updatedAt.After(q.updatedAt)) {
+		return false
+	}
 	if includeProvider && len(q.providers) > 0 {
 		if _, ok := q.providers[c.provider]; !ok {
 			return false

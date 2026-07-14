@@ -123,7 +123,7 @@ const executeStatusChange = async (
         recoverAtMs: cooldownWindow.resetAtMs,
       });
     } else {
-      await authFilesApi.setStatusWithFallback(item.fileName, disabled);
+      await authFilesApi.setStatusWithFallback(item.fileName, disabled, item.authIndex);
     }
     return {
       action: disabled ? 'disable' : 'enable',

@@ -100,6 +100,13 @@ const resolveDeactivatedWorkspaceProbeAction = (
   isQuota: false,
 });
 
+const resolveForbiddenProbeAction = (usedPercent: number | null): CodexInspectionDecision => ({
+  action: 'delete',
+  actionReason: '接口返回 403，账号无权访问或凭证已失效，建议删除账号',
+  usedPercent,
+  isQuota: false,
+});
+
 const classifyUnauthorizedReason = (bodyText: string): UnauthorizedReason => {
   const normalized = bodyText.trim().toLowerCase();
   if (
@@ -299,6 +306,10 @@ const resolveProbeAction = (
 ): CodexInspectionDecision => {
   if (isDeactivatedWorkspaceResponse(statusCode, bodyText)) {
     return resolveDeactivatedWorkspaceProbeAction(usedPercent);
+  }
+
+  if (statusCode === 403) {
+    return resolveForbiddenProbeAction(usedPercent);
   }
 
   const windowAwareDecision = resolveWindowAwareProbeAction(

@@ -6,6 +6,7 @@ import { apiClient } from './client';
 import type { AuthFilesResponse } from '@/types/authFile';
 import type { OAuthModelAliasEntry } from '@/types';
 import { parseTimestampMs } from '@/utils/timestamp';
+import { useCredentialStatusStore } from '@/stores/useCredentialStatusStore';
 
 type StatusError = { status?: number };
 type AuthFileStatusResponse = { status: string; disabled: boolean };
@@ -22,6 +23,7 @@ export type AuthFilesListQuery = {
   healthy?: boolean;
   sort?: 'provider' | 'name' | 'note' | 'priority' | 'status' | 'updated_at';
   order?: 'asc' | 'desc';
+  updated_after_ms?: number;
 };
 type AuthFileJsonValue = Record<string, unknown> | Record<string, unknown>[];
 export type AuthFileFieldsPatch = {
@@ -541,6 +543,46 @@ const saveAuthFileText = async (name: string, text: string) => {
   }
 };
 
+const AUTH_FILES_BULK_PAGE_SIZE = 500;
+
+const listAllAuthFiles = async (
+  view: 'summary' | 'snapshot',
+  extra: Omit<AuthFilesListQuery, 'view' | 'page' | 'page_size'> = {}
+): Promise<AuthFilesResponse> => {
+  const files: AuthFileEntry[] = [];
+  let page = 1;
+  let total = 0;
+  let serverTimeMs = 0;
+  let facets: AuthFilesResponse['facets'] = undefined;
+
+  while (true) {
+    const response = await authFilesApi.list({
+      ...extra,
+      view,
+      page,
+      page_size: AUTH_FILES_BULK_PAGE_SIZE,
+    });
+    files.push(...response.files);
+    total = typeof response.total === 'number' ? response.total : files.length;
+    if (serverTimeMs <= 0 && (response.server_time_ms ?? 0) > 0) {
+      serverTimeMs = response.server_time_ms ?? 0;
+    }
+    facets = response.facets ?? facets;
+    if (!response.has_more && files.length >= total) break;
+    if (response.files.length === 0 || response.files.length < AUTH_FILES_BULK_PAGE_SIZE) break;
+    page += 1;
+  }
+
+  const result = dedupeAuthFilesResponse({
+    files,
+    total,
+    facets,
+    server_time_ms: serverTimeMs || undefined,
+  });
+  useCredentialStatusStore.getState().upsertSnapshots(result.files);
+  return result;
+};
+
 export const isAuthFileInvalidJsonObjectError = (err: unknown): boolean =>
   err instanceof Error && err.message === AUTH_FILE_INVALID_JSON_OBJECT_ERROR;
 
@@ -638,31 +680,66 @@ const normalizeOauthModelAlias = (payload: unknown): Record<string, OAuthModelAl
 const OAUTH_MODEL_ALIAS_ENDPOINT = '/oauth-model-alias';
 
 export const authFilesApi = {
-  list: async (params?: AuthFilesListQuery) =>
-    dedupeAuthFilesResponse(
+  list: async (params?: AuthFilesListQuery) => {
+    const response = dedupeAuthFilesResponse(
       params
         ? await apiClient.get<AuthFilesResponse>('/auth-files', { params })
         : await apiClient.get<AuthFilesResponse>('/auth-files')
-    ),
+    );
+    useCredentialStatusStore.getState().upsertSnapshots(response.files);
+    return response;
+  },
 
-  listSummary: () => authFilesApi.list({ view: 'summary' }),
+  listSummary: () => listAllAuthFiles('summary'),
+
+  listSnapshot: (updatedAfterMs?: number) =>
+    listAllAuthFiles(
+      'snapshot',
+      typeof updatedAfterMs === 'number' && updatedAfterMs > 0
+        ? { updated_after_ms: updatedAfterMs }
+        : {}
+    ),
 
   count: async (): Promise<number> => {
     const response = await authFilesApi.list({ view: 'count', page: 1, page_size: 1 });
     return typeof response.total === 'number' ? response.total : response.files.length;
   },
 
-  patchFile: (payload: AuthFilePatchPayload) =>
-    apiClient.patch<AuthFileStatusResponse>('/auth-files', payload),
+  patchFile: async (payload: AuthFilePatchPayload) => {
+    const response = await apiClient.patch<AuthFileStatusResponse>('/auth-files', payload);
+    if (typeof payload.disabled === 'boolean') {
+      useCredentialStatusStore.getState().patchStatus({ name: payload.name }, payload.disabled);
+    }
+    return response;
+  },
 
-  setStatus: (name: string, disabled: boolean) =>
-    apiClient.patch<AuthFileStatusResponse>('/auth-files/status', { name, disabled }),
+  setStatus: async (name: string, disabled: boolean, authIndex?: string | number | null) => {
+    const normalizedAuthIndex = normalizePatchAuthIndex(authIndex);
+    const response = await apiClient.patch<AuthFileStatusResponse>('/auth-files/status', {
+      name,
+      disabled,
+      ...(normalizedAuthIndex ? { auth_index: normalizedAuthIndex } : {}),
+    });
+    useCredentialStatusStore
+      .getState()
+      .patchStatus({ name, authIndex: normalizedAuthIndex }, disabled);
+    return response;
+  },
 
-  setStatusWithFallback: async (name: string, disabled: boolean) => {
+  setStatusWithFallback: async (
+    name: string,
+    disabled: boolean,
+    authIndex?: string | number | null
+  ) => {
     try {
-      return await authFilesApi.patchFile({ name, disabled });
+      if (normalizePatchAuthIndex(authIndex)) {
+        return await authFilesApi.setStatus(name, disabled, authIndex);
+      }
+      const response = await authFilesApi.patchFile({ name, disabled });
+      useCredentialStatusStore.getState().patchStatus({ name }, disabled);
+      return response;
     } catch {
-      return authFilesApi.setStatus(name, disabled);
+      return authFilesApi.setStatus(name, disabled, authIndex);
     }
   },
 
@@ -717,7 +794,9 @@ export const authFilesApi = {
     const payload = await apiClient.delete<AuthFileBatchDeleteResponse>('/auth-files', {
       data: { names: requestedNames },
     });
-    return normalizeBatchDeleteResponse(payload, requestedNames);
+    const result = normalizeBatchDeleteResponse(payload, requestedNames);
+    useCredentialStatusStore.getState().removeFiles(result.files);
+    return result;
   },
 
   deleteFile: (name: string) => authFilesApi.deleteFiles([name]),
@@ -731,10 +810,16 @@ export const authFilesApi = {
     const payload = await apiClient.delete<AuthFileBatchDeleteResponse>(
       `/auth-files?name=${encodeURIComponent(requestedNames[0])}`
     );
-    return normalizeBatchDeleteResponse(payload, requestedNames);
+    const result = normalizeBatchDeleteResponse(payload, requestedNames);
+    useCredentialStatusStore.getState().removeFiles(result.files);
+    return result;
   },
 
-  deleteAll: () => apiClient.delete('/auth-files', { params: { all: true } }),
+  deleteAll: async () => {
+    const response = await apiClient.delete('/auth-files', { params: { all: true } });
+    useCredentialStatusStore.getState().replaceSnapshots([]);
+    return response;
+  },
 
   downloadText: async (name: string): Promise<string> => {
     const response = await apiClient.getRaw(

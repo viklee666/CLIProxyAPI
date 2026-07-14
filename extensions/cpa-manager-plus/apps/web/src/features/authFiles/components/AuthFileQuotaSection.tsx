@@ -17,6 +17,7 @@ import {
 } from '@/stores';
 import type { AuthFileItem } from '@/types';
 import { getStatusFromError } from '@/utils/quota';
+import { disableCredentialAfterForbidden } from '@/services/credentialStatusActions';
 import {
   isRuntimeOnlyAuthFile,
   resolveQuotaErrorMessage,
@@ -110,6 +111,7 @@ export function AuthFileQuotaSection(props: AuthFileQuotaSectionProps) {
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : t('common.unknown_error');
       const status = getStatusFromError(err);
+      await disableCredentialAfterForbidden(file, status);
       commitIfQuotaCacheCurrent(cacheGeneration, () => {
         updateQuotaState((prev: Record<string, unknown>) => ({
           ...prev,

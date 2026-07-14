@@ -62,6 +62,8 @@ import {
   type UsageHeaderSnapshot,
 } from '@/services/api/usageService';
 import { useAuthStore, useNotificationStore } from '@/stores';
+import { findCredentialStatus, useCredentialStatusStore } from '@/stores/useCredentialStatusStore';
+import { refreshCredentialStatuses } from '@/services/credentialStatusSync';
 import {
   buildUsageHeaderSnapshotLookup,
   getHeaderSnapshotErrorCode,
@@ -681,6 +683,7 @@ export function ServerCodexInspectionPage() {
   const featureAvailability = usePanelFeatureAvailability();
   const showNotification = useNotificationStore((state) => state.showNotification);
   const showConfirmation = useNotificationStore((state) => state.showConfirmation);
+  const credentialStatuses = useCredentialStatusStore((state) => state.snapshots);
 
   const [serviceBase, setServiceBase] = useState('');
   const [managerConfig, setManagerConfig] = useState<ManagerConfig | null>(null);
@@ -819,7 +822,23 @@ export function ServerCodexInspectionPage() {
       (activeRun.reauthCount ?? 0)
     : 0;
 
-  const resultRows = useMemo(() => detail?.results ?? [], [detail?.results]);
+  const resultRows = useMemo(
+    () =>
+      (detail?.results ?? []).map((item) => {
+        const snapshot = findCredentialStatus(credentialStatuses, {
+          name: item.fileName,
+          authIndex: item.authIndex,
+        });
+        if (!snapshot) return item;
+        return {
+          ...item,
+          disabled: snapshot.disabled,
+          status: snapshot.status,
+          ...(snapshot.state ? { state: snapshot.state } : {}),
+        };
+      }),
+    [credentialStatuses, detail?.results]
+  );
   const headerSnapshotLookup = useMemo(
     () => buildUsageHeaderSnapshotLookup(headerSnapshots),
     [headerSnapshots]
@@ -1039,6 +1058,7 @@ export function ServerCodexInspectionPage() {
       const nextDetail = await usageServiceApi.runCodexInspection(serviceBase, managementKey);
       setDetail(nextDetail);
       setSelectedRunId(nextDetail.run.id);
+      void refreshCredentialStatuses({ forceFull: true });
       const response = await usageServiceApi.listCodexInspectionRuns(
         serviceBase,
         managementKey,
@@ -1094,6 +1114,7 @@ export function ServerCodexInspectionPage() {
         );
         setDetail(response.detail);
         setSelectedRunId(response.detail.run.id);
+        void refreshCredentialStatuses({ forceFull: true });
 
         const runsResponse = await usageServiceApi.listCodexInspectionRuns(
           serviceBase,

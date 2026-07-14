@@ -234,7 +234,7 @@ func classifyAccountActionEvent(event usage.Event) (string, string, bool) {
 	code, typ := accountActionErrorCodeAndType(event)
 	code = strings.ToLower(strings.TrimSpace(code))
 	typ = strings.ToLower(strings.TrimSpace(typ))
-	text := strings.ToLower(strings.Join([]string{event.FailSummary, code, typ}, "\n"))
+	text := strings.ToLower(strings.Join([]string{event.FailSummary, event.FailBody, code, typ}, "\n"))
 
 	if event.FailStatusCode == http.StatusPaymentRequired {
 		if strings.Contains(text, "deactivated_workspace") {
@@ -249,6 +249,12 @@ func classifyAccountActionEvent(event usage.Event) (string, string, bool) {
 	if strings.Contains(text, "account_deactivated") {
 		return model.AccountActionTypeDelete, "Account is deactivated; review and delete the stale auth file if appropriate", true
 	}
+	if event.FailStatusCode == http.StatusForbidden {
+		if isCloudflareForbidden(text) {
+			return model.AccountActionTypeReview, "Cloudflare challenge requires manual review", true
+		}
+		return model.AccountActionTypeDelete, "HTTP 403 indicates the credential can no longer access the upstream account; disable it and review deletion", true
+	}
 	if strings.Contains(text, "token_revoked") || strings.Contains(text, "token_invalidated") || strings.Contains(text, "invalidated_oauth_token") || strings.Contains(text, "invalidated oauth token") || strings.Contains(text, "oauth token revoked") {
 		return model.AccountActionTypeReauth, "OAuth token revoked / invalidated; reauthorize the account with OAuth", true
 	}
@@ -259,6 +265,13 @@ func classifyAccountActionEvent(event usage.Event) (string, string, bool) {
 		return model.AccountActionTypeReview, "Authentication failure requires manual review", true
 	}
 	return "", "", false
+}
+
+func isCloudflareForbidden(text string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(text))
+	return strings.Contains(normalized, "cf-mitigated") ||
+		strings.Contains(normalized, "cloudflare challenge") ||
+		strings.Contains(normalized, "just a moment")
 }
 
 func accountActionErrorCodeAndType(event usage.Event) (string, string) {

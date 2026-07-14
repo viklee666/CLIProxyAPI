@@ -7,6 +7,10 @@ import { useTranslation } from 'react-i18next';
 import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
 import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
 import { useAuthStore } from '@/stores';
+import {
+  applyCredentialStatuses,
+  useCredentialStatusStore,
+} from '@/stores/useCredentialStatusStore';
 import { authFilesApi, configFileApi } from '@/services/api';
 import {
   monitoringAnalyticsApi,
@@ -50,6 +54,11 @@ export function QuotaPage() {
   const initialUiState = useRef(readQuotaPageUiState());
 
   const [files, setFiles] = useState<AuthFileItem[]>([]);
+  const credentialStatuses = useCredentialStatusStore((state) => state.snapshots);
+  const syncedFiles = useMemo(
+    () => applyCredentialStatuses(files, credentialStatuses),
+    [credentialStatuses, files]
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [searchQuery, setSearchQuery] = useState(() => initialUiState.current.searchQuery);
@@ -207,7 +216,7 @@ export function QuotaPage() {
 
       <QuotaSection
         config={CODEX_CONFIG}
-        files={files}
+        files={syncedFiles}
         loading={loading}
         disabled={disableControls}
         searchQuery={searchQuery}
@@ -221,7 +230,7 @@ export function QuotaPage() {
       />
       <QuotaSection
         config={CLAUDE_CONFIG}
-        files={files}
+        files={syncedFiles}
         loading={loading}
         disabled={disableControls}
         searchQuery={searchQuery}
@@ -233,7 +242,7 @@ export function QuotaPage() {
       />
       <QuotaSection
         config={ANTIGRAVITY_CONFIG}
-        files={files}
+        files={syncedFiles}
         loading={loading}
         disabled={disableControls}
         searchQuery={searchQuery}
@@ -247,7 +256,7 @@ export function QuotaPage() {
       />
       <QuotaSection
         config={KIMI_CONFIG}
-        files={files}
+        files={syncedFiles}
         loading={loading}
         disabled={disableControls}
         searchQuery={searchQuery}
@@ -259,7 +268,7 @@ export function QuotaPage() {
       />
       <QuotaSection
         config={XAI_CONFIG}
-        files={files}
+        files={syncedFiles}
         loading={loading}
         disabled={disableControls}
         searchQuery={searchQuery}
