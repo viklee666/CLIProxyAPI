@@ -2,7 +2,7 @@
 
 [English](README.md) | 中文 | [日本語](README_JA.md)
 
-> 本仓库的一体化自构建方案（CLIProxyAPI + CPA Manager Plus + Nginx）见 [docs/SELF_BUILD_STACK_CN.md](docs/SELF_BUILD_STACK_CN.md)，管理接口性能扫描见 [docs/MANAGEMENT_API_PERFORMANCE_AUDIT_CN.md](docs/MANAGEMENT_API_PERFORMANCE_AUDIT_CN.md)。
+> 本仓库的一体化自构建方案（CLIProxyAPI 内置 CPA Manager Plus，并接入既有外部反向代理）见 [docs/SELF_BUILD_STACK_CN.md](docs/SELF_BUILD_STACK_CN.md)，管理接口性能扫描见 [docs/MANAGEMENT_API_PERFORMANCE_AUDIT_CN.md](docs/MANAGEMENT_API_PERFORMANCE_AUDIT_CN.md)。
 
 一个为 CLI 提供 OpenAI/Gemini/Claude/Codex/Grok 兼容 API 接口的代理服务器。
 

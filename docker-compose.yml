@@ -38,7 +38,6 @@ services:
     expose:
       - "8317"
     ports:
-      - "${CLI_PROXY_PORT:-8317}:8317"
       - "${GEMINI_CALLBACK_PORT:-8085}:8085"
       - "${CODEX_CALLBACK_PORT:-1455}:1455"
       - "${ANTHROPIC_CALLBACK_PORT:-54545}:54545"
@@ -52,34 +51,9 @@ services:
       - ${CPA_MANAGER_DATA_PATH:-./data/cpa-manager-plus}:/data:rw
     restart: unless-stopped
     networks:
-      - cpa_bridge
-
-  nginx-proxy:
-    build:
-      context: .
-      dockerfile: Dockerfile.nginx
-      args:
-        VERSION: ${CPA_MANAGER_VERSION:-local}
-    image: ${NGINX_PROXY_IMAGE:-cpa-nginx-proxy:local}
-    container_name: nginx-proxy
-    environment:
-      API_DOMAIN: ${API_DOMAIN:-api.example.com}
-      MANAGER_DOMAIN: ${MANAGER_DOMAIN:-manager.example.com}
-    ports:
-      - "${HTTP_PORT:-80}:80"
-      - "${HTTPS_PORT:-443}:443"
-    volumes:
-      - ${API_SSL_CERT:?set API_SSL_CERT in .env.stack}:/etc/nginx/certs/api.pem:ro
-      - ${API_SSL_KEY:?set API_SSL_KEY in .env.stack}:/etc/nginx/certs/api.key:ro
-      - ${MANAGER_SSL_CERT:?set MANAGER_SSL_CERT in .env.stack}:/etc/nginx/certs/manager.pem:ro
-      - ${MANAGER_SSL_KEY:?set MANAGER_SSL_KEY in .env.stack}:/etc/nginx/certs/manager.key:ro
-    depends_on:
-      cli-proxy-api:
-        condition: service_started
-    restart: unless-stopped
-    networks:
-      - cpa_bridge
+      - proxy_bridge
 
 networks:
-  cpa_bridge:
-    name: ${CPA_DOCKER_NETWORK:-cpa-bridge}
+  proxy_bridge:
+    external: true
+    name: ${CPA_DOCKER_NETWORK:-shared_proxy}

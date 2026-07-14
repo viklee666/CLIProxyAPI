@@ -10,7 +10,7 @@
 | Manager auth snapshot | 每 30 秒下载全部凭证 | 只请求当前 usage batch 涉及的 `auth_index`，并使用 `snapshot` 字段集 |
 | Manager 单凭证校验 | 带 `name/auth_index`，但 CLI 后端忽略参数并返回全部 | CLI 后端在查询模式下精确筛选 |
 | 请求监控事件 | 单次最多加载 500 条事件 | 首次和“加载更多”均为 100 条；后端继续使用 `(timestamp,id)` 游标 |
-| `management.html` | React/样式/图片全部内联，单个 HTML 约 4.6 MB | CLI/Manager 保留单文件回退；Nginx 公开入口使用小 HTML + hash 静态资源，资源一年 immutable cache |
+| `management.html` | React/样式/图片全部内联，单个 HTML 约 4.6 MB | 集成 Manager Plus 使用小 HTML + hash 静态资源，资源一年 immutable cache，并保留单文件回退 |
 | Quota 自动禁用 | 只持久处理 Codex 严格 429 与 xAI 免费额度 | 保留严格规则；其他提供商仅在 402/403/429 且响应含明确未来 quota reset 时持久禁用并自动恢复 |
 
 ## 已确认本身有边界，无需改核心逻辑
