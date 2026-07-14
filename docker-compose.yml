@@ -48,12 +48,6 @@ services:
       - ${CLI_PROXY_PLUGIN_PATH:-./plugins}:/CLIProxyAPI/plugins:rw
       - ${CPA_MANAGER_DATA_PATH:-./data/cpa-manager-plus}:/data:rw
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8317/healthz >/dev/null && wget -qO- http://127.0.0.1:8317/health >/dev/null"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 15s
     networks:
       - cpa_bridge
 
@@ -78,7 +72,7 @@ services:
       - ${MANAGER_SSL_KEY:?set MANAGER_SSL_KEY in .env.stack}:/etc/nginx/certs/manager.key:ro
     depends_on:
       cli-proxy-api:
-        condition: service_healthy
+        condition: service_started
     restart: unless-stopped
     networks:
       - cpa_bridge
