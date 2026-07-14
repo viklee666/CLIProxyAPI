@@ -228,6 +228,57 @@ func TestReloadConfigIfChanged_TriggersOnChangeAndSkipsUnchanged(t *testing.T) {
 	}
 }
 
+func TestReloadConfigIfChanged_ReplaysSaveThatLandsDuringReload(t *testing.T) {
+	tmpDir := t.TempDir()
+	authDir := filepath.Join(tmpDir, "auth")
+	if errMkdir := os.MkdirAll(authDir, 0o755); errMkdir != nil {
+		t.Fatalf("create auth dir: %v", errMkdir)
+	}
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	writeConfig := func(strategy string) {
+		t.Helper()
+		data, errMarshal := yaml.Marshal(&config.Config{
+			AuthDir: authDir,
+			Routing: config.RoutingConfig{Strategy: strategy},
+		})
+		if errMarshal != nil {
+			t.Fatalf("marshal config: %v", errMarshal)
+		}
+		if errWrite := os.WriteFile(configPath, data, 0o644); errWrite != nil {
+			t.Fatalf("write config: %v", errWrite)
+		}
+	}
+	writeConfig("round-robin")
+
+	var reloads atomic.Int32
+	w := &Watcher{configPath: configPath, authDir: authDir}
+	w.reloadCallback = func(cfg *config.Config) {
+		count := reloads.Add(1)
+		if count == 1 && cfg.Routing.Strategy == "round-robin" {
+			writeConfig("adaptive")
+		}
+	}
+	t.Cleanup(w.stopConfigReloadTimer)
+	w.reloadConfigIfChanged()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for reloads.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if reloads.Load() != 2 {
+		t.Fatalf("reload callback count = %d, want 2", reloads.Load())
+	}
+	w.clientsMutex.RLock()
+	loadedStrategy := ""
+	if w.config != nil {
+		loadedStrategy = w.config.Routing.Strategy
+	}
+	w.clientsMutex.RUnlock()
+	if loadedStrategy != "adaptive" {
+		t.Fatalf("loaded strategy = %q, want adaptive", loadedStrategy)
+	}
+}
+
 func TestStartAndStopSuccess(t *testing.T) {
 	tmpDir := t.TempDir()
 	authDir := filepath.Join(tmpDir, "auth")
