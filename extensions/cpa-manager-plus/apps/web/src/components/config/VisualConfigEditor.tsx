@@ -1095,6 +1095,10 @@ export function VisualConfigEditor({
                         value: 'fill-first',
                         label: t('config_management.visual.sections.network.strategy_fill_first'),
                       },
+                      {
+                        value: 'adaptive',
+                        label: t('config_management.visual.sections.network.strategy_adaptive'),
+                      },
                     ]}
                     id={`${routingStrategyLabelId}-select`}
                     disabled={disabled}

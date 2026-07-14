@@ -1,0 +1,151 @@
+@use '../../styles/variables' as *;
+@use '../../styles/mixins' as *;
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-md;
+}
+
+.header,
+.toolbar,
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.header {
+  justify-content: space-between;
+  align-items: flex-start;
+
+  h1 {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 24px;
+  }
+
+  p {
+    margin: 6px 0 0;
+    color: var(--text-secondary);
+    font-size: 14px;
+  }
+
+  @include mobile {
+    flex-direction: column;
+  }
+}
+
+.panel {
+  padding: 16px;
+  border: 1px solid var(--glass-border);
+  border-radius: $radius-lg;
+  background: var(--glass-bg);
+}
+
+.panelTitle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+
+  h2 {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 17px;
+  }
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+
+  :global(.form-group) {
+    margin: 0;
+  }
+
+  @include mobile {
+    grid-template-columns: 1fr;
+  }
+}
+
+.toggle {
+  display: flex;
+  align-items: center;
+  min-height: 42px;
+}
+
+.toolbar {
+  margin-bottom: 12px;
+
+  :global(.form-group) {
+    flex: 1;
+    margin: 0;
+  }
+
+  @include mobile {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
+.tableWrap {
+  overflow-x: auto;
+}
+
+.table {
+  width: 100%;
+  min-width: 1050px;
+  border-collapse: collapse;
+
+  th,
+  td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border-color);
+    color: var(--text-primary);
+    font-size: 13px;
+    text-align: left;
+  }
+
+  th {
+    color: var(--text-secondary);
+    font-size: 12px;
+  }
+}
+
+.muted {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.badge {
+  display: inline-flex;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--success-color) 14%, transparent);
+  color: var(--success-color);
+  font-size: 12px;
+}
+
+.badgeOff {
+  background: color-mix(in srgb, var(--text-secondary) 12%, transparent);
+  color: var(--text-secondary);
+}
+
+.warning {
+  color: var(--warning-color);
+}
+
+.empty,
+.loading,
+.error {
+  padding: 30px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.error {
+  color: var(--danger-color);
+}

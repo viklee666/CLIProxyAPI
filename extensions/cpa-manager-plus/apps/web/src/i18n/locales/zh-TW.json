@@ -192,7 +192,9 @@
     "logs": "記錄檢視",
     "logs_short": "記錄",
     "system_info": "系統資訊",
-    "system_info_short": "系統"
+    "system_info_short": "系統",
+    "adaptive_routing": "自適應調度",
+    "adaptive_routing_short": "調度"
   },
   "client_access": {
     "groups_title": "客戶端分組",
@@ -431,7 +433,8 @@
     "routing_strategy_hint": "round-robin 為輪詢，fill-first 為優先填充。",
     "routing_strategy_update": "更新",
     "routing_strategy_round_robin": "round-robin（輪詢）",
-    "routing_strategy_fill_first": "fill-first（優先填充）"
+    "routing_strategy_fill_first": "fill-first（優先填充）",
+    "routing_strategy_adaptive": "自適應調度"
   },
   "api_keys": {
     "title": "API 金鑰管理",
@@ -2600,7 +2603,8 @@
           "disable_claude_cloak_mode_desc": "全域原樣傳遞 Claude system 提示詞，不再偽裝成 Claude Code；個別憑證仍可覆寫",
           "session_affinity": "會話黏性路由",
           "ws_auth": "WebSocket 驗證",
-          "ws_auth_desc": "啟用 WebSocket 連線驗證（/v1/ws）"
+          "ws_auth_desc": "啟用 WebSocket 連線驗證（/v1/ws）",
+          "strategy_adaptive": "自適應調度"
         },
         "quota": {
           "title": "配額回退",
@@ -3603,5 +3607,39 @@
     "env_locked_hint": "此開關由服務啟動環境鎖定，請修改環境變數並重新啟動。",
     "env_locked_reason": "由環境變數 {{envKey}} 鎖定。修改該變數並重新啟動服務後才能變更此開關。",
     "gating_note": "關閉某項策略只會影響之後發現的新問題；已經排隊或正在處理的任務會繼續完成。"
+  },
+  "adaptive_routing": {
+    "title": "自適應調度",
+    "description": "根據活躍並發、成功率 EWMA 和首 Token 延遲動態平衡憑證。",
+    "configuration": "評分設定",
+    "saved": "自適應調度設定已儲存",
+    "enabled": "自適應調度已啟用",
+    "disabled": "自適應調度已關閉",
+    "switch_on": "啟用自適應",
+    "switch_off": "切換為輪詢",
+    "top_k": "加權 Top-K",
+    "ewma_alpha": "EWMA 係數",
+    "ttft_target": "TTFT 目標（毫秒）",
+    "weight_priority": "優先級權重",
+    "weight_load": "負載權重",
+    "weight_success": "成功率權重",
+    "weight_ttft": "TTFT 權重",
+    "sticky_escape": "黏性帳號效能逃逸",
+    "min_samples": "最少樣本數",
+    "error_threshold": "錯誤率閾值",
+    "ttft_threshold": "TTFT 逃逸閾值（毫秒）",
+    "active_threshold": "活躍請求閾值",
+    "live_scores": "即時調度評分",
+    "provider_filter": "提供者篩選（可選）",
+    "model_filter": "模型篩選（可選）",
+    "no_scores": "暫無自適應評分。請先啟用自適應調度並產生請求。",
+    "rank": "排名",
+    "score": "評分",
+    "active": "活躍並發",
+    "success_rate": "成功率",
+    "samples": "結果 / TTFT 樣本",
+    "escape": "建議逃逸",
+    "eligible": "可調度",
+    "ineligible": "不可用"
   }
 }

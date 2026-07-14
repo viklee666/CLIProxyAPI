@@ -17,8 +17,44 @@ import (
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
+
+const adaptiveUsagePluginName = "adaptive-routing"
+
+func newRoutingSelector(cfg *config.Config) coreauth.Selector {
+	strategy := ""
+	sessionAffinity := false
+	sessionAffinityTTL := time.Hour
+	if cfg != nil {
+		strategy = strings.ToLower(strings.TrimSpace(cfg.Routing.Strategy))
+		sessionAffinity = cfg.Routing.SessionAffinity
+		if ttlStr := strings.TrimSpace(cfg.Routing.SessionAffinityTTL); ttlStr != "" {
+			if parsed, errParse := time.ParseDuration(ttlStr); errParse == nil && parsed > 0 {
+				sessionAffinityTTL = parsed
+			}
+		}
+	}
+	var selector coreauth.Selector
+	switch strategy {
+	case "fill-first", "fillfirst", "ff":
+		selector = &coreauth.FillFirstSelector{}
+	case "adaptive":
+		adaptive := coreauth.NewAdaptiveSelector(cfg.Routing.Adaptive)
+		usage.RegisterNamedPlugin(adaptiveUsagePluginName, adaptive)
+		selector = adaptive
+	default:
+		selector = &coreauth.RoundRobinSelector{}
+	}
+	if sessionAffinity {
+		selector = coreauth.NewSessionAffinitySelectorWithConfig(coreauth.SessionAffinityConfig{
+			Fallback: selector,
+			TTL:      sessionAffinityTTL,
+		})
+	}
+	return selector
+}
 
 // Builder constructs a Service instance with customizable providers.
 // It provides a fluent interface for configuring all aspects of the service
@@ -244,36 +280,7 @@ func (b *Builder) Build() (*Service, error) {
 			dirSetter.SetBaseDir(b.cfg.AuthDir)
 		}
 
-		strategy := ""
-		sessionAffinity := false
-		sessionAffinityTTL := time.Hour
-		if b.cfg != nil {
-			strategy = strings.ToLower(strings.TrimSpace(b.cfg.Routing.Strategy))
-			// Support both legacy ClaudeCodeSessionAffinity and new universal SessionAffinity
-			sessionAffinity = b.cfg.Routing.SessionAffinity
-			if ttlStr := strings.TrimSpace(b.cfg.Routing.SessionAffinityTTL); ttlStr != "" {
-				if parsed, err := time.ParseDuration(ttlStr); err == nil && parsed > 0 {
-					sessionAffinityTTL = parsed
-				}
-			}
-		}
-		var selector coreauth.Selector
-		switch strategy {
-		case "fill-first", "fillfirst", "ff":
-			selector = &coreauth.FillFirstSelector{}
-		default:
-			selector = &coreauth.RoundRobinSelector{}
-		}
-
-		// Wrap with session affinity if enabled (failover is always on)
-		if sessionAffinity {
-			selector = coreauth.NewSessionAffinitySelectorWithConfig(coreauth.SessionAffinityConfig{
-				Fallback: selector,
-				TTL:      sessionAffinityTTL,
-			})
-		}
-
-		coreManager = coreauth.NewManager(tokenStore, selector, nil)
+		coreManager = coreauth.NewManager(tokenStore, newRoutingSelector(b.cfg), nil)
 	}
 	// Attach a default RoundTripper provider so providers can opt-in per-auth transports.
 	coreManager.SetRoundTripperProvider(newDefaultRoundTripperProvider())

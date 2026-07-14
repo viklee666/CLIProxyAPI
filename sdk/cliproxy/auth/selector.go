@@ -17,6 +17,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -423,7 +424,13 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 	}
 
 	now := time.Now()
-	available, err := getAvailableAuths(auths, provider, model, now)
+	var available []*Auth
+	var err error
+	if usesAdaptiveSelection(s) {
+		available, err = getAvailableAuthsAcrossPriorities(auths, provider, model, now)
+	} else {
+		available, err = getAvailableAuths(auths, provider, model, now)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -433,6 +440,13 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 	if cachedAuthID, ok := s.cache.GetAndRefresh(cacheKey); ok {
 		for _, auth := range available {
 			if auth.ID == cachedAuthID {
+				if s.shouldEscapeAuth(cachedAuthID) {
+					if replacement, replaced := s.pickAvoiding(ctx, provider, model, opts, auths, cachedAuthID); replaced {
+						s.cache.Set(cacheKey, replacement.ID)
+						entry.Infof("session-affinity: escaped unhealthy binding | session=%s previous_auth=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), cachedAuthID, replacement.ID, provider, model)
+						return replacement, nil
+					}
+				}
 				entry.Infof("session-affinity: cache hit | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), auth.ID, provider, model)
 				return auth, nil
 			}
@@ -452,6 +466,13 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 		if cachedAuthID, ok := s.cache.Get(fallbackKey); ok {
 			for _, auth := range available {
 				if auth.ID == cachedAuthID {
+					if s.shouldEscapeAuth(cachedAuthID) {
+						if replacement, replaced := s.pickAvoiding(ctx, provider, model, opts, auths, cachedAuthID); replaced {
+							s.cache.Set(cacheKey, replacement.ID)
+							entry.Infof("session-affinity: escaped unhealthy fallback binding | session=%s fallback=%s previous_auth=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), truncateSessionID(fallbackID), cachedAuthID, replacement.ID, provider, model)
+							return replacement, nil
+						}
+					}
 					s.cache.Set(cacheKey, auth.ID)
 					entry.Infof("session-affinity: fallback cache hit | session=%s fallback=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), truncateSessionID(fallbackID), auth.ID, provider, model)
 					return auth, nil
@@ -467,6 +488,68 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 	s.cache.Set(cacheKey, auth.ID)
 	entry.Infof("session-affinity: cache miss, new binding | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), auth.ID, provider, model)
 	return auth, nil
+}
+
+func (s *SessionAffinitySelector) shouldEscapeAuth(authID string) bool {
+	if s == nil || s.fallback == nil {
+		return false
+	}
+	health, ok := s.fallback.(interface{ ShouldEscapeAuth(string) bool })
+	return ok && health.ShouldEscapeAuth(authID)
+}
+
+func (s *SessionAffinitySelector) pickAvoiding(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth, avoidID string) (*Auth, bool) {
+	if s == nil || s.fallback == nil || len(auths) < 2 {
+		return nil, false
+	}
+	alternatives := make([]*Auth, 0, len(auths)-1)
+	for _, auth := range auths {
+		if auth != nil && auth.ID != avoidID {
+			alternatives = append(alternatives, auth)
+		}
+	}
+	if len(alternatives) == 0 {
+		return nil, false
+	}
+	replacement, errPick := s.fallback.Pick(ctx, provider, model, opts, alternatives)
+	return replacement, errPick == nil && replacement != nil
+}
+
+// BeginAttempt forwards active concurrency tracking to the fallback selector.
+func (s *SessionAffinitySelector) BeginAttempt(authID string) func() {
+	if s == nil || s.fallback == nil {
+		return func() {}
+	}
+	tracker, ok := s.fallback.(interface{ BeginAttempt(string) func() })
+	if !ok {
+		return func() {}
+	}
+	return tracker.BeginAttempt(authID)
+}
+
+// ObserveResult forwards execution outcomes to the fallback selector.
+func (s *SessionAffinitySelector) ObserveResult(result Result) {
+	if s == nil || s.fallback == nil {
+		return
+	}
+	observer, ok := s.fallback.(interface{ ObserveResult(Result) })
+	if ok {
+		observer.ObserveResult(result)
+	}
+}
+
+// AdaptiveScores forwards score snapshots to an adaptive fallback selector.
+func (s *SessionAffinitySelector) AdaptiveScores(provider, model string, auths []*Auth) ([]AdaptiveScore, internalconfig.AdaptiveRoutingConfig, bool) {
+	if s == nil || s.fallback == nil {
+		return nil, internalconfig.AdaptiveRoutingConfig{}, false
+	}
+	source, ok := s.fallback.(interface {
+		AdaptiveScores(string, string, []*Auth) ([]AdaptiveScore, internalconfig.AdaptiveRoutingConfig, bool)
+	})
+	if !ok {
+		return nil, internalconfig.AdaptiveRoutingConfig{}, false
+	}
+	return source.AdaptiveScores(provider, model, auths)
 }
 
 func selectorLogEntry(ctx context.Context) *log.Entry {

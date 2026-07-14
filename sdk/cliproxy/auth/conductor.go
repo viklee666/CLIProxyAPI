@@ -460,6 +460,17 @@ func isBuiltInSelector(selector Selector) bool {
 	}
 }
 
+func usesAdaptiveSelection(selector Selector) bool {
+	switch typed := selector.(type) {
+	case *AdaptiveSelector:
+		return typed != nil
+	case *SessionAffinitySelector:
+		return typed != nil && usesAdaptiveSelection(typed.fallback)
+	default:
+		return false
+	}
+}
+
 func (m *Manager) syncSchedulerFromSnapshot(auths []*Auth) {
 	if m == nil || m.scheduler == nil {
 		return
@@ -612,6 +623,69 @@ func (m *Manager) SetSelector(selector Selector) {
 		m.scheduler.setSelector(selector)
 		m.syncScheduler()
 	}
+}
+
+func (m *Manager) beginAdaptiveAttempt(authID string) func() {
+	if m == nil || strings.TrimSpace(authID) == "" {
+		return func() {}
+	}
+	m.mu.RLock()
+	selector := m.selector
+	m.mu.RUnlock()
+	tracker, ok := selector.(interface{ BeginAttempt(string) func() })
+	if !ok {
+		return func() {}
+	}
+	return tracker.BeginAttempt(authID)
+}
+
+func (m *Manager) observeAdaptiveResult(result Result) {
+	if m == nil {
+		return
+	}
+	m.mu.RLock()
+	selector := m.selector
+	m.mu.RUnlock()
+	observer, ok := selector.(interface{ ObserveResult(Result) })
+	if ok {
+		observer.ObserveResult(result)
+	}
+}
+
+// AdaptiveRoutingSnapshot contains an on-demand view of live scheduling scores.
+type AdaptiveRoutingSnapshot struct {
+	Enabled bool                                 `json:"enabled"`
+	Config  internalconfig.AdaptiveRoutingConfig `json:"config"`
+	Items   []AdaptiveScore                      `json:"items"`
+}
+
+// AdaptiveRoutingScores returns live scores without mutating selector state.
+func (m *Manager) AdaptiveRoutingScores(provider, model string) AdaptiveRoutingSnapshot {
+	if m == nil {
+		return AdaptiveRoutingSnapshot{}
+	}
+	m.mu.RLock()
+	selector := m.selector
+	auths := make([]*Auth, 0, len(m.auths))
+	registryRef := registry.GetGlobalRegistry()
+	for _, auth := range m.auths {
+		if auth == nil {
+			continue
+		}
+		if strings.TrimSpace(model) != "" && !m.authSupportsRouteModel(registryRef, auth, model) {
+			continue
+		}
+		auths = append(auths, auth.Clone())
+	}
+	m.mu.RUnlock()
+	source, ok := selector.(interface {
+		AdaptiveScores(string, string, []*Auth) ([]AdaptiveScore, internalconfig.AdaptiveRoutingConfig, bool)
+	})
+	if !ok {
+		return AdaptiveRoutingSnapshot{}
+	}
+	items, cfg, enabled := source.AdaptiveScores(strings.ToLower(strings.TrimSpace(provider)), strings.TrimSpace(model), auths)
+	return AdaptiveRoutingSnapshot{Enabled: enabled, Config: cfg, Items: items}
 }
 
 // SetStore swaps the underlying persistence store.
@@ -1557,8 +1631,42 @@ func (m *Manager) availableAuthsForRouteModel(auths []*Auth, provider, routeMode
 	return available, nil
 }
 
+func (m *Manager) availableAuthsForAdaptiveRouteModel(auths []*Auth, provider, routeModel string, now time.Time) ([]*Auth, error) {
+	if len(auths) == 0 {
+		return nil, &Error{Code: "auth_not_found", Message: "no auth candidates"}
+	}
+	available := make([]*Auth, 0, len(auths))
+	cooldownCount := 0
+	earliest := time.Time{}
+	for _, candidate := range auths {
+		checkModel := m.selectionModelForAuth(candidate, routeModel)
+		blocked, reason, next := isAuthBlockedForModel(candidate, checkModel, now)
+		if !blocked {
+			available = append(available, candidate)
+			continue
+		}
+		if reason == blockReasonCooldown {
+			cooldownCount++
+			if !next.IsZero() && (earliest.IsZero() || next.Before(earliest)) {
+				earliest = next
+			}
+		}
+	}
+	if len(available) > 0 {
+		return available, nil
+	}
+	if cooldownCount == len(auths) && !earliest.IsZero() {
+		providerForError := provider
+		if providerForError == "mixed" {
+			providerForError = ""
+		}
+		return nil, newModelCooldownError(routeModel, providerForError, earliest.Sub(now))
+	}
+	return nil, &Error{Code: "auth_unavailable", Message: "no auth available"}
+}
+
 func selectionArgForSelector(selector Selector, routeModel string) string {
-	if isBuiltInSelector(selector) {
+	if isBuiltInSelector(selector) || usesAdaptiveSelection(selector) {
 		return ""
 	}
 	return routeModel
@@ -1886,10 +1994,13 @@ func readStreamBootstrap(ctx context.Context, ch <-chan cliproxyexecutor.StreamC
 	}
 }
 
-func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, resultModel string, headers http.Header, buffered []cliproxyexecutor.StreamChunk, remaining <-chan cliproxyexecutor.StreamChunk, aliasResult OAuthModelAliasResult) *cliproxyexecutor.StreamResult {
+func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, resultModel string, headers http.Header, buffered []cliproxyexecutor.StreamChunk, remaining <-chan cliproxyexecutor.StreamChunk, aliasResult OAuthModelAliasResult, onDone func()) *cliproxyexecutor.StreamResult {
 	out := make(chan cliproxyexecutor.StreamChunk)
 	go func() {
 		defer close(out)
+		if onDone != nil {
+			defer onDone()
+		}
 		var failed bool
 		forward := true
 		var rewriter *StreamRewriter
@@ -1966,7 +2077,13 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 	return &cliproxyexecutor.StreamResult{Headers: headers, Chunks: out}
 }
 
-func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor ProviderExecutor, auth *Auth, provider string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, routeModel, executionModel string, execModels []string, pooled bool, aliasResult OAuthModelAliasResult) (*cliproxyexecutor.StreamResult, error) {
+func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor ProviderExecutor, auth *Auth, provider string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, routeModel, executionModel string, execModels []string, pooled bool, aliasResult OAuthModelAliasResult, onDone func()) (*cliproxyexecutor.StreamResult, error) {
+	handedOff := false
+	defer func() {
+		if !handedOff && onDone != nil {
+			onDone()
+		}
+	}()
 	if executor == nil {
 		return nil, &Error{Code: "executor_not_found", Message: "executor not registered"}
 	}
@@ -2088,7 +2205,9 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			close(closedCh)
 			remaining = closedCh
 		}
-		return m.wrapStreamResult(ctx, auth.Clone(), provider, resultModel, streamResult.Headers, buffered, remaining, aliasResult), nil
+		wrapped := m.wrapStreamResult(ctx, auth.Clone(), provider, resultModel, streamResult.Headers, buffered, remaining, aliasResult, onDone)
+		handedOff = true
+		return wrapped, nil
 	}
 	if lastErr == nil {
 		lastErr = &Error{Code: "auth_not_found", Message: "no upstream model available"}
@@ -2694,6 +2813,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		entry := logEntryWithRequestID(ctx)
 		debugLogAuthSelection(entry, auth, provider, routeModel)
 		publishSelectedAuthMetadata(opts.Metadata, auth.ID)
+		finishAttempt := m.beginAdaptiveAttempt(auth.ID)
 
 		tried[auth.ID] = struct{}{}
 		execCtx := ctx
@@ -2705,6 +2825,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 
 		models, pooled, aliasResult := m.preparedExecutionModelsWithAlias(auth, routeModel)
 		if len(models) == 0 {
+			finishAttempt()
 			continue
 		}
 		attempted[auth.ID] = struct{}{}
@@ -2716,6 +2837,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				result.Error.HTTPStatus = se.StatusCode()
 			}
 			m.MarkResult(execCtx, result)
+			finishAttempt()
 			lastErr = errPrepare
 			continue
 		}
@@ -2733,6 +2855,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			resp, errExec := executor.Execute(execCtx, auth, execReq, execOpts)
 			if errExec != nil {
 				if errCtx := execCtx.Err(); errCtx != nil {
+					finishAttempt()
 					return cliproxyexecutor.Response{}, errCtx
 				}
 				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(execCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
@@ -2741,6 +2864,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					resp, errExec = executor.Execute(execCtx, auth, execReq, execOpts)
 					if errExec != nil {
 						if errCtx := execCtx.Err(); errCtx != nil {
+							finishAttempt()
 							return cliproxyexecutor.Response{}, errCtx
 						}
 					}
@@ -2757,6 +2881,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				}
 				m.MarkResult(execCtx, result)
 				if isRequestInvalidError(errExec) {
+					finishAttempt()
 					return cliproxyexecutor.Response{}, errExec
 				}
 				authErr = errExec
@@ -2764,8 +2889,10 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			}
 			m.MarkResult(execCtx, result)
 			rewriteForceMappedResponse(&resp, aliasResult)
+			finishAttempt()
 			return resp, nil
 		}
+		finishAttempt()
 		if authErr != nil {
 			if isRequestInvalidError(authErr) {
 				return cliproxyexecutor.Response{}, authErr
@@ -2813,6 +2940,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		entry := logEntryWithRequestID(ctx)
 		debugLogAuthSelection(entry, auth, provider, routeModel)
 		publishSelectedAuthMetadata(opts.Metadata, auth.ID)
+		finishAttempt := m.beginAdaptiveAttempt(auth.ID)
 
 		tried[auth.ID] = struct{}{}
 		execCtx := ctx
@@ -2824,6 +2952,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 
 		models, pooled, aliasResult := m.preparedExecutionModelsWithAlias(auth, routeModel)
 		if len(models) == 0 {
+			finishAttempt()
 			continue
 		}
 		attempted[auth.ID] = struct{}{}
@@ -2835,6 +2964,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				result.Error.HTTPStatus = se.StatusCode()
 			}
 			m.MarkResult(execCtx, result)
+			finishAttempt()
 			lastErr = errPrepare
 			continue
 		}
@@ -2852,6 +2982,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			resp, errExec := executor.CountTokens(execCtx, auth, execReq, execOpts)
 			if errExec != nil {
 				if errCtx := execCtx.Err(); errCtx != nil {
+					finishAttempt()
 					return cliproxyexecutor.Response{}, errCtx
 				}
 				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(execCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
@@ -2860,6 +2991,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 					resp, errExec = executor.CountTokens(execCtx, auth, execReq, execOpts)
 					if errExec != nil {
 						if errCtx := execCtx.Err(); errCtx != nil {
+							finishAttempt()
 							return cliproxyexecutor.Response{}, errCtx
 						}
 					}
@@ -2876,6 +3008,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				}
 				m.MarkResult(execCtx, result)
 				if isRequestInvalidError(errExec) {
+					finishAttempt()
 					return cliproxyexecutor.Response{}, errExec
 				}
 				authErr = errExec
@@ -2883,8 +3016,10 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			}
 			m.MarkResult(execCtx, result)
 			rewriteForceMappedResponse(&resp, aliasResult)
+			finishAttempt()
 			return resp, nil
 		}
+		finishAttempt()
 		if authErr != nil {
 			if isRequestInvalidError(authErr) {
 				return cliproxyexecutor.Response{}, authErr
@@ -2932,6 +3067,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		entry := logEntryWithRequestID(ctx)
 		debugLogAuthSelection(entry, auth, provider, routeModel)
 		publishSelectedAuthMetadata(opts.Metadata, auth.ID)
+		finishAttempt := m.beginAdaptiveAttempt(auth.ID)
 
 		tried[auth.ID] = struct{}{}
 		execCtx := ctx
@@ -2941,6 +3077,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		}
 		models, pooled, aliasResult := m.preparedExecutionModelsWithAlias(auth, routeModel)
 		if len(models) == 0 {
+			finishAttempt()
 			continue
 		}
 		attempted[auth.ID] = struct{}{}
@@ -2952,6 +3089,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 				result.Error.HTTPStatus = se.StatusCode()
 			}
 			m.MarkResult(execCtx, result)
+			finishAttempt()
 			lastErr = errPrepare
 			continue
 		}
@@ -2960,7 +3098,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		if restoreExecutionModel {
 			streamExecutionModel = executionModel
 		}
-		streamResult, errStream := m.executeStreamWithModelPool(execCtx, executor, auth, provider, execReq, opts, routeModel, streamExecutionModel, models, pooled, aliasResult)
+		streamResult, errStream := m.executeStreamWithModelPool(execCtx, executor, auth, provider, execReq, opts, routeModel, streamExecutionModel, models, pooled, aliasResult, finishAttempt)
 		if errStream != nil {
 			if errCtx := execCtx.Err(); errCtx != nil {
 				return nil, errCtx
@@ -3823,6 +3961,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	if result.AuthID == "" {
 		return
 	}
+	m.observeAdaptiveResult(result)
 
 	shouldResumeModel := false
 	shouldSuspendModel := false
@@ -4726,7 +4865,13 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		m.mu.RUnlock()
 		return nil, nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
-	available, errAvailable := m.availableAuthsForRouteModel(candidates, provider, model, time.Now())
+	var available []*Auth
+	var errAvailable error
+	if usesAdaptiveSelection(selector) {
+		available, errAvailable = m.availableAuthsForAdaptiveRouteModel(candidates, provider, model, time.Now())
+	} else {
+		available, errAvailable = m.availableAuthsForRouteModel(candidates, provider, model, time.Now())
+	}
 	if errAvailable != nil {
 		m.mu.RUnlock()
 		return nil, nil, errAvailable
@@ -4903,7 +5048,13 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		m.mu.RUnlock()
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
-	available, errAvailable := m.availableAuthsForRouteModel(candidates, "mixed", model, time.Now())
+	var available []*Auth
+	var errAvailable error
+	if usesAdaptiveSelection(selector) {
+		available, errAvailable = m.availableAuthsForAdaptiveRouteModel(candidates, "mixed", model, time.Now())
+	} else {
+		available, errAvailable = m.availableAuthsForRouteModel(candidates, "mixed", model, time.Now())
+	}
 	if errAvailable != nil {
 		m.mu.RUnlock()
 		return nil, nil, "", errAvailable
@@ -5535,14 +5686,17 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
 		}
 		creditsOpts := ensureRequestedModelMetadata(opts, routeModel)
 		creditsCtx = contextWithRequestedModelAlias(creditsCtx, creditsOpts, routeModel)
+		finishAttempt := m.beginAdaptiveAttempt(c.auth.ID)
 		preparedAuth, errPrepare := m.prepareRequestAuth(creditsCtx, c.executor, c.auth)
 		if errPrepare != nil {
+			finishAttempt()
 			continue
 		}
 		c.auth = preparedAuth
 		publishSelectedAuthMetadata(creditsOpts.Metadata, c.auth.ID)
 		models, pooled, aliasResult := m.executionModelCandidatesWithAlias(c.auth, routeModel)
 		if len(models) == 0 {
+			finishAttempt()
 			continue
 		}
 		for _, upstreamModel := range models {
@@ -5564,8 +5718,10 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
 			}
 			m.MarkResult(creditsCtx, result)
 			rewriteForceMappedResponse(&resp, aliasResult)
+			finishAttempt()
 			return resp, true, nil
 		}
+		finishAttempt()
 	}
 	return cliproxyexecutor.Response{}, false, nil
 }
@@ -5596,7 +5752,7 @@ func (m *Manager) tryAntigravityCreditsExecuteStream(ctx context.Context, req cl
 		if len(models) == 0 {
 			continue
 		}
-		result, errStream := m.executeStreamWithModelPool(creditsCtx, c.executor, c.auth, c.provider, req, creditsOpts, routeModel, "", models, pooled, aliasResult)
+		result, errStream := m.executeStreamWithModelPool(creditsCtx, c.executor, c.auth, c.provider, req, creditsOpts, routeModel, "", models, pooled, aliasResult, m.beginAdaptiveAttempt(c.auth.ID))
 		if errStream != nil {
 			continue
 		}

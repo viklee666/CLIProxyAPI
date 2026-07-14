@@ -12,6 +12,9 @@ type Config = internalconfig.Config
 
 type StreamingConfig = internalconfig.StreamingConfig
 type ClientAccessConfig = internalconfig.ClientAccessConfig
+type AdaptiveRoutingConfig = internalconfig.AdaptiveRoutingConfig
+type AdaptiveRoutingWeights = internalconfig.AdaptiveRoutingWeights
+type AdaptiveStickyEscape = internalconfig.AdaptiveStickyEscape
 type TLSConfig = internalconfig.TLSConfig
 type RemoteManagement = internalconfig.RemoteManagement
 type OAuthModelAlias = internalconfig.OAuthModelAlias

@@ -16,6 +16,7 @@ import {
   IconGithub,
   IconKey,
   IconModelCluster,
+  IconTrendingUp,
   IconSidebarAuthFiles,
   IconSidebarConfig,
   IconSidebarDashboard,
@@ -73,6 +74,7 @@ const sidebarIcons: Record<string, ReactNode> = {
   system: <IconSidebarSystem size={SIDEBAR_ICON_SIZE} />,
   clientGroups: <IconModelCluster size={SIDEBAR_ICON_SIZE} />,
   clientKeys: <IconKey size={SIDEBAR_ICON_SIZE} />,
+  adaptiveRouting: <IconTrendingUp size={SIDEBAR_ICON_SIZE} />,
 };
 
 // Header action icons - smaller size for header buttons
@@ -614,6 +616,12 @@ export function MainLayout({ routeBase = '', demoMode = false }: MainLayoutProps
         label: t('nav.client_keys'),
         shortLabel: navShortLabel('nav.client_keys', t('nav.client_keys')),
         icon: sidebarIcons.clientKeys,
+      },
+      {
+        path: '/adaptive-routing',
+        label: t('nav.adaptive_routing'),
+        shortLabel: navShortLabel('nav.adaptive_routing', t('nav.adaptive_routing')),
+        icon: sidebarIcons.adaptiveRouting,
       },
       {
         path: '/codex-inspection',

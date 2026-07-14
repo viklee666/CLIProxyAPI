@@ -192,7 +192,9 @@
     "logs": "Logs Viewer",
     "logs_short": "Logs",
     "system_info": "System Info",
-    "system_info_short": "System"
+    "system_info_short": "System",
+    "adaptive_routing": "Adaptive Routing",
+    "adaptive_routing_short": "Adaptive"
   },
   "client_access": {
     "groups_title": "Client Groups",
@@ -431,7 +433,8 @@
     "routing_strategy_hint": "round-robin cycles through keys; fill-first prioritizes the first available key.",
     "routing_strategy_update": "Update",
     "routing_strategy_round_robin": "round-robin (cycle)",
-    "routing_strategy_fill_first": "fill-first (prioritize)"
+    "routing_strategy_fill_first": "fill-first (prioritize)",
+    "routing_strategy_adaptive": "Adaptive"
   },
   "api_keys": {
     "title": "API Keys Management",
@@ -2600,7 +2603,8 @@
           "disable_claude_cloak_mode_desc": "Globally pass Claude system prompts through without the Claude Code disguise unless a credential overrides it",
           "session_affinity": "Session Affinity Routing",
           "ws_auth": "WebSocket Authentication",
-          "ws_auth_desc": "Enable WebSocket authentication (/v1/ws)"
+          "ws_auth_desc": "Enable WebSocket authentication (/v1/ws)",
+          "strategy_adaptive": "Adaptive"
         },
         "quota": {
           "title": "Quota Fallback",
@@ -3603,5 +3607,39 @@
     "env_locked_hint": "This switch is locked by the service startup environment. Update the environment variable and restart to change it.",
     "env_locked_reason": "Locked by the {{envKey}} environment variable. Update it and restart the service to change this switch.",
     "gating_note": "Disabling a switch only affects new problems found later. Tasks already queued or in progress will continue to finish."
+  },
+  "adaptive_routing": {
+    "title": "Adaptive Routing",
+    "description": "Balance credentials using active concurrency, success-rate EWMA, and first-token latency.",
+    "configuration": "Scoring configuration",
+    "saved": "Adaptive routing configuration saved",
+    "enabled": "Adaptive routing enabled",
+    "disabled": "Adaptive routing disabled",
+    "switch_on": "Enable adaptive",
+    "switch_off": "Use round-robin",
+    "top_k": "Weighted Top-K",
+    "ewma_alpha": "EWMA alpha",
+    "ttft_target": "TTFT target (ms)",
+    "weight_priority": "Priority weight",
+    "weight_load": "Load weight",
+    "weight_success": "Success-rate weight",
+    "weight_ttft": "TTFT weight",
+    "sticky_escape": "Sticky performance escape",
+    "min_samples": "Minimum samples",
+    "error_threshold": "Error-rate threshold",
+    "ttft_threshold": "TTFT escape threshold (ms)",
+    "active_threshold": "Active request threshold",
+    "live_scores": "Live scheduling scores",
+    "provider_filter": "Provider filter (optional)",
+    "model_filter": "Model filter (optional)",
+    "no_scores": "No adaptive scores are available. Enable adaptive routing and send requests first.",
+    "rank": "Rank",
+    "score": "Score",
+    "active": "Active",
+    "success_rate": "Success rate",
+    "samples": "Outcome / TTFT samples",
+    "escape": "Escape sticky",
+    "eligible": "Eligible",
+    "ineligible": "Unavailable"
   }
 }

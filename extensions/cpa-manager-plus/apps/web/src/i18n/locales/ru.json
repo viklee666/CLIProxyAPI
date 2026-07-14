@@ -192,7 +192,9 @@
     "logs": "Просмотр логов",
     "logs_short": "Логи",
     "system_info": "Информация системы",
-    "system_info_short": "Система"
+    "system_info_short": "Система",
+    "adaptive_routing": "Адаптивная маршрутизация",
+    "adaptive_routing_short": "Адаптивная"
   },
   "client_access": {
     "groups_title": "Группы клиентов",
@@ -431,7 +433,8 @@
     "routing_strategy_hint": "round-robin циклически перебирает ключи; fill-first отдаёт приоритет первому доступному ключу.",
     "routing_strategy_update": "Обновить",
     "routing_strategy_round_robin": "round-robin (цикл)",
-    "routing_strategy_fill_first": "fill-first (приоритет)"
+    "routing_strategy_fill_first": "fill-first (приоритет)",
+    "routing_strategy_adaptive": "Адаптивная"
   },
   "api_keys": {
     "title": "Управление API-ключами",
@@ -2600,7 +2603,8 @@
           "disable_claude_cloak_mode_desc": "Глобально передавать system prompt Claude без маскировки Claude Code, если учётные данные не переопределяют это",
           "session_affinity": "Маршрутизация с привязкой к сессии",
           "ws_auth": "Аутентификация WebSocket",
-          "ws_auth_desc": "Включить аутентификацию WebSocket (/v1/ws)"
+          "ws_auth_desc": "Включить аутентификацию WebSocket (/v1/ws)",
+          "strategy_adaptive": "Адаптивная"
         },
         "quota": {
           "title": "Резерв по квоте",
@@ -3603,5 +3607,39 @@
     "env_locked_hint": "Этот переключатель зафиксирован переменной окружения. Измените переменную окружения сервиса и перезапустите его, чтобы изменить значение.",
     "env_locked_reason": "Зафиксировано переменной окружения {{envKey}}. Измените её и перезапустите сервис, чтобы изменить этот переключатель.",
     "gating_note": "Отключение переключателя влияет только на новые проблемы, найденные мониторингом. Уже поставленные или выполняющиеся задачи продолжат работу."
+  },
+  "adaptive_routing": {
+    "title": "Адаптивная маршрутизация",
+    "description": "Балансировка учетных данных по активным запросам, EWMA успешности и задержке первого токена.",
+    "configuration": "Настройка оценки",
+    "saved": "Настройки адаптивной маршрутизации сохранены",
+    "enabled": "Адаптивная маршрутизация включена",
+    "disabled": "Адаптивная маршрутизация выключена",
+    "switch_on": "Включить adaptive",
+    "switch_off": "Использовать round-robin",
+    "top_k": "Взвешенный Top-K",
+    "ewma_alpha": "Коэффициент EWMA",
+    "ttft_target": "Целевой TTFT (мс)",
+    "weight_priority": "Вес приоритета",
+    "weight_load": "Вес нагрузки",
+    "weight_success": "Вес успешности",
+    "weight_ttft": "Вес TTFT",
+    "sticky_escape": "Выход из медленной привязки",
+    "min_samples": "Минимум выборок",
+    "error_threshold": "Порог ошибок",
+    "ttft_threshold": "Порог TTFT (мс)",
+    "active_threshold": "Порог активных запросов",
+    "live_scores": "Текущие оценки",
+    "provider_filter": "Фильтр провайдера",
+    "model_filter": "Фильтр модели",
+    "no_scores": "Нет доступных оценок. Включите адаптивную маршрутизацию и отправьте запросы.",
+    "rank": "Ранг",
+    "score": "Оценка",
+    "active": "Активные",
+    "success_rate": "Успешность",
+    "samples": "Результаты / TTFT",
+    "escape": "Сменить привязку",
+    "eligible": "Доступно",
+    "ineligible": "Недоступно"
   }
 }

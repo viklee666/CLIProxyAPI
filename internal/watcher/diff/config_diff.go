@@ -121,6 +121,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.Routing.Strategy != newCfg.Routing.Strategy {
 		changes = append(changes, fmt.Sprintf("routing.strategy: %s -> %s", oldCfg.Routing.Strategy, newCfg.Routing.Strategy))
 	}
+	if !reflect.DeepEqual(oldCfg.Routing.Adaptive, newCfg.Routing.Adaptive) {
+		changes = append(changes, "routing.adaptive: updated")
+	}
 	if oldCfg.ClientAccess.Enabled != newCfg.ClientAccess.Enabled {
 		changes = append(changes, fmt.Sprintf("client-access.enabled: %t -> %t", oldCfg.ClientAccess.Enabled, newCfg.ClientAccess.Enabled))
 	}

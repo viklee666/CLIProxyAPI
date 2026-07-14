@@ -17,3 +17,4 @@ export * from './vertex';
 export * from './codexQuota';
 export * from './antigravitySubscription';
 export * from './clientAccess';
+export * from './adaptiveRouting';

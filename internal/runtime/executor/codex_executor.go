@@ -1582,7 +1582,7 @@ func codexIdentityConfuseEnabled(cfg *config.Config) bool {
 		return false
 	}
 	strategy := strings.ToLower(strings.TrimSpace(cfg.Routing.Strategy))
-	return cfg.Routing.SessionAffinity || strategy == "fill-first" || strategy == "fillfirst" || strategy == "ff"
+	return cfg.Routing.SessionAffinity || strategy == "fill-first" || strategy == "fillfirst" || strategy == "ff" || strategy == "adaptive"
 }
 
 func codexIdentityConfuseUUID(authID string, kind string, value string) string {

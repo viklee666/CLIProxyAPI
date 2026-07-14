@@ -347,8 +347,11 @@ type QuotaExceeded struct {
 // RoutingConfig configures how credentials are selected for requests.
 type RoutingConfig struct {
 	// Strategy selects the credential selection strategy.
-	// Supported values: "round-robin" (default), "fill-first".
+	// Supported values: "round-robin" (default), "fill-first", "adaptive".
 	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
+
+	// Adaptive configures runtime-aware credential scoring when strategy is adaptive.
+	Adaptive AdaptiveRoutingConfig `yaml:"adaptive,omitempty" json:"adaptive,omitempty"`
 
 	// SessionAffinity enables universal session-sticky routing for all clients.
 	// Session IDs are extracted from multiple sources:
@@ -360,6 +363,32 @@ type RoutingConfig struct {
 	// SessionAffinityTTL specifies how long session-to-auth bindings are retained.
 	// Default: 1h. Accepts duration strings like "30m", "1h", "2h30m".
 	SessionAffinityTTL string `yaml:"session-affinity-ttl,omitempty" json:"session-affinity-ttl,omitempty"`
+}
+
+// AdaptiveRoutingConfig configures runtime-aware credential selection.
+type AdaptiveRoutingConfig struct {
+	TopK         int                    `yaml:"top-k,omitempty" json:"top-k,omitempty"`
+	EWMAAlpha    float64                `yaml:"ewma-alpha,omitempty" json:"ewma-alpha,omitempty"`
+	TTFTTargetMS int64                  `yaml:"ttft-target-ms,omitempty" json:"ttft-target-ms,omitempty"`
+	Weights      AdaptiveRoutingWeights `yaml:"weights,omitempty" json:"weights,omitempty"`
+	StickyEscape AdaptiveStickyEscape   `yaml:"sticky-escape,omitempty" json:"sticky-escape,omitempty"`
+}
+
+// AdaptiveRoutingWeights controls each normalized score component.
+type AdaptiveRoutingWeights struct {
+	Priority    float64 `yaml:"priority,omitempty" json:"priority,omitempty"`
+	Load        float64 `yaml:"load,omitempty" json:"load,omitempty"`
+	SuccessRate float64 `yaml:"success-rate,omitempty" json:"success-rate,omitempty"`
+	TTFT        float64 `yaml:"ttft,omitempty" json:"ttft,omitempty"`
+}
+
+// AdaptiveStickyEscape controls when session affinity abandons a slow or unhealthy credential.
+type AdaptiveStickyEscape struct {
+	Enabled                bool    `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	MinSamples             int64   `yaml:"min-samples,omitempty" json:"min-samples,omitempty"`
+	ErrorRateThreshold     float64 `yaml:"error-rate-threshold,omitempty" json:"error-rate-threshold,omitempty"`
+	TTFTThresholdMS        int64   `yaml:"ttft-threshold-ms,omitempty" json:"ttft-threshold-ms,omitempty"`
+	ActiveRequestThreshold int     `yaml:"active-request-threshold,omitempty" json:"active-request-threshold,omitempty"`
 }
 
 // OAuthModelAlias defines a model ID alias for a specific channel.

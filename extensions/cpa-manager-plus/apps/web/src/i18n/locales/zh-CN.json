@@ -192,7 +192,9 @@
     "logs": "日志查看",
     "logs_short": "日志",
     "system_info": "系统信息",
-    "system_info_short": "系统"
+    "system_info_short": "系统",
+    "adaptive_routing": "自适应调度",
+    "adaptive_routing_short": "调度"
   },
   "client_access": {
     "groups_title": "客户端分组",
@@ -431,7 +433,8 @@
     "routing_strategy_hint": "round-robin 为轮询，fill-first 为优先填充。",
     "routing_strategy_update": "更新",
     "routing_strategy_round_robin": "round-robin (轮询)",
-    "routing_strategy_fill_first": "fill-first (优先填充)"
+    "routing_strategy_fill_first": "fill-first (优先填充)",
+    "routing_strategy_adaptive": "自适应调度"
   },
   "api_keys": {
     "title": "API 密钥管理",
@@ -2600,7 +2603,8 @@
           "disable_claude_cloak_mode_desc": "全局原样传递 Claude system 提示词，不再伪装成 Claude Code；单个凭证仍可覆盖",
           "session_affinity": "会话粘性路由",
           "ws_auth": "WebSocket 认证",
-          "ws_auth_desc": "启用 WebSocket 连接认证 (/v1/ws)"
+          "ws_auth_desc": "启用 WebSocket 连接认证 (/v1/ws)",
+          "strategy_adaptive": "自适应调度"
         },
         "quota": {
           "title": "配额回退",
@@ -3603,5 +3607,39 @@
     "env_locked_hint": "该开关由服务启动环境锁定，请修改环境变量并重启。",
     "env_locked_reason": "由环境变量 {{envKey}} 锁定。修改该变量并重启服务后才能更改此开关。",
     "gating_note": "关闭某项策略只会影响之后发现的新问题；已经排队或正在处理的任务会继续完成。"
+  },
+  "adaptive_routing": {
+    "title": "自适应调度",
+    "description": "根据活跃并发、成功率 EWMA 和首 Token 延迟动态均衡凭证。",
+    "configuration": "评分配置",
+    "saved": "自适应调度配置已保存",
+    "enabled": "自适应调度已启用",
+    "disabled": "自适应调度已关闭",
+    "switch_on": "启用自适应",
+    "switch_off": "切换为轮询",
+    "top_k": "加权 Top-K",
+    "ewma_alpha": "EWMA 系数",
+    "ttft_target": "TTFT 目标（毫秒）",
+    "weight_priority": "优先级权重",
+    "weight_load": "负载权重",
+    "weight_success": "成功率权重",
+    "weight_ttft": "TTFT 权重",
+    "sticky_escape": "粘性账号性能逃逸",
+    "min_samples": "最少样本数",
+    "error_threshold": "错误率阈值",
+    "ttft_threshold": "TTFT 逃逸阈值（毫秒）",
+    "active_threshold": "活跃请求阈值",
+    "live_scores": "实时调度评分",
+    "provider_filter": "提供商筛选（可选）",
+    "model_filter": "模型筛选（可选）",
+    "no_scores": "暂无自适应评分。请先启用自适应调度并产生请求。",
+    "rank": "排名",
+    "score": "评分",
+    "active": "活跃并发",
+    "success_rate": "成功率",
+    "samples": "结果 / TTFT 样本",
+    "escape": "建议逃逸",
+    "eligible": "可调度",
+    "ineligible": "不可用"
   }
 }
