@@ -1,5 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { MonitoringAnalyticsEventRow } from '@/services/api/usageService';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { authFilesApi } from '@/services/api/authFiles';
+import type {
+  MonitoringAnalyticsEventRow,
+  MonitoringAnalyticsResponse,
+} from '@/services/api/usageService';
 import type { AuthFileItem } from '@/types/authFile';
 import type { CredentialInfo } from '@/types/sourceInfo';
 import { buildSourceInfoMap } from '@/utils/sourceResolver';
@@ -101,6 +105,7 @@ export {
 const MONITORING_EVENTS_PAGE_LIMIT = 100;
 export const MONITORING_EVENTS_RETENTION_LIMIT = 2_000;
 const MONITORING_PRESENTATION_CACHE_LIMIT = 4;
+const AUTH_META_LOOKUP_CHUNK_SIZE = 200;
 const EMPTY_MONITORING_ANALYTICS_EVENT_ROWS: MonitoringAnalyticsEventRow[] = [];
 
 interface MonitoringEventsPageState {
@@ -157,6 +162,51 @@ const createEventsPageState = (scopeKey = ''): MonitoringEventsPageState => ({
   loadingMore: false,
   lastPageKey: '',
 });
+
+const addAuthIndex = (target: Set<string>, value: unknown) => {
+  const authIndex = normalizeAuthIndex(value);
+  if (authIndex) {
+    target.add(authIndex);
+  }
+};
+
+const collectAnalyticsAuthIndices = (data: MonitoringAnalyticsResponse | null): string[] => {
+  if (!data) return [];
+  const result = new Set<string>();
+  data.channel_share?.forEach((row) => addAuthIndex(result, row.auth_index));
+  data.failure_sources?.forEach((row) => addAuthIndex(result, row.auth_index));
+  data.recent_failures?.forEach((row) => addAuthIndex(result, row.auth_index));
+  data.events?.items?.forEach((row) => addAuthIndex(result, row.auth_index));
+  data.account_stats?.forEach((row) => {
+    row.auth_indices?.forEach((authIndex) => addAuthIndex(result, authIndex));
+  });
+  data.credential_stats?.forEach((row) => addAuthIndex(result, row.auth_index));
+  data.credential_timeline?.forEach((row) => addAuthIndex(result, row.auth_index));
+  data.api_key_stats?.forEach((row) => {
+    row.auth_indices?.forEach((authIndex) => addAuthIndex(result, authIndex));
+    row.contexts?.forEach((context) => addAuthIndex(result, context.auth_index));
+  });
+  return Array.from(result).sort();
+};
+
+const mergeAuthFilesByIndex = (
+  current: AuthFileItem[],
+  incoming: AuthFileItem[]
+): AuthFileItem[] => {
+  if (incoming.length === 0) return current;
+  const byKey = new Map<string, AuthFileItem>();
+  current.forEach((file) => {
+    const authIndex = normalizeAuthIndex(file['auth_index'] ?? file.authIndex);
+    const key = authIndex || String(file.name ?? '');
+    if (key) byKey.set(key, file);
+  });
+  incoming.forEach((file) => {
+    const authIndex = normalizeAuthIndex(file['auth_index'] ?? file.authIndex);
+    const key = authIndex || String(file.name ?? '');
+    if (key) byKey.set(key, file);
+  });
+  return Array.from(byKey.values());
+};
 
 const buildEventsPageKey = (
   scopeKey: string,
@@ -321,6 +371,7 @@ export function useMonitoringData({
       cachedSnapshots: new Map(),
       lastStableSnapshot: null,
     }));
+  const attemptedAuthMetaIndicesRef = useRef<Set<string>>(new Set());
 
   const analyticsBounds = useMemo(() => {
     const bounds = getRangeBounds(timeRange, analyticsNowMs, customTimeRange);
@@ -339,7 +390,9 @@ export function useMonitoringData({
       }
 
       const payload = await loadMonitoringMetaPayload(config);
-      setAuthFiles(payload.authFiles);
+      if (payload.authFiles.length > 0) {
+        setAuthFiles(payload.authFiles);
+      }
       setChannels(payload.channels);
       setError(payload.error);
       setLoading(false);
@@ -358,7 +411,9 @@ export function useMonitoringData({
 
     loadMonitoringMetaPayload(config).then((payload) => {
       if (cancelled) return;
-      setAuthFiles(payload.authFiles);
+      if (payload.authFiles.length > 0) {
+        setAuthFiles(payload.authFiles);
+      }
       setChannels(payload.channels);
       setError(payload.error);
       setLoading(false);
@@ -500,6 +555,42 @@ export function useMonitoringData({
   });
   const analyticsData = analytics.data;
   const currentAnalyticsData = analytics.dataStale ? null : analyticsData;
+
+  useEffect(() => {
+    const authIndices = collectAnalyticsAuthIndices(currentAnalyticsData);
+    if (authIndices.length === 0) return;
+    const known = new Set(
+      authFileSnapshots
+        .map((file) => normalizeAuthIndex(file['auth_index'] ?? file.authIndex))
+        .filter(Boolean)
+    );
+    const missing = authIndices.filter(
+      (authIndex) => !known.has(authIndex) && !attemptedAuthMetaIndicesRef.current.has(authIndex)
+    );
+    if (missing.length === 0) return;
+    missing.forEach((authIndex) => attemptedAuthMetaIndicesRef.current.add(authIndex));
+    let cancelled = false;
+    const loadMissingAuthMeta = async () => {
+      const loaded: AuthFileItem[] = [];
+      for (let index = 0; index < missing.length; index += AUTH_META_LOOKUP_CHUNK_SIZE) {
+        const chunk = missing.slice(index, index + AUTH_META_LOOKUP_CHUNK_SIZE);
+        const response = await authFilesApi.list({
+          view: 'summary',
+          page: 1,
+          page_size: AUTH_META_LOOKUP_CHUNK_SIZE,
+          auth_index: chunk.join(','),
+        });
+        loaded.push(...(response.files ?? []));
+      }
+      if (cancelled || loaded.length === 0) return;
+      setAuthFiles((current) => mergeAuthFilesByIndex(current, loaded));
+    };
+    void loadMissingAuthMeta().catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [authFileSnapshots, currentAnalyticsData]);
+
   const displayEventItems = useMemo(
     () =>
       resolveMonitoringDisplayEventItems({

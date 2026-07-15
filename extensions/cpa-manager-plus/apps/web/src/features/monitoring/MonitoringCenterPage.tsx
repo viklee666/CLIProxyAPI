@@ -124,6 +124,7 @@ export { AccountExpandedDetails, AccountOverviewCard };
 
 const DEFAULT_ACCOUNT_PAGE_SIZE = ACCOUNT_OVERVIEW_TABLE_PAGE_SIZE_OPTIONS[0];
 const MAX_USAGE_IMPORT_FILE_SIZE = 64 * 1024 * 1024;
+const MONITORING_HEADER_SNAPSHOT_LIMIT = 200;
 const EMPTY_STATUS_BAR_DATA: StatusBarData = {
   blocks: [],
   blockDetails: [],
@@ -402,7 +403,7 @@ export function MonitoringCenterPage() {
       const response = await monitoringAnalyticsApi.getHeaderSnapshots(
         requestMonitoringAvailability.serviceBase,
         managementKey,
-        { days: 30, limit: 1000 }
+        { days: 30, limit: MONITORING_HEADER_SNAPSHOT_LIMIT }
       );
       setHeaderSnapshots(response.items ?? []);
     } catch {
@@ -411,8 +412,8 @@ export function MonitoringCenterPage() {
   }, [managementKey, requestMonitoringAvailability.serviceBase]);
 
   const refreshAll = useCallback(async () => {
-    await Promise.all([loadApiKeyAliases(), refreshMeta(false), loadHeaderSnapshots()]);
-  }, [loadApiKeyAliases, loadHeaderSnapshots, refreshMeta]);
+    await Promise.all([loadApiKeyAliases(), refreshMeta(false)]);
+  }, [loadApiKeyAliases, refreshMeta]);
 
   const setCurrentAccountPage = useCallback(
     (page: number) => {
@@ -446,11 +447,6 @@ export function MonitoringCenterPage() {
       ? Number(autoRefreshMs)
       : null
   );
-
-  useEffect(() => {
-    if (!isCurrentLayer || !requestMonitoringAvailability.serviceBase) return;
-    void loadHeaderSnapshots();
-  }, [isCurrentLayer, loadHeaderSnapshots, requestMonitoringAvailability.serviceBase]);
 
   const monitoringUnavailable =
     !requestMonitoringAvailability.checking && !requestMonitoringAvailability.available;
@@ -933,6 +929,9 @@ export function MonitoringCenterPage() {
 
   const loadAccountQuota = useCallback(
     async (account: string, force: boolean = false) => {
+      if (headerSnapshots.length === 0) {
+        void loadHeaderSnapshots();
+      }
       const currentState = accountQuotaStatesRef.current[account];
       const targets = accountQuotaTargetsByAccount.get(account) ?? [];
       const targetKey = targets.map((target) => target.key).join('|');
@@ -1034,7 +1033,7 @@ export function MonitoringCenterPage() {
         },
       }));
     },
-    [accountQuotaTargetsByAccount, headerSnapshotLookup, t]
+    [accountQuotaTargetsByAccount, headerSnapshotLookup, headerSnapshots.length, loadHeaderSnapshots, t]
   );
 
   const toggleAccountExpanded = useCallback(
