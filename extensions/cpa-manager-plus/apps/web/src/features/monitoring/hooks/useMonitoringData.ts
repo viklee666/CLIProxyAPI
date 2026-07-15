@@ -102,7 +102,7 @@ export {
   buildRealtimeMonitorRows,
 } from '../model/rowBuilders';
 
-const MONITORING_EVENTS_PAGE_LIMIT = 100;
+const MONITORING_EVENTS_PAGE_LIMIT = 50;
 export const MONITORING_EVENTS_RETENTION_LIMIT = 2_000;
 const MONITORING_PRESENTATION_CACHE_LIMIT = 4;
 const AUTH_META_LOOKUP_CHUNK_SIZE = 200;
@@ -533,16 +533,8 @@ export function useMonitoringData({
       summary: true,
       summary_profile: 'compact',
       timeline: true,
-      hourly_distribution: true,
       model_share: true,
-      channel_share: true,
       model_stats: true,
-      failure_sources: true,
-      account_stats: true,
-      account_stats_limit: 500,
-      api_key_stats: true,
-      api_key_stats_limit: 500,
-      filter_options: true,
       recent_failures: 8,
       events_page: {
         limit: MONITORING_EVENTS_PAGE_LIMIT,
