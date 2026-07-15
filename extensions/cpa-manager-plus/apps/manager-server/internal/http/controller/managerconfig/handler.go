@@ -1,7 +1,6 @@
 package managerconfig
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 
@@ -30,8 +29,7 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Config store.ManagerConfig `json:"config"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			response.Error(w, http.StatusBadRequest, err)
+		if !response.DecodeJSON(w, r, &req, response.JSONDecodeOptions{}) {
 			return
 		}
 		ok, err := h.App.AdminAuthService.VerifySubmittedExternalConfigHeader(

@@ -2296,6 +2296,55 @@ function EmptyState({ title, body }: { title: string; body: string }) {
   );
 }
 
+function AggregatePaginationBar({
+  pagination,
+  page,
+  loading,
+  onPageChange,
+}: {
+  pagination?: {
+    total: number;
+    limit: number;
+    count: number;
+    has_more: boolean;
+    truncated: boolean;
+  };
+  page: number;
+  loading: boolean;
+  onPageChange: (page: number) => void;
+}) {
+  const { t } = useTranslation();
+  if (!pagination) return null;
+  const totalPages = Math.max(1, Math.ceil(pagination.total / Math.max(1, pagination.limit)));
+  if (totalPages <= 1 && !pagination.truncated) return null;
+  return (
+    <div className={styles.aggregatePagination}>
+      <span>
+        {page} / {totalPages} · {t('common.total')}: {pagination.total}
+        {pagination.truncated ? ` · ${t('usage_analytics.server_page_truncated')}` : ''}
+      </span>
+      <div>
+        <Button
+          variant="secondary"
+          size="xs"
+          disabled={page <= 1 || loading}
+          onClick={() => onPageChange(page - 1)}
+        >
+          {t('common.previous')}
+        </Button>
+        <Button
+          variant="secondary"
+          size="xs"
+          disabled={!pagination.has_more || page >= totalPages || loading}
+          onClick={() => onPageChange(page + 1)}
+        >
+          {t('common.next')}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function UsageAnalyticsPageInner() {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
@@ -2305,7 +2354,6 @@ function UsageAnalyticsPageInner() {
   const [selectedMetrics, setSelectedMetrics] =
     useState<UsageMetricKey[]>(DEFAULT_SELECTED_METRICS);
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [showAllModels, setShowAllModels] = useState(false);
   const [credentialWarningsForSelectionOnly, setCredentialWarningsForSelectionOnly] =
     useState(false);
   const [customRangeFallbackEndMs] = useState(() => Date.now());
@@ -2502,11 +2550,9 @@ function UsageAnalyticsPageInner() {
     { value: 'miss', label: t('usage_analytics.cache_status_miss') },
   ];
   const noData = !usage.loading && !usage.error && !hasUsageData(usage.summary, usage.timeline);
-  const rankRowLimit = 8;
-  const credentialRankRowLimit = 10;
-  const visibleModelRows = showAllModels ? usage.modelRows : usage.modelRows.slice(0, rankRowLimit);
-  const visibleApiKeyRows = usage.apiKeyRows.slice(0, 8);
-  const visibleCredentialRows = usage.credentialRows.slice(0, credentialRankRowLimit);
+  const visibleModelRows = usage.modelRows;
+  const visibleApiKeyRows = usage.apiKeyRows;
+  const visibleCredentialRows = usage.credentialRows;
   const selectedModelKeyDistribution = useMemo(
     () =>
       usage.selectedModel
@@ -3083,23 +3129,18 @@ function UsageAnalyticsPageInner() {
           <section className={styles.tablePanel}>
             <div className={styles.panelHeader}>
               <h2>{t('usage_analytics.model_rank_title')}</h2>
-              {usage.modelRows.length > rankRowLimit ? (
-                <button
-                  type="button"
-                  className={styles.filterActionButton}
-                  onClick={() => setShowAllModels((open) => !open)}
-                >
-                  {showAllModels
-                    ? t('usage_analytics.rank_collapse')
-                    : t('usage_analytics.rank_show_all', { count: usage.modelRows.length })}
-                </button>
-              ) : null}
             </div>
             <RankTable
               rows={visibleModelRows}
               type="model"
               selectedId={usage.selectedModel?.id}
               onSelect={(row) => usage.setSelectedModelId(row.id)}
+            />
+            <AggregatePaginationBar
+              pagination={usage.modelPagination}
+              page={usage.modelPage}
+              loading={usage.loading}
+              onPageChange={usage.setModelPage}
             />
           </section>
           <section className={styles.dualChartGrid}>
@@ -3190,6 +3231,12 @@ function UsageAnalyticsPageInner() {
                 type="apiKey"
                 selectedId={usage.selectedApiKey?.apiKeyHash}
                 onSelect={(row) => usage.setSelectedApiKeyHash(row.apiKeyHash || row.id)}
+              />
+              <AggregatePaginationBar
+                pagination={usage.apiKeyPagination}
+                page={usage.apiKeyPage}
+                loading={usage.loading}
+                onPageChange={usage.setApiKeyPage}
               />
             </div>
             <div className={styles.panel}>
@@ -3289,6 +3336,12 @@ function UsageAnalyticsPageInner() {
                 type="credential"
                 selectedId={usage.selectedCredential?.id}
                 onSelect={(row) => usage.setSelectedCredentialId(row.id)}
+              />
+              <AggregatePaginationBar
+                pagination={usage.credentialPagination}
+                page={usage.credentialPage}
+                loading={usage.loading}
+                onPageChange={usage.setCredentialPage}
               />
             </div>
             <div className={styles.panel}>

@@ -211,8 +211,24 @@ const createUsageState = (overrides: Record<string, unknown> = {}) => {
     summaryDelta: { hasComparison: false, requestCount: 0, totalTokens: 0, estimatedCost: 0 },
     timeline: [point],
     modelRows: [modelRow],
+    modelPagination: { page: 1, limit: 25, total: 1, count: 1, has_more: false, truncated: false },
+    modelPage: 1,
+    setModelPage: vi.fn(),
     apiKeyRows: [apiKeyRow],
+    apiKeyPagination: { page: 1, limit: 25, total: 1, count: 1, has_more: false, truncated: false },
+    apiKeyPage: 1,
+    setApiKeyPage: vi.fn(),
     credentialRows: [credentialRow],
+    credentialPagination: {
+      page: 1,
+      limit: 25,
+      total: 1,
+      count: 1,
+      has_more: false,
+      truncated: false,
+    },
+    credentialPage: 1,
+    setCredentialPage: vi.fn(),
     allCredentialRows: [credentialRow],
     providerRows: [
       {
@@ -766,6 +782,7 @@ describe('UsageAnalyticsPage', () => {
   it('renders the models tab with unit-economics columns and no insights panel', () => {
     const usageState = createUsageState({
       activeTab: 'models',
+      modelPagination: { page: 1, limit: 25, total: 60, count: 1, has_more: true, truncated: true },
       filters: {
         ...USAGE_ANALYTICS_DEFAULT_FILTERS,
         provider: 'OpenAI',
@@ -807,6 +824,7 @@ describe('UsageAnalyticsPage', () => {
     expect(text).not.toContain('usage_analytics.insights_title');
     expect(text).not.toContain('usage_analytics.insight_model_cost_high');
     expect(text).not.toContain('usage_analytics.insight_credential_success_drop');
+    expect(text).toContain('usage_analytics.server_page_truncated');
     expect(
       findHostButtonByText(renderer, 'usage_analytics.trend_metric_requestCount').props[
         'aria-pressed'
@@ -818,11 +836,11 @@ describe('UsageAnalyticsPage', () => {
     expect(mocks.navigate).toHaveBeenCalledWith(
       '/monitoring?from_ms=1780000000000&to_ms=1780003600000&model=gpt-4o&provider=openai&auth_file=auth.json&status=success&search=req-42&min_latency_ms=10000&cache_status=hit'
     );
-    // Only one model row, so the show-all toggle stays hidden.
-    expect(text).not.toContain('usage_analytics.rank_show_all');
+    clickHostButton(findHostButtonByText(renderer, 'common.next'));
+    expect(usageState.setModelPage).toHaveBeenCalledWith(2);
   });
 
-  it('renders the credentials tab as a capped ranking with selected credential trend only', () => {
+  it('renders the credentials server page with selected credential trend only', () => {
     const credentialRows = Array.from({ length: 11 }, (_, index) =>
       createRankRow({
         id: `credential-${index + 1}`,
@@ -861,8 +879,8 @@ describe('UsageAnalyticsPage', () => {
     const credentialRankRows = renderer.root.findAllByType('tbody')[0].findAllByType('tr');
 
     expect(text).toContain('usage_analytics.credential_rank_title');
-    expect(credentialRankRows).toHaveLength(10);
-    expect(getText(credentialRankRows[9])).toContain('credential-10');
+    expect(credentialRankRows).toHaveLength(11);
+    expect(getText(credentialRankRows[10])).toContain('credential-11');
     expect(text).toContain('usage_analytics.selected_credential_trend_title');
     expect(text).not.toContain('usage_analytics.entity_trend_title');
     expect(text).not.toContain('usage_analytics.insights_title');

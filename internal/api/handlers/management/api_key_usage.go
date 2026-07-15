@@ -1,7 +1,10 @@
 package management
 
 import (
+	"fmt"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -9,10 +12,36 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
+const (
+	defaultAPIKeyUsagePageSize = 100
+	maxAPIKeyUsagePageSize     = 200
+)
+
 type apiKeyUsageEntry struct {
 	Success        int64                          `json:"success"`
 	Failed         int64                          `json:"failed"`
 	RecentRequests []coreauth.RecentRequestBucket `json:"recent_requests"`
+}
+
+type apiKeyUsageItem struct {
+	Provider     string `json:"provider"`
+	CompositeKey string `json:"composite_key"`
+	apiKeyUsageEntry
+}
+
+type apiKeyUsageQuery struct {
+	page      int
+	pageSize  int
+	providers map[string]struct{}
+	search    string
+}
+
+type apiKeyUsageAggregate struct {
+	provider     string
+	compositeKey string
+	success      int64
+	failed       int64
+	auths        []*coreauth.Auth
 }
 
 func mergeRecentRequestBuckets(dst, src []coreauth.RecentRequestBucket) []coreauth.RecentRequestBucket {
@@ -53,8 +82,78 @@ func apiKeyUsageProviderKey(auth *coreauth.Auth) string {
 	return provider
 }
 
-// GetAPIKeyUsage returns recent request buckets for all in-memory api_key auths,
-// grouped by provider and keyed by "base_url|api_key".
+func parseAPIKeyUsageQuery(c *gin.Context) (apiKeyUsageQuery, error) {
+	query := apiKeyUsageQuery{
+		page:      1,
+		pageSize:  defaultAPIKeyUsagePageSize,
+		providers: make(map[string]struct{}),
+	}
+	if c == nil {
+		return query, nil
+	}
+	if rawPage := strings.TrimSpace(c.Query("page")); rawPage != "" {
+		page, errPage := strconv.Atoi(rawPage)
+		if errPage != nil || page <= 0 || page > 1_000_000 {
+			return query, fmt.Errorf("page must be an integer between 1 and 1000000")
+		}
+		query.page = page
+	}
+	if rawPageSize := strings.TrimSpace(c.Query("page_size")); rawPageSize != "" {
+		pageSize, errPageSize := strconv.Atoi(rawPageSize)
+		if errPageSize != nil || pageSize <= 0 || pageSize > maxAPIKeyUsagePageSize {
+			return query, fmt.Errorf("page_size must be an integer between 1 and %d", maxAPIKeyUsagePageSize)
+		}
+		query.pageSize = pageSize
+	}
+	for _, rawProvider := range c.QueryArray("provider") {
+		for _, provider := range strings.Split(rawProvider, ",") {
+			provider = strings.ToLower(strings.TrimSpace(provider))
+			if provider != "" {
+				query.providers[provider] = struct{}{}
+			}
+		}
+	}
+	query.search = strings.ToLower(strings.TrimSpace(c.Query("search")))
+	return query, nil
+}
+
+func apiKeyUsageMatchesQuery(provider, compositeKey string, query apiKeyUsageQuery) bool {
+	if len(query.providers) > 0 {
+		if _, ok := query.providers[provider]; !ok {
+			return false
+		}
+	}
+	if query.search == "" {
+		return true
+	}
+	return strings.Contains(provider, query.search) ||
+		strings.Contains(strings.ToLower(compositeKey), query.search)
+}
+
+func apiKeyUsagePageBounds(total int, query *apiKeyUsageQuery) (start, end, totalPages int) {
+	if query == nil || query.pageSize <= 0 {
+		return 0, 0, 0
+	}
+	if total > 0 {
+		totalPages = (total + query.pageSize - 1) / query.pageSize
+		if query.page > totalPages {
+			query.page = totalPages
+		}
+	}
+	start = (query.page - 1) * query.pageSize
+	if start > total {
+		start = total
+	}
+	end = start + query.pageSize
+	if end > total {
+		end = total
+	}
+	return start, end, totalPages
+}
+
+// GetAPIKeyUsage returns a bounded page of recent request buckets for in-memory
+// api_key auths. Duplicate runtime auths are grouped by provider and
+// "base_url|api_key" before pagination.
 func (h *Handler) GetAPIKeyUsage(c *gin.Context) {
 	if h == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "handler not initialized"})
@@ -68,9 +167,13 @@ func (h *Handler) GetAPIKeyUsage(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
 		return
 	}
+	query, errQuery := parseAPIKeyUsageQuery(c)
+	if errQuery != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": errQuery.Error()})
+		return
+	}
 
-	now := time.Now()
-	out := make(map[string]map[string]apiKeyUsageEntry)
+	aggregatesByKey := make(map[string]*apiKeyUsageAggregate)
 	for _, auth := range manager.List() {
 		if auth == nil {
 			continue
@@ -92,26 +195,64 @@ func (h *Handler) GetAPIKeyUsage(c *gin.Context) {
 		}
 		compositeKey := baseURL + "|" + apiKey
 		provider := apiKeyUsageProviderKey(auth)
-
-		recent := auth.RecentRequestsSnapshot(now)
-		providerBucket, ok := out[provider]
-		if !ok {
-			providerBucket = make(map[string]apiKeyUsageEntry)
-			out[provider] = providerBucket
-		}
-		if existing, exists := providerBucket[compositeKey]; exists {
-			existing.Success += auth.Success
-			existing.Failed += auth.Failed
-			existing.RecentRequests = mergeRecentRequestBuckets(existing.RecentRequests, recent)
-			providerBucket[compositeKey] = existing
+		if !apiKeyUsageMatchesQuery(provider, compositeKey, query) {
 			continue
 		}
-		providerBucket[compositeKey] = apiKeyUsageEntry{
-			Success:        auth.Success,
-			Failed:         auth.Failed,
-			RecentRequests: recent,
+
+		groupKey := provider + "\x00" + compositeKey
+		aggregate := aggregatesByKey[groupKey]
+		if aggregate == nil {
+			aggregate = &apiKeyUsageAggregate{
+				provider:     provider,
+				compositeKey: compositeKey,
+			}
+			aggregatesByKey[groupKey] = aggregate
 		}
+		aggregate.success += auth.Success
+		aggregate.failed += auth.Failed
+		aggregate.auths = append(aggregate.auths, auth)
 	}
 
-	c.JSON(http.StatusOK, out)
+	aggregates := make([]*apiKeyUsageAggregate, 0, len(aggregatesByKey))
+	for _, aggregate := range aggregatesByKey {
+		aggregates = append(aggregates, aggregate)
+	}
+	sort.Slice(aggregates, func(i, j int) bool {
+		if aggregates[i].provider != aggregates[j].provider {
+			return aggregates[i].provider < aggregates[j].provider
+		}
+		return aggregates[i].compositeKey < aggregates[j].compositeKey
+	})
+
+	total := len(aggregates)
+	start, end, totalPages := apiKeyUsagePageBounds(total, &query)
+	items := make([]apiKeyUsageItem, 0, end-start)
+	now := time.Now()
+	for _, aggregate := range aggregates[start:end] {
+		var recent []coreauth.RecentRequestBucket
+		for _, auth := range aggregate.auths {
+			recent = mergeRecentRequestBuckets(recent, auth.RecentRequestsSnapshot(now))
+		}
+		if recent == nil {
+			recent = []coreauth.RecentRequestBucket{}
+		}
+		items = append(items, apiKeyUsageItem{
+			Provider:     aggregate.provider,
+			CompositeKey: aggregate.compositeKey,
+			apiKeyUsageEntry: apiKeyUsageEntry{
+				Success:        aggregate.success,
+				Failed:         aggregate.failed,
+				RecentRequests: recent,
+			},
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"items":       items,
+		"total":       total,
+		"page":        query.page,
+		"page_size":   query.pageSize,
+		"total_pages": totalPages,
+		"has_more":    query.page < totalPages,
+	})
 }

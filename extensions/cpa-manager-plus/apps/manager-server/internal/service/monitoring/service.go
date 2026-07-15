@@ -17,13 +17,15 @@ import (
 const (
 	defaultEventsLimit         = 100
 	defaultDrilldownLimit      = 20
+	defaultAggregatePageLimit  = 50
 	defaultHeaderSnapshotDays  = 30
 	defaultHeaderSnapshotLimit = 1000
 	maxEventsLimit             = 50000
 	maxDrilldownLimit          = 100
-	maxHeaderSnapshotDays      = 365
-	maxHeaderSnapshotLimit     = 5000
-	maxAccountHistoryTargets   = 200
+	MaxAggregatePageLimit      = 200
+	MaxHeaderSnapshotDays      = 365
+	MaxHeaderSnapshotLimit     = 2000
+	MaxAccountHistoryTargets   = 200
 	accountHistoryCatchUpLimit = 5000
 	recentWindowMS             = 30 * 60 * 1000
 )
@@ -77,31 +79,50 @@ type Filters struct {
 }
 
 type Include struct {
-	Summary            bool              `json:"summary"`
-	SummaryProfile     string            `json:"summary_profile"`
-	SummaryPercentiles bool              `json:"summary_percentiles"`
-	SummaryComparison  bool              `json:"summary_comparison"`
-	Timeline           bool              `json:"timeline"`
-	HourlyDistribution bool              `json:"hourly_distribution"`
-	ModelShare         bool              `json:"model_share"`
-	ChannelShare       bool              `json:"channel_share"`
-	ModelStats         bool              `json:"model_stats"`
-	FailureSources     bool              `json:"failure_sources"`
-	AccountStats       bool              `json:"account_stats"`
-	AccountStatsLimit  int               `json:"account_stats_limit"`
-	CredentialStats    bool              `json:"credential_stats"`
-	CredentialTimeline bool              `json:"credential_timeline"`
-	APIKeyStats        bool              `json:"api_key_stats"`
-	APIKeyStatsLimit   int               `json:"api_key_stats_limit"`
-	FilterOptions      bool              `json:"filter_options"`
-	FilterSelectors    bool              `json:"filter_selectors"`
-	Heatmap            bool              `json:"heatmap"`
-	AnomalyPoints      bool              `json:"anomaly_points"`
-	TaskBuckets        bool              `json:"task_buckets"`
-	RecentFailures     int               `json:"recent_failures"`
-	EventsPage         *EventsPage       `json:"events_page"`
-	DrilldownPreview   *DrilldownPreview `json:"drilldown_preview"`
-	Granularity        string            `json:"granularity"`
+	Summary             bool              `json:"summary"`
+	SummaryProfile      string            `json:"summary_profile"`
+	SummaryPercentiles  bool              `json:"summary_percentiles"`
+	SummaryComparison   bool              `json:"summary_comparison"`
+	Timeline            bool              `json:"timeline"`
+	HourlyDistribution  bool              `json:"hourly_distribution"`
+	ModelShare          bool              `json:"model_share"`
+	ChannelShare        bool              `json:"channel_share"`
+	ModelStats          bool              `json:"model_stats"`
+	ModelStatsPage      *AggregatePage    `json:"model_stats_page"`
+	FailureSources      bool              `json:"failure_sources"`
+	AccountStats        bool              `json:"account_stats"`
+	AccountStatsLimit   int               `json:"account_stats_limit"`
+	AccountStatsPage    *AggregatePage    `json:"account_stats_page"`
+	CredentialStats     bool              `json:"credential_stats"`
+	CredentialStatsPage *AggregatePage    `json:"credential_stats_page"`
+	CredentialTimeline  bool              `json:"credential_timeline"`
+	APIKeyStats         bool              `json:"api_key_stats"`
+	APIKeyStatsLimit    int               `json:"api_key_stats_limit"`
+	APIKeyStatsPage     *AggregatePage    `json:"api_key_stats_page"`
+	FilterOptions       bool              `json:"filter_options"`
+	FilterSelectors     bool              `json:"filter_selectors"`
+	Heatmap             bool              `json:"heatmap"`
+	AnomalyPoints       bool              `json:"anomaly_points"`
+	TaskBuckets         bool              `json:"task_buckets"`
+	RecentFailures      int               `json:"recent_failures"`
+	EventsPage          *EventsPage       `json:"events_page"`
+	DrilldownPreview    *DrilldownPreview `json:"drilldown_preview"`
+	Granularity         string            `json:"granularity"`
+}
+
+type AggregatePage struct {
+	Page   int    `json:"page"`
+	Limit  int    `json:"limit"`
+	Search string `json:"search"`
+}
+
+type AggregatePagination struct {
+	Page      int   `json:"page"`
+	Limit     int   `json:"limit"`
+	Total     int64 `json:"total"`
+	Count     int   `json:"count"`
+	HasMore   bool  `json:"has_more"`
+	Truncated bool  `json:"truncated"`
 }
 
 type EventsPage struct {
@@ -117,27 +138,31 @@ type DrilldownPreview struct {
 }
 
 type Response struct {
-	GeneratedAtMS      int64                     `json:"generated_at_ms"`
-	Granularity        string                    `json:"granularity"`
-	Summary            *Summary                  `json:"summary,omitempty"`
-	SummaryComparison  *SummaryComparison        `json:"summary_comparison,omitempty"`
-	Timeline           []TimelinePoint           `json:"timeline,omitempty"`
-	HourlyDistribution []HourlyPoint             `json:"hourly_distribution,omitempty"`
-	Heatmap            []HeatmapPoint            `json:"heatmap,omitempty"`
-	AnomalyPoints      []AnomalyPoint            `json:"anomaly_points,omitempty"`
-	ModelShare         []ModelShareRow           `json:"model_share,omitempty"`
-	ModelStats         []ModelStat               `json:"model_stats,omitempty"`
-	ChannelShare       []ChannelShareRow         `json:"channel_share,omitempty"`
-	FailureSources     []FailureSourceRow        `json:"failure_sources,omitempty"`
-	AccountStats       []AccountStatRow          `json:"account_stats,omitempty"`
-	CredentialStats    []CredentialStatRow       `json:"credential_stats,omitempty"`
-	CredentialTimeline []CredentialTimelinePoint `json:"credential_timeline,omitempty"`
-	APIKeyStats        []APIKeyStatRow           `json:"api_key_stats,omitempty"`
-	FilterOptions      *FilterOptions            `json:"filter_options,omitempty"`
-	TaskBuckets        []TaskBucketRow           `json:"task_buckets,omitempty"`
-	RecentFailures     []RecentFailure           `json:"recent_failures,omitempty"`
-	Events             *EventsResponse           `json:"events,omitempty"`
-	DrilldownPreview   *EventsResponse           `json:"drilldown_preview,omitempty"`
+	GeneratedAtMS             int64                     `json:"generated_at_ms"`
+	Granularity               string                    `json:"granularity"`
+	Summary                   *Summary                  `json:"summary,omitempty"`
+	SummaryComparison         *SummaryComparison        `json:"summary_comparison,omitempty"`
+	Timeline                  []TimelinePoint           `json:"timeline,omitempty"`
+	HourlyDistribution        []HourlyPoint             `json:"hourly_distribution,omitempty"`
+	Heatmap                   []HeatmapPoint            `json:"heatmap,omitempty"`
+	AnomalyPoints             []AnomalyPoint            `json:"anomaly_points,omitempty"`
+	ModelShare                []ModelShareRow           `json:"model_share,omitempty"`
+	ModelStats                []ModelStat               `json:"model_stats,omitempty"`
+	ModelStatsPagination      *AggregatePagination      `json:"model_stats_pagination,omitempty"`
+	ChannelShare              []ChannelShareRow         `json:"channel_share,omitempty"`
+	FailureSources            []FailureSourceRow        `json:"failure_sources,omitempty"`
+	AccountStats              []AccountStatRow          `json:"account_stats,omitempty"`
+	AccountStatsPagination    *AggregatePagination      `json:"account_stats_pagination,omitempty"`
+	CredentialStats           []CredentialStatRow       `json:"credential_stats,omitempty"`
+	CredentialStatsPagination *AggregatePagination      `json:"credential_stats_pagination,omitempty"`
+	CredentialTimeline        []CredentialTimelinePoint `json:"credential_timeline,omitempty"`
+	APIKeyStats               []APIKeyStatRow           `json:"api_key_stats,omitempty"`
+	APIKeyStatsPagination     *AggregatePagination      `json:"api_key_stats_pagination,omitempty"`
+	FilterOptions             *FilterOptions            `json:"filter_options,omitempty"`
+	TaskBuckets               []TaskBucketRow           `json:"task_buckets,omitempty"`
+	RecentFailures            []RecentFailure           `json:"recent_failures,omitempty"`
+	Events                    *EventsResponse           `json:"events,omitempty"`
+	DrilldownPreview          *EventsResponse           `json:"drilldown_preview,omitempty"`
 }
 
 type HeaderSnapshotsRequest struct {
@@ -506,20 +531,23 @@ type APIKeyContextRow struct {
 }
 
 type FilterOptions struct {
-	AccountStats     []AccountStatRow  `json:"account_stats,omitempty"`
-	APIKeyStats      []APIKeyStatRow   `json:"api_key_stats,omitempty"`
-	ChannelShare     []ChannelShareRow `json:"channel_share,omitempty"`
-	ModelStats       []ModelStat       `json:"model_stats,omitempty"`
-	Models           []string          `json:"models,omitempty"`
-	APIKeyHashes     []string          `json:"api_key_hashes,omitempty"`
-	Providers        []string          `json:"providers,omitempty"`
-	AuthFiles        []string          `json:"auth_files,omitempty"`
-	ProjectIDs       []string          `json:"project_ids,omitempty"`
-	RequestTypes     []string          `json:"request_types,omitempty"`
-	HeaderErrorKinds []string          `json:"header_error_kinds,omitempty"`
-	HeaderErrorCodes []string          `json:"header_error_codes,omitempty"`
-	HeaderQuotaPlans []string          `json:"header_quota_plans,omitempty"`
-	HeaderTraceIDs   []string          `json:"header_trace_ids,omitempty"`
+	AccountStats           []AccountStatRow     `json:"account_stats,omitempty"`
+	AccountStatsPagination *AggregatePagination `json:"account_stats_pagination,omitempty"`
+	APIKeyStats            []APIKeyStatRow      `json:"api_key_stats,omitempty"`
+	APIKeyStatsPagination  *AggregatePagination `json:"api_key_stats_pagination,omitempty"`
+	ChannelShare           []ChannelShareRow    `json:"channel_share,omitempty"`
+	ModelStats             []ModelStat          `json:"model_stats,omitempty"`
+	ModelStatsPagination   *AggregatePagination `json:"model_stats_pagination,omitempty"`
+	Models                 []string             `json:"models,omitempty"`
+	APIKeyHashes           []string             `json:"api_key_hashes,omitempty"`
+	Providers              []string             `json:"providers,omitempty"`
+	AuthFiles              []string             `json:"auth_files,omitempty"`
+	ProjectIDs             []string             `json:"project_ids,omitempty"`
+	RequestTypes           []string             `json:"request_types,omitempty"`
+	HeaderErrorKinds       []string             `json:"header_error_kinds,omitempty"`
+	HeaderErrorCodes       []string             `json:"header_error_codes,omitempty"`
+	HeaderQuotaPlans       []string             `json:"header_quota_plans,omitempty"`
+	HeaderTraceIDs         []string             `json:"header_trace_ids,omitempty"`
 }
 
 type TaskBucketRow struct {
@@ -669,7 +697,7 @@ func (s *Service) Analytics(ctx context.Context, req Request) (Response, error) 
 	summaryComputed := false
 	compactSummary := req.Include.Summary && req.Include.SummaryProfile == "compact"
 	rollupEligible := analyticsHourlyRollupEligible(filter)
-	needsHourlyAggregates := req.Include.Summary || req.Include.ModelShare || req.Include.ModelStats
+	needsHourlyAggregates := req.Include.Summary
 	needsHourlyTimeline := req.Include.Timeline || req.Include.AnomalyPoints
 	hourlyTimelineRepresentable := rollupEligible && needsHourlyTimeline && s.hourlyReader.CanRepresentAnalyticsTimeline(req.FromMS, req.ToMS, granularity, location)
 	needsHourlyCore := needsHourlyAggregates || hourlyTimelineRepresentable
@@ -684,19 +712,6 @@ func (s *Service) Analytics(ctx context.Context, req Request) (Response, error) 
 			location,
 			hourlyTimelineRepresentable,
 		)
-	}
-
-	var modelStats []store.ModelStat
-	needsModelStats := req.Include.Summary || req.Include.ModelShare || req.Include.ModelStats
-	if needsModelStats {
-		if hourlySnapshotAvailable {
-			modelStats = hourlySnapshot.ModelStats
-		} else {
-			modelStats, err = s.store.ModelStatsWithFilter(ctx, filter, 0)
-			if err != nil {
-				return Response{}, err
-			}
-		}
 	}
 
 	var taskBuckets []store.TaskBucket
@@ -727,6 +742,15 @@ func (s *Service) Analytics(ctx context.Context, req Request) (Response, error) 
 		var rollingAgg store.Aggregate
 		var activeDays int64
 		var zeroTokenModels []string
+		var modelMetrics modelSummaryMetrics
+		if hourlySnapshotAvailable {
+			modelMetrics = summarizeModelStats(hourlySnapshot.ModelStats, prices)
+		} else {
+			modelMetrics, err = s.totalModelSummaryMetrics(ctx, filter, prices)
+			if err != nil {
+				return Response{}, err
+			}
+		}
 		if !compactSummary {
 			rollingFilter := filter
 			rollingFilter.FromMS = nowMS - recentWindowMS
@@ -748,7 +772,7 @@ func (s *Service) Analytics(ctx context.Context, req Request) (Response, error) 
 		if compactSummary {
 			summaryTaskBuckets = nil
 		}
-		response.Summary = buildSummary(agg, latencySummary, rollingAgg, activeDays, modelStats, summaryTaskBuckets, prices, zeroTokenModels)
+		response.Summary = buildSummary(agg, latencySummary, rollingAgg, activeDays, modelMetrics, summaryTaskBuckets, zeroTokenModels)
 		if compactSummary {
 			clearFullSummaryMetrics(response.Summary)
 		}
@@ -765,7 +789,7 @@ func (s *Service) Analytics(ctx context.Context, req Request) (Response, error) 
 				prevFilter.FromMS = prevFrom
 				prevFilter.ToMS = req.FromMS
 				var prevAgg store.Aggregate
-				var prevModelStats []store.ModelStat
+				var prevModelMetrics modelSummaryMetrics
 				var prevSnapshot usagehourly.Snapshot
 				prevSnapshotAvailable := false
 				if rollupEligible {
@@ -780,13 +804,13 @@ func (s *Service) Analytics(ctx context.Context, req Request) (Response, error) 
 				}
 				if prevSnapshotAvailable {
 					prevAgg = prevSnapshot.Aggregate
-					prevModelStats = prevSnapshot.ModelStats
+					prevModelMetrics = summarizeModelStats(prevSnapshot.ModelStats, prices)
 				} else {
 					prevAgg, err = s.store.AggregateWithFilter(ctx, prevFilter)
 					if err != nil {
 						return Response{}, err
 					}
-					prevModelStats, err = s.store.ModelStatsWithFilter(ctx, prevFilter, 0)
+					prevModelMetrics, err = s.totalModelSummaryMetrics(ctx, prevFilter, prices)
 					if err != nil {
 						return Response{}, err
 					}
@@ -799,7 +823,7 @@ func (s *Service) Analytics(ctx context.Context, req Request) (Response, error) 
 					FailureCalls: prevAgg.FailureCalls,
 					SuccessRate:  ratio(prevAgg.SuccessCalls, prevAgg.TotalCalls),
 					TotalTokens:  prevAgg.TotalTokens,
-					TotalCost:    sumCost(prevModelStats, prices),
+					TotalCost:    prevModelMetrics.TotalCost,
 				}
 			}
 		}
@@ -843,11 +867,19 @@ func (s *Service) Analytics(ctx context.Context, req Request) (Response, error) 
 		}
 		response.Heatmap = buildHeatmap(points, prices)
 	}
-	if req.Include.ModelShare {
-		response.ModelShare = buildModelShare(modelStats, prices)
-	}
-	if req.Include.ModelStats {
-		response.ModelStats = buildModelStats(modelStats, prices)
+	if req.Include.ModelShare || req.Include.ModelStats || req.Include.ModelStatsPage != nil {
+		page, limit := resolveAggregatePage(req.Include.ModelStatsPage, 0)
+		statsPage, err := s.store.ModelStatsPageWithFilter(ctx, filter, limit, aggregateOffset(page, limit))
+		if err != nil {
+			return Response{}, err
+		}
+		if req.Include.ModelShare {
+			response.ModelShare = buildModelShare(statsPage.Items, prices)
+		}
+		if req.Include.ModelStats || req.Include.ModelStatsPage != nil {
+			response.ModelStats = buildModelStats(statsPage.Items, prices)
+		}
+		response.ModelStatsPagination = buildAggregatePagination(page, limit, statsPage.Total, statsPage.Count)
 	}
 	if req.Include.ChannelShare {
 		stats, err := s.store.ChannelModelStatsWithFilter(ctx, filter)
@@ -863,19 +895,23 @@ func (s *Service) Analytics(ctx context.Context, req Request) (Response, error) 
 		}
 		response.FailureSources = buildFailureSources(stats)
 	}
-	if req.Include.AccountStats {
-		stats, err := s.store.AccountModelStatsWithFilter(ctx, filter, req.Include.AccountStatsLimit)
+	if req.Include.AccountStats || req.Include.AccountStatsPage != nil {
+		page, limit := resolveAggregatePage(req.Include.AccountStatsPage, req.Include.AccountStatsLimit)
+		statsPage, err := s.store.AccountModelStatsPageWithFilter(ctx, filter, limit, aggregateOffset(page, limit))
 		if err != nil {
 			return Response{}, err
 		}
-		response.AccountStats = buildAccountStats(stats, prices)
+		response.AccountStats = buildAccountStats(statsPage.Items, prices)
+		response.AccountStatsPagination = buildAggregatePagination(page, limit, statsPage.Total, statsPage.Count)
 	}
-	if req.Include.CredentialStats {
-		stats, err := s.store.CredentialModelStatsWithFilter(ctx, filter)
+	if req.Include.CredentialStats || req.Include.CredentialStatsPage != nil {
+		page, limit := resolveAggregatePage(req.Include.CredentialStatsPage, 0)
+		statsPage, err := s.store.CredentialModelStatsPageWithFilter(ctx, filter, limit, aggregateOffset(page, limit))
 		if err != nil {
 			return Response{}, err
 		}
-		response.CredentialStats = buildCredentialStats(stats, prices)
+		response.CredentialStats = buildCredentialStats(statsPage.Items, prices)
+		response.CredentialStatsPagination = buildAggregatePagination(page, limit, statsPage.Total, statsPage.Count)
 	}
 	if req.Include.CredentialTimeline {
 		points, err := s.store.CredentialTimelineWithFilter(ctx, filter, granularity, location)
@@ -884,12 +920,18 @@ func (s *Service) Analytics(ctx context.Context, req Request) (Response, error) 
 		}
 		response.CredentialTimeline = buildCredentialTimeline(points, granularity, location, prices)
 	}
-	if req.Include.APIKeyStats {
-		stats, err := s.store.APIKeyModelStatsWithFilter(ctx, filter, req.Include.APIKeyStatsLimit)
+	if req.Include.APIKeyStats || req.Include.APIKeyStatsPage != nil {
+		page, limit := resolveAggregatePage(req.Include.APIKeyStatsPage, req.Include.APIKeyStatsLimit)
+		apiKeyFilter := filter
+		if req.Include.APIKeyStatsPage != nil {
+			apiKeyFilter.APIKeyAggregateSearch = req.Include.APIKeyStatsPage.Search
+		}
+		statsPage, err := s.store.APIKeyModelStatsPageWithFilter(ctx, apiKeyFilter, limit, aggregateOffset(page, limit))
 		if err != nil {
 			return Response{}, err
 		}
-		response.APIKeyStats = buildAPIKeyStats(stats, prices)
+		response.APIKeyStats = buildAPIKeyStats(statsPage.Items, prices)
+		response.APIKeyStatsPagination = buildAggregatePagination(page, limit, statsPage.Total, statsPage.Count)
 	}
 	if req.Include.FilterSelectors {
 		selectors, err := s.filterSelectors(ctx, filter)
@@ -976,8 +1018,8 @@ func (s *Service) AccountHistory(ctx context.Context, req AccountHistoryRequest)
 	if len(req.Accounts) == 0 {
 		return AccountHistoryResponse{}, errors.New("accounts are required")
 	}
-	if len(req.Accounts) > maxAccountHistoryTargets {
-		return AccountHistoryResponse{}, fmt.Errorf("accounts must be less than or equal to %d", maxAccountHistoryTargets)
+	if len(req.Accounts) > MaxAccountHistoryTargets {
+		return AccountHistoryResponse{}, fmt.Errorf("accounts must be less than or equal to %d", MaxAccountHistoryTargets)
 	}
 	generatedAtMS := time.Now().UnixMilli()
 	processed := 0
@@ -1075,15 +1117,15 @@ func (s *Service) HeaderSnapshots(ctx context.Context, req HeaderSnapshotsReques
 	if days <= 0 {
 		days = defaultHeaderSnapshotDays
 	}
-	if days > maxHeaderSnapshotDays {
-		days = maxHeaderSnapshotDays
+	if days > MaxHeaderSnapshotDays {
+		days = MaxHeaderSnapshotDays
 	}
 	limit := req.Limit
 	if limit <= 0 {
 		limit = defaultHeaderSnapshotLimit
 	}
-	if limit > maxHeaderSnapshotLimit {
-		limit = maxHeaderSnapshotLimit
+	if limit > MaxHeaderSnapshotLimit {
+		limit = MaxHeaderSnapshotLimit
 	}
 	nowMS := time.Now().UnixMilli()
 	fromMS := nowMS - int64(days)*24*60*60*1000
@@ -1130,6 +1172,95 @@ func buildFilter(req Request) store.AnalyticsFilter {
 	}
 }
 
+func resolveAggregatePage(request *AggregatePage, legacyLimit int) (int, int) {
+	page := 1
+	limit := legacyLimit
+	if request != nil {
+		if request.Page > 0 {
+			page = request.Page
+		}
+		if request.Limit > 0 {
+			limit = request.Limit
+		}
+	}
+	if limit <= 0 {
+		limit = defaultAggregatePageLimit
+	}
+	if limit > MaxAggregatePageLimit {
+		limit = MaxAggregatePageLimit
+	}
+	return page, limit
+}
+
+func aggregateOffset(page int, limit int) int {
+	if page <= 1 || limit <= 0 {
+		return 0
+	}
+	maxInt := int(^uint(0) >> 1)
+	if page-1 > maxInt/limit {
+		return maxInt
+	}
+	return (page - 1) * limit
+}
+
+func buildAggregatePagination(page int, limit int, total int64, count int) *AggregatePagination {
+	offset := aggregateOffset(page, limit)
+	return &AggregatePagination{
+		Page:      page,
+		Limit:     limit,
+		Total:     total,
+		Count:     count,
+		HasMore:   int64(offset+count) < total,
+		Truncated: total > int64(count),
+	}
+}
+
+type modelSummaryMetrics struct {
+	TotalCost           float64
+	CacheHitTokens      int64
+	CacheHitInputTokens int64
+}
+
+func summarizeModelStats(stats []store.ModelStat, prices map[string]store.ModelPrice) modelSummaryMetrics {
+	metrics := modelSummaryMetrics{}
+	for _, stat := range stats {
+		metrics.TotalCost += costForStat(stat, prices)
+		behaviorModel := stat.BillingModel
+		if strings.TrimSpace(behaviorModel) == "" {
+			behaviorModel = stat.Model
+		}
+		hitTokens, inputTokens := usage.CacheHitTotals(
+			behaviorModel,
+			stat.InputTokens,
+			stat.CachedTokens,
+			stat.CacheReadTokens,
+			stat.CacheCreationTokens,
+		)
+		metrics.CacheHitTokens += hitTokens
+		metrics.CacheHitInputTokens += inputTokens
+	}
+	return metrics
+}
+
+func (s *Service) totalModelSummaryMetrics(ctx context.Context, filter store.AnalyticsFilter, prices map[string]store.ModelPrice) (modelSummaryMetrics, error) {
+	metrics := modelSummaryMetrics{}
+	offset := 0
+	for {
+		page, err := s.store.ModelStatsPageWithFilter(ctx, filter, MaxAggregatePageLimit, offset)
+		if err != nil {
+			return modelSummaryMetrics{}, err
+		}
+		batch := summarizeModelStats(page.Items, prices)
+		metrics.TotalCost += batch.TotalCost
+		metrics.CacheHitTokens += batch.CacheHitTokens
+		metrics.CacheHitInputTokens += batch.CacheHitInputTokens
+		if page.Count <= 0 || int64(offset+page.Count) >= page.Total {
+			return metrics, nil
+		}
+		offset += page.Count
+	}
+}
+
 func analyticsHourlyRollupEligible(filter store.AnalyticsFilter) bool {
 	return strings.TrimSpace(filter.SearchQuery) == "" &&
 		strings.TrimSpace(filter.SearchAPIKeyHash) == "" &&
@@ -1156,11 +1287,11 @@ func analyticsHourlyRollupEligible(filter store.AnalyticsFilter) bool {
 func (s *Service) filterOptions(ctx context.Context, filter store.AnalyticsFilter, prices map[string]store.ModelPrice) (*FilterOptions, error) {
 	optionFilter := filterOptionsBaseFilter(filter)
 
-	accountStats, err := s.store.AccountModelStatsWithFilter(ctx, optionFilter, 0)
+	accountStatsPage, err := s.store.AccountModelStatsPageWithFilter(ctx, optionFilter, defaultAggregatePageLimit, 0)
 	if err != nil {
 		return nil, err
 	}
-	apiKeyStats, err := s.store.APIKeyModelStatsWithFilter(ctx, optionFilter, 0)
+	apiKeyStatsPage, err := s.store.APIKeyModelStatsPageWithFilter(ctx, optionFilter, defaultAggregatePageLimit, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -1168,7 +1299,7 @@ func (s *Service) filterOptions(ctx context.Context, filter store.AnalyticsFilte
 	if err != nil {
 		return nil, err
 	}
-	modelStats, err := s.store.ModelStatsWithFilter(ctx, optionFilter, 0)
+	modelStatsPage, err := s.store.ModelStatsPageWithFilter(ctx, optionFilter, defaultAggregatePageLimit, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -1178,18 +1309,21 @@ func (s *Service) filterOptions(ctx context.Context, filter store.AnalyticsFilte
 	}
 
 	return &FilterOptions{
-		AccountStats:     buildAccountStats(accountStats, prices),
-		APIKeyStats:      buildAPIKeyStats(apiKeyStats, prices),
-		ChannelShare:     buildChannelShare(channelStats, prices),
-		ModelStats:       buildModelStats(modelStats, prices),
-		Providers:        optionValues.Providers,
-		AuthFiles:        optionValues.AuthFiles,
-		ProjectIDs:       optionValues.ProjectIDs,
-		RequestTypes:     optionValues.RequestTypes,
-		HeaderErrorKinds: optionValues.HeaderErrorKinds,
-		HeaderErrorCodes: optionValues.HeaderErrorCodes,
-		HeaderQuotaPlans: optionValues.HeaderQuotaPlans,
-		HeaderTraceIDs:   optionValues.HeaderTraceIDs,
+		AccountStats:           buildAccountStats(accountStatsPage.Items, prices),
+		AccountStatsPagination: buildAggregatePagination(1, defaultAggregatePageLimit, accountStatsPage.Total, accountStatsPage.Count),
+		APIKeyStats:            buildAPIKeyStats(apiKeyStatsPage.Items, prices),
+		APIKeyStatsPagination:  buildAggregatePagination(1, defaultAggregatePageLimit, apiKeyStatsPage.Total, apiKeyStatsPage.Count),
+		ChannelShare:           buildChannelShare(channelStats, prices),
+		ModelStats:             buildModelStats(modelStatsPage.Items, prices),
+		ModelStatsPagination:   buildAggregatePagination(1, defaultAggregatePageLimit, modelStatsPage.Total, modelStatsPage.Count),
+		Providers:              optionValues.Providers,
+		AuthFiles:              optionValues.AuthFiles,
+		ProjectIDs:             optionValues.ProjectIDs,
+		RequestTypes:           optionValues.RequestTypes,
+		HeaderErrorKinds:       optionValues.HeaderErrorKinds,
+		HeaderErrorCodes:       optionValues.HeaderErrorCodes,
+		HeaderQuotaPlans:       optionValues.HeaderQuotaPlans,
+		HeaderTraceIDs:         optionValues.HeaderTraceIDs,
 	}, nil
 }
 
@@ -1251,7 +1385,7 @@ func resolveAnalyticsLocation(timeZone string) (*time.Location, error) {
 	return location, nil
 }
 
-func buildSummary(agg store.Aggregate, latencySummary store.LatencySummary, rolling store.Aggregate, activeDays int64, modelStats []store.ModelStat, taskBuckets []store.TaskBucket, prices map[string]store.ModelPrice, zeroTokenModels []string) *Summary {
+func buildSummary(agg store.Aggregate, latencySummary store.LatencySummary, rolling store.Aggregate, activeDays int64, modelMetrics modelSummaryMetrics, taskBuckets []store.TaskBucket, zeroTokenModels []string) *Summary {
 	dayCount := activeDays
 	if dayCount <= 0 {
 		dayCount = 1
@@ -1263,7 +1397,7 @@ func buildSummary(agg store.Aggregate, latencySummary store.LatencySummary, roll
 		}
 	}
 	approxTasks := int64(len(taskBuckets))
-	totalCost := sumCost(modelStats, prices)
+	totalCost := modelMetrics.TotalCost
 	return &Summary{
 		TotalCalls:            agg.TotalCalls,
 		SuccessCalls:          agg.SuccessCalls,
@@ -1274,7 +1408,7 @@ func buildSummary(agg store.Aggregate, latencySummary store.LatencySummary, roll
 		CachedTokens:          agg.CachedTokens,
 		CacheReadTokens:       agg.CacheReadTokens,
 		CacheCreationTokens:   agg.CacheCreationTokens,
-		CacheHitRate:          cacheHitRateForModelStats(modelStats),
+		CacheHitRate:          usage.CacheHitRateFromTotals(modelMetrics.CacheHitTokens, modelMetrics.CacheHitInputTokens),
 		ReasoningTokens:       agg.ReasoningTokens,
 		TotalTokens:           agg.TotalTokens,
 		TotalCost:             totalCost,

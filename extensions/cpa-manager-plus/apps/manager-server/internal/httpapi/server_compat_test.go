@@ -485,6 +485,8 @@ func TestServerCompatMonitoringAnalytics(t *testing.T) {
 
 	badRR := testutil.Request(t, handler, http.MethodPost, "/v0/management/monitoring/analytics", `{"from_ms":2,"to_ms":1}`, testutil.AdminKey)
 	testutil.RequireStatus(t, badRR, http.StatusBadRequest)
+	oversizedRR := testutil.Request(t, handler, http.MethodPost, "/v0/management/monitoring/analytics", `{"from_ms":1778000000000,"to_ms":1778000060000,"include":{"model_stats_page":{"page":1,"limit":201}}}`, testutil.AdminKey)
+	testutil.RequireStatus(t, oversizedRR, http.StatusBadRequest)
 
 	body := `{"from_ms":1778000000000,"to_ms":1778000060000,"include":{"summary":true,"events_page":{"limit":10},"recent_failures":5}}`
 	rr := testutil.Request(t, handler, http.MethodPost, "/v0/management/monitoring/analytics", body, testutil.AdminKey)
@@ -506,6 +508,44 @@ func TestServerCompatMonitoringAnalytics(t *testing.T) {
 	}
 	if payload.Events == nil || len(payload.Events.Items) != 1 || payload.Events.Items[0].EventHash != "monitoring-analytics-event" {
 		t.Fatalf("events = %#v", payload.Events)
+	}
+}
+
+func TestServerCompatAccountActionCandidatesServerPaginationAndSearch(t *testing.T) {
+	handler, db := newCompatHandler(t, testutil.NewConfig(t), nil)
+	ctx := context.Background()
+	for _, input := range []store.AccountActionCandidateUpsert{
+		{ActionType: "delete", AuthFileName: "alpha.json", AccountSnapshot: "alpha@example.com", Reason: "token revoked", EvidenceJSON: `{"headerTraceId":"trace-alpha"}`, SeenAtMS: 1000},
+		{ActionType: "reauth", AuthFileName: "beta.json", AccountSnapshot: "beta@example.com", Reason: "reauth required", SeenAtMS: 2000},
+		{ActionType: "review", AuthFileName: "gamma.json", AccountSnapshot: "gamma@example.com", Reason: "manual review", SeenAtMS: 3000},
+	} {
+		if _, err := db.UpsertAccountActionCandidate(ctx, input); err != nil {
+			t.Fatalf("upsert %s: %v", input.AuthFileName, err)
+		}
+	}
+
+	rr := testutil.Request(t, handler, http.MethodGet, "/v0/management/account-action-candidates?status=pending&page=2&page_size=1", "", testutil.AdminKey)
+	testutil.RequireStatus(t, rr, http.StatusOK)
+	var page struct {
+		Items []struct {
+			AuthFileName string `json:"authFileName"`
+		} `json:"items"`
+		Total        int64 `json:"total"`
+		Page         int   `json:"page"`
+		PageSize     int   `json:"page_size"`
+		PendingCount int64 `json:"pendingCount"`
+	}
+	testutil.DecodeJSON(t, rr, &page)
+	if page.Total != 3 || page.Page != 2 || page.PageSize != 1 || page.PendingCount != 3 ||
+		len(page.Items) != 1 || page.Items[0].AuthFileName != "beta.json" {
+		t.Fatalf("candidate page = %#v", page)
+	}
+
+	searchRR := testutil.Request(t, handler, http.MethodGet, "/v0/management/account-action-candidates?status=all&search=trace-alpha&page=1&page_size=20", "", testutil.AdminKey)
+	testutil.RequireStatus(t, searchRR, http.StatusOK)
+	testutil.DecodeJSON(t, searchRR, &page)
+	if page.Total != 1 || len(page.Items) != 1 || page.Items[0].AuthFileName != "alpha.json" {
+		t.Fatalf("candidate search = %#v", page)
 	}
 }
 

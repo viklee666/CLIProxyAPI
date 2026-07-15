@@ -10,6 +10,7 @@ const { mocks } = vi.hoisted(() => {
       deleteFiles: vi.fn(),
       patchFields: vi.fn(),
       patchFieldsForAuthIndexes: vi.fn(),
+      patchFieldsBatch: vi.fn(),
       showNotification: vi.fn(),
       showConfirmation: vi.fn(),
     },
@@ -37,10 +38,12 @@ vi.mock('@/stores', () => ({
 vi.mock('@/services/api', () => ({
   authFilesApi: {
     list: mocks.list,
+    listSummary: mocks.list,
     saveJsonObject: mocks.saveJsonObject,
     deleteFiles: mocks.deleteFiles,
     patchFields: mocks.patchFields,
     patchFieldsForAuthIndexes: mocks.patchFieldsForAuthIndexes,
+    patchFieldsBatch: mocks.patchFieldsBatch,
   },
 }));
 
@@ -98,6 +101,7 @@ beforeEach(() => {
   mocks.deleteFiles.mockReset();
   mocks.patchFields.mockReset();
   mocks.patchFieldsForAuthIndexes.mockReset();
+  mocks.patchFieldsBatch.mockReset();
   mocks.showNotification.mockReset();
   mocks.showConfirmation.mockReset();
 
@@ -106,6 +110,7 @@ beforeEach(() => {
   mocks.deleteFiles.mockResolvedValue({ deleted: 0, failed: [], files: [] });
   mocks.patchFields.mockResolvedValue(undefined);
   mocks.patchFieldsForAuthIndexes.mockResolvedValue(undefined);
+  mocks.patchFieldsBatch.mockResolvedValue({ status: 'ok', updated: 0, failed: [] });
 });
 
 describe('buildPastedAuthJsonPayload', () => {
@@ -584,6 +589,7 @@ describe('useAuthFilesData handleDeleteAll', () => {
 describe('useAuthFilesData batchPatchFields', () => {
   it('patches selected auth indexes from the same file in one request', async () => {
     const hook = mountUseAuthFilesData();
+    mocks.patchFieldsBatch.mockResolvedValueOnce({ status: 'ok', updated: 2, failed: [] });
 
     let result: Awaited<ReturnType<ReturnType<typeof useAuthFilesData>['batchPatchFields']>> = null;
     await act(async () => {
@@ -597,11 +603,11 @@ describe('useAuthFilesData batchPatchFields', () => {
       );
     });
 
-    expect(mocks.patchFieldsForAuthIndexes).toHaveBeenCalledWith(
-      'shared-codex.json',
-      ['auth-1', 'auth-2'],
+    expect(mocks.patchFieldsBatch).toHaveBeenCalledWith(
+      [{ name: 'shared-codex.json', authIndexes: ['auth-1', 'auth-2'] }],
       { priority: 10 }
     );
+    expect(mocks.patchFieldsForAuthIndexes).not.toHaveBeenCalled();
     expect(mocks.patchFields).not.toHaveBeenCalled();
     expect(result).toEqual({ success: 2, failed: 0, failedNames: [] });
     expect(mocks.list).toHaveBeenCalledTimes(1);
@@ -612,8 +618,9 @@ describe('useAuthFilesData batchPatchFields', () => {
     hook.unmount();
   });
 
-  it('falls back to file-level field patching when auth index is absent', async () => {
+  it('sends a file-level batch target when auth index is absent', async () => {
     const hook = mountUseAuthFilesData();
+    mocks.patchFieldsBatch.mockResolvedValueOnce({ status: 'ok', updated: 1, failed: [] });
 
     let result: Awaited<ReturnType<ReturnType<typeof useAuthFilesData>['batchPatchFields']>> = null;
     await act(async () => {
@@ -622,7 +629,11 @@ describe('useAuthFilesData batchPatchFields', () => {
         .batchPatchFields([{ name: 'single-codex.json' }], { websockets: false });
     });
 
-    expect(mocks.patchFields).toHaveBeenCalledWith('single-codex.json', { websockets: false });
+    expect(mocks.patchFieldsBatch).toHaveBeenCalledWith(
+      [{ name: 'single-codex.json' }],
+      { websockets: false }
+    );
+    expect(mocks.patchFields).not.toHaveBeenCalled();
     expect(mocks.patchFieldsForAuthIndexes).not.toHaveBeenCalled();
     expect(result).toEqual({ success: 1, failed: 0, failedNames: [] });
     hook.unmount();

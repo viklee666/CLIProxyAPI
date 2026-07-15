@@ -1,10 +1,9 @@
 package modelprice
 
 import (
-	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/app"
@@ -32,16 +31,24 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 		}
 		response.JSON(w, http.StatusOK, summary)
 	case path == "/v0/management/model-prices" && r.Method == http.MethodGet:
-		prices, err := h.App.ModelPriceService.List(r.Context())
+		page, pageSize, err := parseModelPricePage(r)
+		if err != nil {
+			response.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		prices, err := h.App.ModelPriceService.ListPage(r.Context(), modelpricesvc.ListRequest{
+			Search:   r.URL.Query().Get("search"),
+			Page:     page,
+			PageSize: pageSize,
+		})
 		if err != nil {
 			response.Error(w, http.StatusInternalServerError, err)
 			return
 		}
-		response.JSON(w, http.StatusOK, map[string]any{"prices": prices})
+		response.JSON(w, http.StatusOK, prices)
 	case path == "/v0/management/model-prices" && r.Method == http.MethodPut:
 		var req modelpricesvc.UpdateRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			response.Error(w, http.StatusBadRequest, err)
+		if !response.DecodeJSON(w, r, &req, response.JSONDecodeOptions{}) {
 			return
 		}
 		prices, err := h.App.ModelPriceService.Replace(r.Context(), req.Prices)
@@ -52,8 +59,11 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 		response.JSON(w, http.StatusOK, map[string]any{"prices": prices})
 	case path == "/v0/management/model-prices/sync" && r.Method == http.MethodPost:
 		var req modelpricesvc.SyncRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-			response.Error(w, http.StatusBadRequest, err)
+		if !response.DecodeJSON(w, r, &req, response.JSONDecodeOptions{AllowEmpty: true}) {
+			return
+		}
+		if len(req.Models) > modelpricesvc.MaxSyncModels {
+			response.Error(w, http.StatusBadRequest, errors.New("too many models requested for price sync"))
 			return
 		}
 		result, err := h.App.ModelPriceService.Sync(r.Context(), req)
@@ -65,4 +75,27 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 	default:
 		response.MethodNotAllowed(w)
 	}
+}
+
+func parseModelPricePage(r *http.Request) (int, int, error) {
+	page, err := parseModelPricePositiveInt(r.URL.Query().Get("page"), 1)
+	if err != nil {
+		return 0, 0, errors.New("page must be a positive integer")
+	}
+	pageSize, err := parseModelPricePositiveInt(r.URL.Query().Get("page_size"), 100)
+	if err != nil || pageSize > 200 {
+		return 0, 0, errors.New("page_size must be between 1 and 200")
+	}
+	return page, pageSize, nil
+}
+
+func parseModelPricePositiveInt(raw string, fallback int) (int, error) {
+	if strings.TrimSpace(raw) == "" {
+		return fallback, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		return 0, errors.New("value must be a positive integer")
+	}
+	return value, nil
 }

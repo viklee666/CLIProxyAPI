@@ -1,0 +1,209 @@
+# Management API 逐路由三态处置附录
+
+更新日期：2026-07-16。
+
+- `已优化`：已有分页/过滤/聚合/缓存/批处理或明确传输上限。
+- `天然有界`：单记录、标量、状态或动作响应，不随业务数据量线性增长；核心管理路由另有默认请求体总闸。
+- `仍有风险`：当前仍存在完整集合/整对象或冻结代理载荷，需要继续处置或由禁改边界明确保留。
+
+## 核心静态路由（152/152）
+
+| 方法 | 路径 | 状态 |
+|---|---|---|
+| `GET` | `/v0/management/anthropic-auth-url` | 天然有界 |
+| `GET` | `/v0/management/antigravity-auth-url` | 天然有界 |
+| `POST` | `/v0/management/api-call` | 仍有风险（冻结边界） |
+| `GET` | `/v0/management/api-key-usage` | 已优化 |
+| `DELETE` | `/v0/management/api-keys` | 天然有界 |
+| `GET` | `/v0/management/api-keys` | 已优化 |
+| `PATCH` | `/v0/management/api-keys` | 天然有界 |
+| `POST` | `/v0/management/api-keys` | 天然有界 |
+| `PUT` | `/v0/management/api-keys` | 已优化 |
+| `DELETE` | `/v0/management/auth-files` | 已优化 |
+| `GET` | `/v0/management/auth-files` | 已优化 |
+| `POST` | `/v0/management/auth-files` | 已优化 |
+| `GET` | `/v0/management/auth-files/download` | 已优化 |
+| `POST` | `/v0/management/auth-files/download` | 已优化 |
+| `PATCH` | `/v0/management/auth-files/fields` | 天然有界 |
+| `PATCH` | `/v0/management/auth-files/fields/batch` | 已优化 |
+| `GET` | `/v0/management/auth-files/models` | 已优化 |
+| `PATCH` | `/v0/management/auth-files/status` | 天然有界 |
+| `PATCH` | `/v0/management/auth-files/status/batch` | 已优化 |
+| `DELETE` | `/v0/management/claude-api-key` | 天然有界 |
+| `GET` | `/v0/management/claude-api-key` | 已优化 |
+| `PATCH` | `/v0/management/claude-api-key` | 天然有界 |
+| `POST` | `/v0/management/claude-api-key` | 天然有界 |
+| `PUT` | `/v0/management/claude-api-key` | 已优化 |
+| `GET` | `/v0/management/client-access/credential-bindings` | 已优化 |
+| `PUT` | `/v0/management/client-access/credential-bindings` | 已优化 |
+| `POST` | `/v0/management/client-access/credential-bindings/bulk` | 已优化 |
+| `GET` | `/v0/management/client-access/groups` | 已优化 |
+| `POST` | `/v0/management/client-access/groups` | 天然有界 |
+| `DELETE` | `/v0/management/client-access/groups/:id` | 天然有界 |
+| `GET` | `/v0/management/client-access/groups/:id` | 天然有界 |
+| `PATCH` | `/v0/management/client-access/groups/:id` | 天然有界 |
+| `GET` | `/v0/management/client-access/keys` | 已优化 |
+| `POST` | `/v0/management/client-access/keys` | 天然有界 |
+| `DELETE` | `/v0/management/client-access/keys/:id` | 天然有界 |
+| `GET` | `/v0/management/client-access/keys/:id` | 天然有界 |
+| `PATCH` | `/v0/management/client-access/keys/:id` | 天然有界 |
+| `DELETE` | `/v0/management/codex-api-key` | 天然有界 |
+| `GET` | `/v0/management/codex-api-key` | 已优化 |
+| `PATCH` | `/v0/management/codex-api-key` | 天然有界 |
+| `POST` | `/v0/management/codex-api-key` | 天然有界 |
+| `PUT` | `/v0/management/codex-api-key` | 已优化 |
+| `GET` | `/v0/management/codex-auth-url` | 天然有界 |
+| `GET` | `/v0/management/config` | 已优化 |
+| `GET` | `/v0/management/config.yaml` | 已优化 |
+| `PUT` | `/v0/management/config.yaml` | 已优化 |
+| `GET` | `/v0/management/config/summary` | 已优化 |
+| `GET` | `/v0/management/debug` | 天然有界 |
+| `PATCH` | `/v0/management/debug` | 天然有界 |
+| `PUT` | `/v0/management/debug` | 天然有界 |
+| `GET` | `/v0/management/error-logs-max-files` | 天然有界 |
+| `PATCH` | `/v0/management/error-logs-max-files` | 天然有界 |
+| `PUT` | `/v0/management/error-logs-max-files` | 天然有界 |
+| `GET` | `/v0/management/force-model-prefix` | 天然有界 |
+| `PATCH` | `/v0/management/force-model-prefix` | 天然有界 |
+| `PUT` | `/v0/management/force-model-prefix` | 天然有界 |
+| `DELETE` | `/v0/management/gemini-api-key` | 天然有界 |
+| `GET` | `/v0/management/gemini-api-key` | 已优化 |
+| `PATCH` | `/v0/management/gemini-api-key` | 天然有界 |
+| `POST` | `/v0/management/gemini-api-key` | 天然有界 |
+| `PUT` | `/v0/management/gemini-api-key` | 已优化 |
+| `GET` | `/v0/management/get-auth-status` | 天然有界 |
+| `DELETE` | `/v0/management/interactions-api-key` | 天然有界 |
+| `GET` | `/v0/management/interactions-api-key` | 已优化 |
+| `PATCH` | `/v0/management/interactions-api-key` | 天然有界 |
+| `POST` | `/v0/management/interactions-api-key` | 天然有界 |
+| `PUT` | `/v0/management/interactions-api-key` | 已优化 |
+| `GET` | `/v0/management/kimi-auth-url` | 天然有界 |
+| `GET` | `/v0/management/latest-version` | 已优化 |
+| `GET` | `/v0/management/logging-to-file` | 天然有界 |
+| `PATCH` | `/v0/management/logging-to-file` | 天然有界 |
+| `PUT` | `/v0/management/logging-to-file` | 天然有界 |
+| `DELETE` | `/v0/management/logs` | 天然有界 |
+| `GET` | `/v0/management/logs` | 已优化 |
+| `GET` | `/v0/management/logs-max-total-size-mb` | 天然有界 |
+| `PATCH` | `/v0/management/logs-max-total-size-mb` | 天然有界 |
+| `PUT` | `/v0/management/logs-max-total-size-mb` | 天然有界 |
+| `GET` | `/v0/management/max-retry-interval` | 天然有界 |
+| `PATCH` | `/v0/management/max-retry-interval` | 天然有界 |
+| `PUT` | `/v0/management/max-retry-interval` | 天然有界 |
+| `GET` | `/v0/management/model-definitions/:channel` | 已优化 |
+| `GET` | `/v0/management/oauth-callback` | 天然有界 |
+| `POST` | `/v0/management/oauth-callback` | 已优化 |
+| `DELETE` | `/v0/management/oauth-excluded-models` | 天然有界 |
+| `GET` | `/v0/management/oauth-excluded-models` | 已优化 |
+| `PATCH` | `/v0/management/oauth-excluded-models` | 天然有界 |
+| `PUT` | `/v0/management/oauth-excluded-models` | 已优化 |
+| `DELETE` | `/v0/management/oauth-model-alias` | 天然有界 |
+| `GET` | `/v0/management/oauth-model-alias` | 已优化 |
+| `PATCH` | `/v0/management/oauth-model-alias` | 天然有界 |
+| `PUT` | `/v0/management/oauth-model-alias` | 已优化 |
+| `DELETE` | `/v0/management/oauth-session` | 天然有界 |
+| `DELETE` | `/v0/management/openai-compatibility` | 天然有界 |
+| `GET` | `/v0/management/openai-compatibility` | 已优化 |
+| `PATCH` | `/v0/management/openai-compatibility` | 天然有界 |
+| `POST` | `/v0/management/openai-compatibility` | 天然有界 |
+| `PUT` | `/v0/management/openai-compatibility` | 已优化 |
+| `GET` | `/v0/management/plugin-store` | 已优化 |
+| `POST` | `/v0/management/plugin-store/:id/install` | 天然有界 |
+| `GET` | `/v0/management/plugins` | 已优化 |
+| `GET` | `/v0/management/plugins/routes` | 已优化 |
+| `DELETE` | `/v0/management/plugins/:id` | 天然有界 |
+| `GET` | `/v0/management/plugins/:id/config` | 天然有界 |
+| `PATCH` | `/v0/management/plugins/:id/config` | 天然有界 |
+| `PUT` | `/v0/management/plugins/:id/config` | 天然有界 |
+| `PATCH` | `/v0/management/plugins/:id/enabled` | 天然有界 |
+| `DELETE` | `/v0/management/proxy-url` | 天然有界 |
+| `GET` | `/v0/management/proxy-url` | 天然有界 |
+| `PATCH` | `/v0/management/proxy-url` | 天然有界 |
+| `PUT` | `/v0/management/proxy-url` | 天然有界 |
+| `GET` | `/v0/management/quota-exceeded/switch-preview-model` | 天然有界 |
+| `PATCH` | `/v0/management/quota-exceeded/switch-preview-model` | 天然有界 |
+| `PUT` | `/v0/management/quota-exceeded/switch-preview-model` | 天然有界 |
+| `GET` | `/v0/management/quota-exceeded/switch-project` | 天然有界 |
+| `PATCH` | `/v0/management/quota-exceeded/switch-project` | 天然有界 |
+| `PUT` | `/v0/management/quota-exceeded/switch-project` | 天然有界 |
+| `GET` | `/v0/management/request-error-logs` | 已优化 |
+| `GET` | `/v0/management/request-error-logs/:name` | 天然有界 |
+| `GET` | `/v0/management/request-log` | 天然有界 |
+| `PATCH` | `/v0/management/request-log` | 天然有界 |
+| `PUT` | `/v0/management/request-log` | 天然有界 |
+| `GET` | `/v0/management/request-log-by-id/:id` | 已优化 |
+| `GET` | `/v0/management/request-retry` | 天然有界 |
+| `PATCH` | `/v0/management/request-retry` | 天然有界 |
+| `PUT` | `/v0/management/request-retry` | 天然有界 |
+| `POST` | `/v0/management/reset-quota` | 天然有界 |
+| `GET` | `/v0/management/routing/adaptive` | 天然有界 |
+| `PATCH` | `/v0/management/routing/adaptive` | 天然有界 |
+| `PUT` | `/v0/management/routing/adaptive` | 天然有界 |
+| `GET` | `/v0/management/routing/adaptive/scores` | 已优化 |
+| `GET` | `/v0/management/routing/strategy` | 天然有界 |
+| `PATCH` | `/v0/management/routing/strategy` | 天然有界 |
+| `PUT` | `/v0/management/routing/strategy` | 天然有界 |
+| `GET` | `/v0/management/usage-queue` | 已优化 |
+| `GET` | `/v0/management/usage-statistics-enabled` | 天然有界 |
+| `PATCH` | `/v0/management/usage-statistics-enabled` | 天然有界 |
+| `PUT` | `/v0/management/usage-statistics-enabled` | 天然有界 |
+| `DELETE` | `/v0/management/vertex-api-key` | 天然有界 |
+| `GET` | `/v0/management/vertex-api-key` | 已优化 |
+| `PATCH` | `/v0/management/vertex-api-key` | 天然有界 |
+| `POST` | `/v0/management/vertex-api-key` | 天然有界 |
+| `PUT` | `/v0/management/vertex-api-key` | 已优化 |
+| `POST` | `/v0/management/vertex/import` | 已优化 |
+| `GET` | `/v0/management/ws-auth` | 天然有界 |
+| `PATCH` | `/v0/management/ws-auth` | 天然有界 |
+| `PUT` | `/v0/management/ws-auth` | 天然有界 |
+| `DELETE` | `/v0/management/xai-api-key` | 天然有界 |
+| `GET` | `/v0/management/xai-api-key` | 已优化 |
+| `PATCH` | `/v0/management/xai-api-key` | 天然有界 |
+| `POST` | `/v0/management/xai-api-key` | 天然有界 |
+| `PUT` | `/v0/management/xai-api-key` | 已优化 |
+| `GET` | `/v0/management/xai-auth-url` | 天然有界 |
+
+## Manager Plus 自有路由（35/35）
+
+| 方法 | 路径 | 状态 |
+|---|---|---|
+| `GET` | `/health` | 天然有界 |
+| `GET` | `/status` | 天然有界 |
+| `GET` | `/usage-service/info` | 天然有界 |
+| `GET` | `/usage-service/config` | 天然有界 |
+| `PUT` | `/usage-service/config` | 天然有界 |
+| `GET` | `/usage-service/account-processing-policy` | 天然有界 |
+| `PATCH` | `/usage-service/account-processing-policy` | 天然有界 |
+| `GET` | `/usage-service/quota-cooldowns` | 已优化 |
+| `POST` | `/setup` | 天然有界 |
+| `GET` | `/management.html` | 天然有界 |
+| `GET` | `/manager-assets/*` | 天然有界 |
+| `GET` | `/v0/management/usage` | 已优化 |
+| `GET` | `/v0/management/usage/export` | 已优化 |
+| `POST` | `/v0/management/usage/import` | 已优化 |
+| `GET` | `/v0/management/model-prices` | 已优化 |
+| `PUT` | `/v0/management/model-prices` | 已优化 |
+| `GET` | `/v0/management/model-prices/usage-summary` | 已优化 |
+| `POST` | `/v0/management/model-prices/sync` | 已优化 |
+| `GET` | `/v0/management/api-key-aliases` | 已优化 |
+| `PUT` | `/v0/management/api-key-aliases` | 已优化 |
+| `DELETE` | `/v0/management/api-key-aliases/:hash` | 天然有界 |
+| `GET` | `/v0/management/account-action-candidates` | 已优化 |
+| `POST` | `/v0/management/account-action-candidates/:id/ignore` | 天然有界 |
+| `POST` | `/v0/management/account-action-candidates/:id/resolve` | 天然有界 |
+| `POST` | `/v0/management/account-action-candidates/:id/enable` | 天然有界 |
+| `DELETE` | `/v0/management/account-action-candidates/:id/auth-file` | 天然有界 |
+| `POST` | `/v0/management/codex-inspection/cooldown-disable` | 天然有界 |
+| `POST` | `/v0/management/codex-inspection/run` | 已优化 |
+| `GET` | `/v0/management/codex-inspection/runs` | 已优化 |
+| `GET` | `/v0/management/codex-inspection/runs/:id` | 已优化 |
+| `POST` | `/v0/management/codex-inspection/runs/:id/actions` | 已优化 |
+| `GET` | `/v0/management/dashboard/summary` | 已优化 |
+| `POST` | `/v0/management/monitoring/analytics` | 已优化 |
+| `POST` | `/v0/management/monitoring/account-history` | 已优化 |
+| `GET` | `/v0/management/monitoring/header-snapshots` | 已优化 |
+
+## 当前仍需主线处置
+
+1. `/v0/management/api-call` 属于用户明确禁止修改的 LLM/模型探测冻结边界，仅记录风险，不改协议或执行链。
+2. 其余 186 条静态路由均已具备明确分页/过滤/聚合/缓存/批处理/传输上限，或属于不随数据量增长的单记录/标量/动作接口。

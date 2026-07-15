@@ -10,8 +10,8 @@ import {
   IconSettings,
 } from '@/components/ui/icons';
 import { useAuthStore, useConfigStore, useModelsStore } from '@/stores';
-import { apiKeysApi, providersApi, authFilesApi } from '@/services/api';
-import { logsApi, type ErrorLogFile } from '@/services/api/logs';
+import { apiKeysApi, authFilesApi, configApi } from '@/services/api';
+import { logsApi } from '@/services/api/logs';
 import {
   usageServiceApi,
   type ApiKeyAlias,
@@ -95,7 +95,7 @@ export function DashboardPage() {
   const [collectorStatus, setCollectorStatus] = useState<UsageServiceStatus | null>(null);
   const [collectorLoading, setCollectorLoading] = useState(false);
   const [collectorError, setCollectorError] = useState('');
-  const [errorLogs, setErrorLogs] = useState<ErrorLogFile[]>([]);
+  const [errorLogCount, setErrorLogCount] = useState(0);
   const [errorLogsLoading, setErrorLogsLoading] = useState(false);
   const [managerCpaBase, setManagerCpaBase] = useState('');
   const [displayMeta, setDisplayMeta] = useState<DashboardDisplayMeta>({
@@ -155,8 +155,8 @@ export function DashboardPage() {
     }
 
     try {
-      const list = await apiKeysApi.list();
-      const normalized = normalizeApiKeyList(list);
+      const first = await apiKeysApi.first();
+      const normalized = normalizeApiKeyList(first ? [first] : []);
       if (normalized.length) {
         apiKeysCache.current = normalized;
       }
@@ -184,26 +184,21 @@ export function DashboardPage() {
     if (connectionStatus === 'connected') {
       setLoading(true);
       try {
-        const [keysRes, filesRes, geminiRes, codexRes, claudeRes, openaiRes] =
-          await Promise.allSettled([
-            apiKeysApi.list(),
-            authFilesApi.count(),
-            providersApi.getGeminiKeys(),
-            providersApi.getCodexConfigs(),
-            providersApi.getClaudeConfigs(),
-            providersApi.getOpenAIProviders(),
-          ]);
+        const [summaryRes, filesRes] = await Promise.allSettled([
+          configApi.getSummary(),
+          authFilesApi.count(),
+        ]);
 
         setStats({
-          apiKeys: keysRes.status === 'fulfilled' ? keysRes.value.length : null,
+          apiKeys: summaryRes.status === 'fulfilled' ? summaryRes.value.apiKeys : null,
           authFiles: filesRes.status === 'fulfilled' ? filesRes.value : null,
         });
 
         setProviderStats({
-          gemini: geminiRes.status === 'fulfilled' ? geminiRes.value.length : null,
-          codex: codexRes.status === 'fulfilled' ? codexRes.value.length : null,
-          claude: claudeRes.status === 'fulfilled' ? claudeRes.value.length : null,
-          openai: openaiRes.status === 'fulfilled' ? openaiRes.value.length : null,
+          gemini: summaryRes.status === 'fulfilled' ? summaryRes.value.geminiApiKeys : null,
+          codex: summaryRes.status === 'fulfilled' ? summaryRes.value.codexApiKeys : null,
+          claude: summaryRes.status === 'fulfilled' ? summaryRes.value.claudeApiKeys : null,
+          openai: summaryRes.status === 'fulfilled' ? summaryRes.value.openAICompatibility : null,
         });
       } finally {
         setLoading(false);
@@ -257,7 +252,7 @@ export function DashboardPage() {
       setCollectorStatus(null);
       setCollectorError('');
       setCollectorLoading(false);
-      setErrorLogs([]);
+      setErrorLogCount(0);
       setErrorLogsLoading(false);
       setManagerCpaBase('');
       setDisplayMeta({ authFiles: [], channels: [], apiKeyAliases: [] });
@@ -270,7 +265,7 @@ export function DashboardPage() {
     const [collectorResult, logsResult, managerConfigResult, metaResult, aliasesResult] =
       await Promise.allSettled([
         usageServiceApi.getStatus(usageServiceBase, managementKey),
-        logsApi.fetchErrorLogs(),
+        logsApi.fetchErrorLogs({ view: 'count' }),
         usageServiceApi.getManagerConfig(usageServiceBase, managementKey),
         loadMonitoringMetaPayload(config),
         usageServiceApi.getApiKeyAliases(usageServiceBase, managementKey),
@@ -287,9 +282,9 @@ export function DashboardPage() {
     setCollectorLoading(false);
 
     if (logsResult.status === 'fulfilled') {
-      setErrorLogs(Array.isArray(logsResult.value.files) ? logsResult.value.files : []);
+      setErrorLogCount(logsResult.value.total ?? logsResult.value.files?.length ?? 0);
     } else {
-      setErrorLogs([]);
+      setErrorLogCount(0);
     }
     setErrorLogsLoading(false);
 
@@ -497,7 +492,7 @@ export function DashboardPage() {
           collectorStatus={collectorStatus}
           collectorLoading={collectorLoading}
           collectorError={collectorError}
-          errorLogCount={errorLogs.length}
+          errorLogCount={errorLogCount}
           errorLogsLoading={errorLogsLoading}
         />
       </section>

@@ -16,10 +16,13 @@ type Repository interface {
 	InsertResult(ctx context.Context, result model.CodexInspectionResult) (model.CodexInspectionResult, error)
 	InsertLog(ctx context.Context, entry model.CodexInspectionLog) (model.CodexInspectionLog, error)
 	ListRuns(ctx context.Context, limit int) ([]model.CodexInspectionRun, error)
+	ListRunsPage(ctx context.Context, limit, offset int) (RunsPage, error)
 	GetRun(ctx context.Context, id int64) (model.CodexInspectionRun, bool, error)
 	GetLatestRunByTrigger(ctx context.Context, triggerType, triggerKey string) (model.CodexInspectionRun, bool, error)
 	ListResults(ctx context.Context, runID int64) ([]model.CodexInspectionResult, error)
+	ListResultsPage(ctx context.Context, runID int64, limit, offset int) (ResultsPage, error)
 	ListLogs(ctx context.Context, runID int64) ([]model.CodexInspectionLog, error)
+	ListLogsPage(ctx context.Context, runID int64, limit, offset int) (LogsPage, error)
 }
 
 type repository struct {

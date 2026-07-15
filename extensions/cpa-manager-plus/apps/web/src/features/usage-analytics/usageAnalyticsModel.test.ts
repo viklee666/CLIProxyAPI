@@ -103,8 +103,10 @@ describe('usage analytics request model', () => {
       summary_comparison: true,
       timeline: true,
       model_stats: true,
+      model_stats_page: { page: 1, limit: 8 },
       channel_share: true,
       api_key_stats: true,
+      api_key_stats_page: { page: 1, limit: 8 },
       anomaly_points: true,
       granularity: 'day',
     });
@@ -120,7 +122,9 @@ describe('usage analytics request model', () => {
       summary_comparison: true,
       timeline: true,
       model_stats: true,
+      model_stats_page: { page: 1, limit: 4 },
       api_key_stats: true,
+      api_key_stats_page: { page: 1, limit: 4 },
       anomaly_points: true,
       granularity: 'hour',
       drilldown_preview: { from_ms: 1_000, to_ms: 2_000, limit: 8 },
@@ -130,19 +134,23 @@ describe('usage analytics request model', () => {
       summary_profile: 'compact',
       timeline: true,
       model_stats: true,
+      model_stats_page: { page: 1, limit: 25 },
       api_key_stats: true,
+      api_key_stats_page: { page: 1, limit: 50 },
       granularity: 'day',
     });
     expect(buildUsageAnalyticsInclude('apiKeys', 'day')).toEqual({
       summary: true,
       summary_profile: 'compact',
       api_key_stats: true,
+      api_key_stats_page: { page: 1, limit: 25 },
       granularity: 'day',
     });
     expect(buildUsageAnalyticsInclude('credentials', 'day')).toEqual({
       summary: true,
       summary_profile: 'compact',
       credential_stats: true,
+      credential_stats_page: { page: 1, limit: 25 },
       granularity: 'day',
     });
     expect(
@@ -157,7 +165,6 @@ describe('usage analytics request model', () => {
       granularity: 'day',
     });
     expect(buildUsageAnalyticsFilterSelectorsInclude()).toEqual({
-      filter_options: true,
       filter_selectors: true,
     });
   });

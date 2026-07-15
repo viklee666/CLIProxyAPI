@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"math"
 	"net/http"
 	"net/url"
@@ -31,6 +32,12 @@ const maxSyncCandidates = 8
 const minCandidateScore = 0.55
 const minWeakCandidateScore = 0.34
 
+const (
+	MaxReplaceItems            = 10_000
+	MaxSyncModels              = 500
+	maxSyncSourceResponseBytes = 32 * 1024 * 1024
+)
+
 type UpdateRequest struct {
 	Prices map[string]store.ModelPrice `json:"prices"`
 }
@@ -49,7 +56,22 @@ type SyncResult struct {
 	Unmatched     []string                    `json:"unmatched,omitempty"`
 	ProxyUsed     bool                        `json:"proxyUsed,omitempty"`
 	SourceResults []SyncSourceResult          `json:"sourceResults,omitempty"`
-	Prices        map[string]store.ModelPrice `json:"prices"`
+	Prices        map[string]store.ModelPrice `json:"prices,omitempty"`
+}
+
+type ListRequest struct {
+	Search   string
+	Page     int
+	PageSize int
+}
+
+type ListResponse struct {
+	Prices     map[string]store.ModelPrice `json:"prices"`
+	Page       int                         `json:"page"`
+	PageSize   int                         `json:"page_size"`
+	Total      int64                       `json:"total"`
+	TotalPages int                         `json:"total_pages"`
+	HasMore    bool                        `json:"has_more"`
 }
 
 type SyncSourceResult struct {
@@ -115,6 +137,37 @@ func (s *Service) List(ctx context.Context) (map[string]store.ModelPrice, error)
 	return s.store.LoadModelPrices(ctx)
 }
 
+func (s *Service) ListPage(ctx context.Context, req ListRequest) (ListResponse, error) {
+	page := req.Page
+	if page <= 0 {
+		page = 1
+	}
+	pageSize := req.PageSize
+	if pageSize <= 0 {
+		pageSize = 100
+	}
+	result, err := s.store.ListModelPricesPage(ctx, store.ModelPriceListQuery{
+		Search: req.Search,
+		Limit:  pageSize,
+		Offset: (page - 1) * pageSize,
+	})
+	if err != nil {
+		return ListResponse{}, err
+	}
+	totalPages := 0
+	if result.Total > 0 {
+		totalPages = int((result.Total + int64(pageSize) - 1) / int64(pageSize))
+	}
+	return ListResponse{
+		Prices:     result.Prices,
+		Page:       page,
+		PageSize:   pageSize,
+		Total:      result.Total,
+		TotalPages: totalPages,
+		HasMore:    int64(page*pageSize) < result.Total,
+	}, nil
+}
+
 func (s *Service) UsageSummary(ctx context.Context, limit int) (store.ModelUsageSummary, error) {
 	return s.store.ModelUsageSummary(ctx, limit)
 }
@@ -123,13 +176,19 @@ func (s *Service) Replace(ctx context.Context, prices map[string]store.ModelPric
 	if prices == nil {
 		return nil, errors.New("prices are required")
 	}
+	if len(prices) > MaxReplaceItems {
+		return nil, errors.New("too many model prices")
+	}
 	if err := s.store.SaveModelPrices(ctx, prices); err != nil {
 		return nil, err
 	}
-	return s.store.LoadModelPrices(ctx)
+	return prices, nil
 }
 
 func (s *Service) Sync(ctx context.Context, req SyncRequest) (SyncResult, error) {
+	if len(req.Models) > MaxSyncModels {
+		return SyncResult{}, errors.New("too many models requested for price sync")
+	}
 	client, proxyUsed, err := s.syncHTTPClient(ctx)
 	if err != nil {
 		return SyncResult{}, err
@@ -143,17 +202,21 @@ func (s *Service) Sync(ctx context.Context, req SyncRequest) (SyncResult, error)
 	if err != nil {
 		return SyncResult{}, err
 	}
-	prices, err := s.store.LoadModelPrices(ctx)
-	if err != nil {
-		return SyncResult{}, err
+	matched := stripRawModelPriceMap(selection.Matched)
+	candidates := stripRawSyncCandidates(selection.Candidates)
+	prices := stripRawModelPriceMap(selection.Prices)
+	if len(req.Models) == 0 {
+		matched = nil
+		candidates = nil
+		prices = nil
 	}
 	return SyncResult{
 		Source:        syncResultSource(sources),
 		Sources:       sources,
 		Imported:      result.Imported,
 		Skipped:       result.Skipped + skipped,
-		Matched:       selection.Matched,
-		Candidates:    selection.Candidates,
+		Matched:       matched,
+		Candidates:    candidates,
 		Unmatched:     selection.Unmatched,
 		ProxyUsed:     proxyUsed,
 		SourceResults: sourceResults,
@@ -286,7 +349,7 @@ func fetchLiteLLMModelPrices(ctx context.Context, syncURL string, client *http.C
 		return nil, 0, errors.New("model price sync failed: " + res.Status)
 	}
 	var raw map[string]map[string]any
-	if err := json.NewDecoder(res.Body).Decode(&raw); err != nil {
+	if err := decodeSyncSourceJSON(res.Body, &raw); err != nil {
 		return nil, 0, err
 	}
 	now := time.Now().UnixMilli()
@@ -342,7 +405,7 @@ func fetchOpenRouterModelPrices(ctx context.Context, syncURL string, client *htt
 	var raw struct {
 		Data []map[string]any `json:"data"`
 	}
-	if err := json.NewDecoder(res.Body).Decode(&raw); err != nil {
+	if err := decodeSyncSourceJSON(res.Body, &raw); err != nil {
 		return nil, 0, err
 	}
 
@@ -383,6 +446,45 @@ func fetchOpenRouterModelPrices(ctx context.Context, syncURL string, client *htt
 		}
 	}
 	return prices, skipped, nil
+}
+
+func decodeSyncSourceJSON(body io.Reader, target any) error {
+	data, err := io.ReadAll(io.LimitReader(body, maxSyncSourceResponseBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > maxSyncSourceResponseBytes {
+		return errors.New("model price sync response is too large")
+	}
+	return json.Unmarshal(data, target)
+}
+
+func stripRawModelPriceMap(prices map[string]store.ModelPrice) map[string]store.ModelPrice {
+	if len(prices) == 0 {
+		return nil
+	}
+	out := make(map[string]store.ModelPrice, len(prices))
+	for modelID, price := range prices {
+		price.RawJSON = ""
+		out[modelID] = price
+	}
+	return out
+}
+
+func stripRawSyncCandidates(sets []SyncCandidateSet) []SyncCandidateSet {
+	if len(sets) == 0 {
+		return nil
+	}
+	out := make([]SyncCandidateSet, len(sets))
+	for i := range sets {
+		out[i].Model = sets[i].Model
+		out[i].Candidates = make([]SyncCandidate, len(sets[i].Candidates))
+		copy(out[i].Candidates, sets[i].Candidates)
+		for j := range out[i].Candidates {
+			out[i].Candidates[j].Price.RawJSON = ""
+		}
+	}
+	return out
 }
 
 type priceSelectionResult struct {

@@ -454,10 +454,22 @@ func (s *Service) ReplaceCredentialBindings(ctx context.Context, input Credentia
 	if len(input.AuthIndices) == 0 {
 		return errors.New("auth_indices are required")
 	}
-	if errReplace := s.store.ReplaceCredentialBindings(ctx, input.AuthIndices, input.Groups); errReplace != nil {
-		return errReplace
+	_, errReplace := s.ReplaceCredentialBindingsWithStats(ctx, input)
+	return errReplace
+}
+
+func (s *Service) ReplaceCredentialBindingsWithStats(ctx context.Context, input CredentialBindingBatch) (CredentialBindingChangeStats, error) {
+	stats, errReplace := s.store.ReplaceCredentialBindingsWithStats(ctx, input.AuthIndices, input.Groups)
+	if errReplace != nil {
+		return CredentialBindingChangeStats{}, errReplace
 	}
-	return s.reload(ctx)
+	if stats.Updated == 0 {
+		return stats, nil
+	}
+	if errReload := s.reload(ctx); errReload != nil {
+		return CredentialBindingChangeStats{}, errReload
+	}
+	return stats, nil
 }
 
 // ResolveCredentialAccess applies client group isolation and returns a request-specific priority.

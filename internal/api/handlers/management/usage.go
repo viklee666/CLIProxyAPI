@@ -3,6 +3,7 @@ package management
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,6 +13,8 @@ import (
 )
 
 type usageQueueRecord []byte
+
+const maxUsageQueueCount = 1000
 
 func (r usageQueueRecord) MarshalJSON() ([]byte, error) {
 	if json.Valid(r) {
@@ -50,6 +53,9 @@ func parseUsageQueueCount(value string) (int, error) {
 	count, errCount := strconv.Atoi(value)
 	if errCount != nil || count <= 0 {
 		return 0, errors.New("count must be a positive integer")
+	}
+	if count > maxUsageQueueCount {
+		return 0, fmt.Errorf("count must not exceed %d", maxUsageQueueCount)
 	}
 	return count, nil
 }

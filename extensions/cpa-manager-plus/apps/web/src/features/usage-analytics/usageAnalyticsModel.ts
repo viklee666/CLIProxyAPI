@@ -715,7 +715,12 @@ export const buildUsageAnalyticsFilters = (
 export const buildUsageAnalyticsInclude = (
   activeTab: UsageAnalyticsTab,
   granularity: UsageAnalyticsResolvedGranularity,
-  drilldownPreview?: { fromMs: number; toMs: number; limit?: number } | null
+  drilldownPreview?: { fromMs: number; toMs: number; limit?: number } | null,
+  aggregatePages?: {
+    models?: { page: number; limit: number };
+    apiKeys?: { page: number; limit: number; search?: string };
+    credentials?: { page: number; limit: number };
+  }
 ): MonitoringAnalyticsInclude => {
   const include: MonitoringAnalyticsInclude = {
     summary: true,
@@ -730,8 +735,10 @@ export const buildUsageAnalyticsInclude = (
         summary_comparison: true,
         timeline: true,
         model_stats: true,
+        model_stats_page: { page: 1, limit: 8 },
         channel_share: true,
         api_key_stats: true,
+        api_key_stats_page: { page: 1, limit: 8 },
         anomaly_points: true,
       });
       break;
@@ -740,7 +747,9 @@ export const buildUsageAnalyticsInclude = (
         summary_comparison: true,
         timeline: true,
         model_stats: true,
+        model_stats_page: { page: 1, limit: 4 },
         api_key_stats: true,
+        api_key_stats_page: { page: 1, limit: 4 },
         anomaly_points: true,
       });
       break;
@@ -748,14 +757,18 @@ export const buildUsageAnalyticsInclude = (
       Object.assign(include, {
         timeline: true,
         model_stats: true,
+        model_stats_page: aggregatePages?.models ?? { page: 1, limit: 25 },
         api_key_stats: true,
+        api_key_stats_page: { page: 1, limit: 50 },
       });
       break;
     case 'apiKeys':
       include.api_key_stats = true;
+      include.api_key_stats_page = aggregatePages?.apiKeys ?? { page: 1, limit: 25 };
       break;
     case 'credentials':
       include.credential_stats = true;
+      include.credential_stats_page = aggregatePages?.credentials ?? { page: 1, limit: 25 };
       break;
     case 'heatmap':
       include.heatmap = true;
@@ -773,7 +786,6 @@ export const buildUsageAnalyticsInclude = (
 };
 
 export const buildUsageAnalyticsFilterSelectorsInclude = (): MonitoringAnalyticsInclude => ({
-  filter_options: true,
   filter_selectors: true,
 });
 

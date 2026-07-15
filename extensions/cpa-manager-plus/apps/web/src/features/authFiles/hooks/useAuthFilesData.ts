@@ -297,7 +297,7 @@ export function useAuthFilesData(query?: AuthFilesListQuery): UseAuthFilesDataRe
       setLoading(true);
       setError('');
       try {
-        const data = await authFilesApi.list(query);
+        const data = query ? await authFilesApi.list(query) : await authFilesApi.listSummary();
         setFiles(data?.files || []);
         setTotal(typeof data?.total === 'number' ? data.total : data?.files?.length || 0);
         setProviderFacets(data?.facets?.providers || {});
@@ -715,25 +715,17 @@ export function useAuthFilesData(query?: AuthFilesListQuery): UseAuthFilesDataRe
       );
 
       try {
-        const results = await Promise.allSettled(
-          targetNameList.map((name) => authFilesApi.setStatus(name, nextDisabled))
+        const result = await authFilesApi.setStatuses(
+          targetNameList.map((name) => ({ name })),
+          nextDisabled
         );
 
-        let successCount = 0;
-        let failCount = 0;
-        const failedNames = new Set<string>();
-        const confirmedDisabled = new Map<string, boolean>();
-
-        results.forEach((result, index) => {
-          const name = targetNameList[index];
-          if (result.status === 'fulfilled') {
-            successCount++;
-            confirmedDisabled.set(name, result.value.disabled);
-          } else {
-            failCount++;
-            failedNames.add(name);
-          }
-        });
+        const successCount = result.updated;
+        const failCount = result.failed.length;
+        const failedNames = new Set(result.failed.map((item) => item.name));
+        const confirmedDisabled = new Map(
+          result.items.map((item) => [item.name, item.disabled] as const)
+        );
 
         setFiles((prev) =>
           prev.map((file) => {
@@ -760,6 +752,18 @@ export function useAuthFilesData(query?: AuthFilesListQuery): UseAuthFilesDataRe
         }
 
         deselectAll();
+      } catch {
+        setFiles((prev) =>
+          prev.map((file) =>
+            targetNames.has(file.name)
+              ? { ...file, disabled: originalDisabled.get(file.name) === true }
+              : file
+          )
+        );
+        showNotification(
+          t('auth_files.batch_status_partial', { success: 0, failed: targetNameList.length }),
+          'warning'
+        );
       } finally {
         batchStatusPendingRef.current = false;
         setBatchStatusUpdating(false);
@@ -791,28 +795,19 @@ export function useAuthFilesData(query?: AuthFilesListQuery): UseAuthFilesDataRe
       setBatchFieldsUpdating(true);
 
       try {
-        const results = await Promise.allSettled(
-          groups.map((group) => {
-            if (group.authIndexes.length > 0 && group.authIndexes.length === group.targets.length) {
-              return authFilesApi.patchFieldsForAuthIndexes(group.name, group.authIndexes, fields);
-            }
-            return authFilesApi.patchFields(group.name, fields);
-          })
+        const result = await authFilesApi.patchFieldsBatch(
+          groups.map((group) => ({
+            name: group.name,
+            ...(group.authIndexes.length > 0 && group.authIndexes.length === group.targets.length
+              ? { authIndexes: group.authIndexes }
+              : {}),
+          })),
+          fields
         );
 
-        let success = 0;
-        let failed = 0;
-        const failedNames: string[] = [];
-
-        results.forEach((result, index) => {
-          const group = groups[index];
-          if (result.status === 'fulfilled') {
-            success += group.targets.length;
-            return;
-          }
-          failed += group.targets.length;
-          failedNames.push(group.name);
-        });
+        const success = result.updated;
+        const failed = result.failed.length;
+        const failedNames = Array.from(new Set(result.failed.map((item) => item.name)));
 
         if (success > 0) {
           try {
@@ -846,20 +841,17 @@ export function useAuthFilesData(query?: AuthFilesListQuery): UseAuthFilesDataRe
       if (uniqueNames.length === 0) return;
 
       let successCount = 0;
-      let failCount = 0;
-
-      for (const name of uniqueNames) {
-        try {
-          const response = await apiClient.getRaw(
-            `/auth-files/download?name=${encodeURIComponent(name)}`,
-            { responseType: 'blob' }
-          );
-          const blob = new Blob([response.data]);
-          downloadBlob({ filename: name, blob });
-          successCount++;
-        } catch {
-          failCount++;
+      let failCount = uniqueNames.length;
+      try {
+        const result = await authFilesApi.downloadFiles(uniqueNames);
+        successCount = result.included;
+        failCount = result.failed;
+        if (result.included > 0) {
+          downloadBlob({ filename: result.filename, blob: result.blob });
         }
+      } catch {
+        successCount = 0;
+        failCount = uniqueNames.length;
       }
 
       if (failCount === 0) {

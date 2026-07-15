@@ -952,6 +952,34 @@ const paginateDemoEvents = (
   };
 };
 
+const paginateDemoAggregate = <T>(
+  items: T[],
+  request?: { page?: number; limit?: number; search?: string },
+  searchText?: (item: T) => string
+) => {
+  const search = request?.search?.trim().toLowerCase() ?? '';
+  const filtered = search
+    ? items.filter((item) =>
+        (searchText?.(item) ?? JSON.stringify(item)).toLowerCase().includes(search)
+      )
+    : items;
+  const page = Math.max(1, request?.page ?? 1);
+  const limit = Math.min(200, Math.max(1, request?.limit ?? 50));
+  const offset = (page - 1) * limit;
+  const pageItems = filtered.slice(offset, offset + limit);
+  return {
+    items: pageItems,
+    pagination: {
+      page,
+      limit,
+      total: filtered.length,
+      count: pageItems.length,
+      has_more: offset + pageItems.length < filtered.length,
+      truncated: pageItems.length < filtered.length,
+    },
+  };
+};
+
 const buildMonitoringAnalytics = (
   baseNow = now(),
   request?: MonitoringAnalyticsRequest
@@ -2201,6 +2229,20 @@ const buildMonitoringAnalytics = (
   );
   const drilldownRequest = request?.include?.drilldown_preview;
   const drilldownPreview = paginateDemoEvents(events, drilldownRequest?.limit ?? 12, null);
+  const modelStatsPage = paginateDemoAggregate(modelStats, request?.include?.model_stats_page);
+  const accountStatsPage = paginateDemoAggregate(
+    accountStats,
+    request?.include?.account_stats_page
+  );
+  const credentialStatsPage = paginateDemoAggregate(
+    credentialStats,
+    request?.include?.credential_stats_page
+  );
+  const apiKeyStatsPage = paginateDemoAggregate(
+    apiKeyStats,
+    request?.include?.api_key_stats_page,
+    (row) => `${row.api_key_hash} ${row.id}`
+  );
 
   return {
     generated_at_ms: analyticsNow,
@@ -2288,13 +2330,14 @@ const buildMonitoringAnalytics = (
         latency_p95_change: 0.27,
       },
     ],
-    model_share: modelStats.map((row) => ({
+    model_share: modelStatsPage.items.map((row) => ({
       model: row.model,
       calls: row.calls,
       tokens: row.total_tokens,
       cost: row.cost,
     })),
-    model_stats: modelStats,
+    model_stats: modelStatsPage.items,
+    model_stats_pagination: modelStatsPage.pagination,
     channel_share: channelShare,
     failure_sources: [
       {
@@ -2334,10 +2377,13 @@ const buildMonitoringAnalytics = (
         average_latency_ms: 1380,
       },
     ],
-    account_stats: accountStats,
-    credential_stats: credentialStats,
+    account_stats: accountStatsPage.items,
+    account_stats_pagination: accountStatsPage.pagination,
+    credential_stats: credentialStatsPage.items,
+    credential_stats_pagination: credentialStatsPage.pagination,
     credential_timeline: credentialTimeline,
-    api_key_stats: apiKeyStats,
+    api_key_stats: apiKeyStatsPage.items,
+    api_key_stats_pagination: apiKeyStatsPage.pagination,
     filter_options: {
       account_stats: accountStats,
       api_key_stats: apiKeyStats,

@@ -49,6 +49,57 @@ func TestHandleAccountHistoryRejectsUnknownTargetFields(t *testing.T) {
 	}
 }
 
+func TestHandleAccountHistoryRejectsTooManyTargets(t *testing.T) {
+	handler, adminKey := newAuthorizedMonitoringHandler(t)
+	targets := strings.Repeat(`{"auth_index":"auth"},`, monitoringsvc.MaxAccountHistoryTargets) + `{"auth_index":"auth"}`
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v0/management/monitoring/account-history",
+		bytes.NewBufferString(`{"accounts":[`+targets+`]}`),
+	)
+	req.Header.Set("Authorization", "Bearer "+adminKey)
+	recorder := httptest.NewRecorder()
+
+	handler.Handle(recorder, req)
+
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "less than or equal") {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestHandleHeaderSnapshotsRejectsExcessiveRangeAndLimit(t *testing.T) {
+	handler, adminKey := newAuthorizedMonitoringHandler(t)
+	for _, path := range []string{
+		"/v0/management/monitoring/header-snapshots?days=366",
+		"/v0/management/monitoring/header-snapshots?limit=2001",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer "+adminKey)
+		recorder := httptest.NewRecorder()
+		handler.Handle(recorder, req)
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("path = %s status = %d body = %s", path, recorder.Code, recorder.Body.String())
+		}
+	}
+}
+
+func newAuthorizedMonitoringHandler(t testing.TB) (*Handler, string) {
+	t.Helper()
+	st := newHandlerTestStore(t)
+	const adminKey = "cpamp_test_key"
+	credential, err := security.NewAdminCredential(adminKey, "test")
+	if err != nil {
+		t.Fatalf("create admin credential: %v", err)
+	}
+	if err := st.SaveAdminCredential(context.Background(), credential); err != nil {
+		t.Fatalf("save admin credential: %v", err)
+	}
+	return &Handler{App: &app.Context{
+		AdminAuthService:  adminauthsvc.New(config.Config{}, st),
+		MonitoringService: monitoringsvc.New(st),
+	}}, adminKey
+}
+
 func newHandlerTestStore(t testing.TB) *store.Store {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))

@@ -3025,6 +3025,7 @@
     "model_caller_distribution": "调用方客户端 Key 分布",
     "rank_show_all": "显示全部（{{count}}）",
     "rank_collapse": "收起",
+    "server_page_truncated": "服务端分页，仅显示当前页",
     "cost_share_title": "成本占比",
     "model_compare_title": "模型趋势对比",
     "api_key_compare_title": "客户端 Key 趋势",

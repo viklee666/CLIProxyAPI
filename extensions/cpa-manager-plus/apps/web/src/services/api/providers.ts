@@ -136,19 +136,6 @@ const CLOAK_FIELDS = [
   'cache_user_id',
 ] as const;
 
-const RAW_SECTION_ALIASES: Record<string, readonly string[]> = {
-  'gemini-api-key': ['gemini-api-key', 'geminiApiKey', 'geminiApiKeys'],
-  'interactions-api-key': [
-    'interactions-api-key',
-    'interactionsApiKey',
-    'interactionsApiKeys',
-  ],
-  'codex-api-key': ['codex-api-key', 'codexApiKey', 'codexApiKeys'],
-  'claude-api-key': ['claude-api-key', 'claudeApiKey', 'claudeApiKeys'],
-  'vertex-api-key': ['vertex-api-key', 'vertexApiKey', 'vertexApiKeys'],
-  'openai-compatibility': ['openai-compatibility', 'openaiCompatibility', 'openAICompatibility'],
-};
-
 const getStringField = (record: Record<string, unknown>, keys: readonly string[]) => {
   for (const key of keys) {
     const value = record[key];
@@ -263,16 +250,6 @@ const mergeKnownRecordList = (
   });
 };
 
-const getRawSectionList = (rawConfig: unknown, section: string) => {
-  if (!isRecord(rawConfig)) return [];
-  const aliases = RAW_SECTION_ALIASES[section] ?? [section];
-  for (const alias of aliases) {
-    const value = rawConfig[alias];
-    if (Array.isArray(value)) return value;
-  }
-  return [];
-};
-
 const mergeModelPayloads = (raw: unknown, models: unknown) =>
   Array.isArray(models)
     ? (() => {
@@ -364,17 +341,14 @@ const buildPreservedList = async <T>(
 ) => {
   const payloads = configs.map((item) => serialize(item));
 
-  let rawConfig: unknown;
+  let rawItems: unknown[];
   try {
-    rawConfig = await apiClient.get('/config');
+    rawItems = await fetchAllProviderRecords(`/${section}`, section);
   } catch {
     return payloads;
   }
 
-  const rawItems = getRawSectionList(rawConfig, section);
-  const rawRecords = Array.isArray(rawItems)
-    ? rawItems.map((item) => (isRecord(item) ? item : undefined))
-    : [];
+  const rawRecords = rawItems.map((item) => (isRecord(item) ? item : undefined));
   const usedIndexes = new Set<number>();
 
   return payloads.map((payload, index) => {
@@ -411,26 +385,6 @@ export const replaceLatestProviderRecord = (
   );
 };
 
-const mutateLatestProviderList = async (
-  section: string,
-  mutate: (latestItems: unknown[]) => unknown[]
-) => {
-  const rawConfig = await apiClient.get('/config');
-  const latestItems = getRawSectionList(rawConfig, section);
-  await apiClient.put(`/${section}`, mutate(latestItems));
-};
-
-const matchesProviderConfig = (
-  record: Record<string, unknown>,
-  original: GeminiKeyConfig | ProviderKeyConfig
-) =>
-  providerKeyIdentity(record) ===
-  providerKeyIdentity({
-    'auth-index': original.authIndex,
-    'api-key': original.apiKey,
-    'base-url': original.baseUrl,
-  });
-
 const extractArrayPayload = (data: unknown, key: string): unknown[] => {
   if (Array.isArray(data)) return data;
   if (!isRecord(data)) return [];
@@ -438,51 +392,27 @@ const extractArrayPayload = (data: unknown, key: string): unknown[] => {
   return Array.isArray(candidate) ? candidate : [];
 };
 
-const getOpenAIProviderKey = (provider: Pick<OpenAIProviderConfig, 'name' | 'baseUrl'>) =>
-  `${String(provider.name ?? '')
-    .trim()
-    .toLowerCase()}\u0000${String(provider.baseUrl ?? '')
-    .trim()
-    .toLowerCase()}`;
-
-// CPA upstream currently omits some OpenAI provider fields from GET /openai-compatibility,
-// so we rehydrate them from /config when they are missing.
-// This is a temporary workaround until upstream fixes the issue.
-const hydrateOpenAIProvidersDisableCooling = async (providers: OpenAIProviderConfig[]) => {
-  if (!providers.some((provider) => provider.disableCooling === undefined)) {
-    return providers;
-  }
-
-  let rawConfig: unknown;
-  try {
-    rawConfig = await apiClient.get('/config');
-  } catch {
-    return providers;
-  }
-
-  const fallbackProviders = extractArrayPayload(rawConfig, 'openai-compatibility')
-    .map((item) => normalizeOpenAIProvider(item))
-    .filter(Boolean) as OpenAIProviderConfig[];
-
-  if (!fallbackProviders.length) {
-    return providers;
-  }
-
-  const fallbackByKey = new Map(
-    fallbackProviders.map((provider) => [getOpenAIProviderKey(provider), provider])
-  );
-
-  return providers.map((provider) => {
-    if (provider.disableCooling !== undefined) {
-      return provider;
-    }
-    const fallback = fallbackByKey.get(getOpenAIProviderKey(provider));
-    if (!fallback || fallback.disableCooling === undefined) {
-      return provider;
-    }
-    return { ...provider, disableCooling: fallback.disableCooling };
-  });
+const readPositiveInteger = (value: unknown): number | null => {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 };
+
+async function fetchAllProviderRecords(endpoint: string, key: string): Promise<unknown[]> {
+  let payload = await apiClient.get(endpoint);
+  const records = extractArrayPayload(payload, key);
+  if (!isRecord(payload) || payload.has_more !== true) return records;
+
+  let page = readPositiveInteger(payload.page) ?? 1;
+  const pageSize = readPositiveInteger(payload.page_size) ?? 100;
+  const totalPages = readPositiveInteger(payload.total_pages);
+  while (payload.has_more === true && (!totalPages || page < totalPages)) {
+    page += 1;
+    payload = await apiClient.get(endpoint, { params: { page, page_size: pageSize } });
+    records.push(...extractArrayPayload(payload, key));
+    if (!isRecord(payload)) break;
+  }
+  return records;
+}
 
 const buildProviderDeleteQuery = (apiKey: string, baseUrl?: string) => {
   const params = new URLSearchParams();
@@ -641,6 +571,45 @@ const serializeGeminiKey = (config: GeminiKeyConfig) => {
   return payload;
 };
 
+const serializeGeminiKeyPatch = (config: GeminiKeyConfig) => ({
+  ...serializeGeminiKey(config),
+  priority: config.priority ?? 0,
+  prefix: config.prefix?.trim() ?? '',
+  'base-url': config.baseUrl ?? '',
+  'proxy-url': config.proxyUrl ?? '',
+  headers: serializeHeaders(config.headers) ?? {},
+  models: serializeModelAliases(config.models) ?? [],
+  'excluded-models': config.excludedModels ?? [],
+  'disable-cooling': config.disableCooling ?? false,
+});
+
+const serializeProviderKeyPatch = (config: ProviderKeyConfig) => ({
+  ...serializeProviderKey(config),
+  priority: config.priority ?? 0,
+  prefix: config.prefix?.trim() ?? '',
+  'base-url': config.baseUrl ?? '',
+  websockets: config.websockets ?? false,
+  'proxy-url': config.proxyUrl ?? '',
+  headers: serializeHeaders(config.headers) ?? {},
+  models: serializeModelAliases(config.models) ?? [],
+  'excluded-models': config.excludedModels ?? [],
+  'disable-cooling': config.disableCooling ?? false,
+  'experimental-cch-signing': config.experimentalCchSigning ?? false,
+  'rebuild-mid-system-message': config.rebuildMidSystemMessage ?? false,
+  cloak: config.cloak ?? null,
+});
+
+const serializeVertexKeyPatch = (config: ProviderKeyConfig) => ({
+  ...serializeVertexKey(config),
+  priority: config.priority ?? 0,
+  prefix: config.prefix?.trim() ?? '',
+  'base-url': config.baseUrl ?? '',
+  'proxy-url': config.proxyUrl ?? '',
+  headers: serializeHeaders(config.headers) ?? {},
+  models: serializeVertexModelAliases(config.models) ?? [],
+  'excluded-models': config.excludedModels ?? [],
+});
+
 const serializeOpenAIProvider = (provider: OpenAIProviderConfig) => {
   const payload: Record<string, unknown> = {
     name: provider.name,
@@ -663,10 +632,19 @@ const serializeOpenAIProvider = (provider: OpenAIProviderConfig) => {
   return payload;
 };
 
+const serializeOpenAIProviderPatch = (provider: OpenAIProviderConfig) => ({
+  ...serializeOpenAIProvider(provider),
+  priority: provider.priority ?? 0,
+  disabled: provider.disabled ?? false,
+  prefix: provider.prefix?.trim() ?? '',
+  headers: serializeHeaders(provider.headers) ?? {},
+  models: serializeModelAliases(provider.models) ?? [],
+  'disable-cooling': provider.disableCooling ?? false,
+});
+
 export const providersApi = {
   async getGeminiKeys(): Promise<GeminiKeyConfig[]> {
-    const data = await apiClient.get('/gemini-api-key');
-    const list = extractArrayPayload(data, 'gemini-api-key');
+    const list = await fetchAllProviderRecords('/gemini-api-key', 'gemini-api-key');
     return list.map((item) => normalizeGeminiKeyConfig(item)).filter(Boolean) as GeminiKeyConfig[];
   },
 
@@ -683,28 +661,21 @@ export const providersApi = {
     ),
 
   createGeminiKey: (config: GeminiKeyConfig) =>
-    mutateLatestProviderList('gemini-api-key', (latestItems) =>
-      appendLatestProviderRecord(latestItems, serializeGeminiKey(config), (raw, payload) =>
-        mergeProviderKeyPayload(raw, payload, GEMINI_KEY_FIELDS)
-      )
-    ),
+    apiClient.post('/gemini-api-key', serializeGeminiKey(config)),
 
   updateGeminiKey: (original: GeminiKeyConfig, value: GeminiKeyConfig) =>
-    mutateLatestProviderList('gemini-api-key', (latestItems) =>
-      replaceLatestProviderRecord(
-        latestItems,
-        (record) => matchesProviderConfig(record, original),
-        serializeGeminiKey(value),
-        (raw, payload) => mergeProviderKeyPayload(raw, payload, GEMINI_KEY_FIELDS)
-      )
-    ),
+    apiClient.patch('/gemini-api-key', {
+      match: original.apiKey,
+      'match-base-url': original.baseUrl ?? '',
+      'match-auth-index': original.authIndex,
+      value: serializeGeminiKeyPatch(value),
+    }),
 
   deleteGeminiKey: (apiKey: string, baseUrl?: string) =>
     apiClient.delete(`/gemini-api-key${buildProviderDeleteQuery(apiKey, baseUrl)}`),
 
   async getInteractionsKeys(): Promise<GeminiKeyConfig[]> {
-    const data = await apiClient.get('/interactions-api-key');
-    const list = extractArrayPayload(data, 'interactions-api-key');
+    const list = await fetchAllProviderRecords('/interactions-api-key', 'interactions-api-key');
     return list.map((item) => normalizeGeminiKeyConfig(item)).filter(Boolean) as GeminiKeyConfig[];
   },
 
@@ -721,28 +692,21 @@ export const providersApi = {
     ),
 
   createInteractionsKey: (config: GeminiKeyConfig) =>
-    mutateLatestProviderList('interactions-api-key', (latestItems) =>
-      appendLatestProviderRecord(latestItems, serializeGeminiKey(config), (raw, payload) =>
-        mergeProviderKeyPayload(raw, payload, GEMINI_KEY_FIELDS)
-      )
-    ),
+    apiClient.post('/interactions-api-key', serializeGeminiKey(config)),
 
   updateInteractionsKey: (original: GeminiKeyConfig, value: GeminiKeyConfig) =>
-    mutateLatestProviderList('interactions-api-key', (latestItems) =>
-      replaceLatestProviderRecord(
-        latestItems,
-        (record) => matchesProviderConfig(record, original),
-        serializeGeminiKey(value),
-        (raw, payload) => mergeProviderKeyPayload(raw, payload, GEMINI_KEY_FIELDS)
-      )
-    ),
+    apiClient.patch('/interactions-api-key', {
+      match: original.apiKey,
+      'match-base-url': original.baseUrl ?? '',
+      'match-auth-index': original.authIndex,
+      value: serializeGeminiKeyPatch(value),
+    }),
 
   deleteInteractionsKey: (apiKey: string, baseUrl?: string) =>
     apiClient.delete(`/interactions-api-key${buildProviderDeleteQuery(apiKey, baseUrl)}`),
 
   async getCodexConfigs(): Promise<ProviderKeyConfig[]> {
-    const data = await apiClient.get('/codex-api-key');
-    const list = extractArrayPayload(data, 'codex-api-key');
+    const list = await fetchAllProviderRecords('/codex-api-key', 'codex-api-key');
     return list
       .map((item) => normalizeProviderKeyConfig(item))
       .filter(Boolean) as ProviderKeyConfig[];
@@ -761,28 +725,21 @@ export const providersApi = {
     ),
 
   createCodexConfig: (config: ProviderKeyConfig) =>
-    mutateLatestProviderList('codex-api-key', (latestItems) =>
-      appendLatestProviderRecord(latestItems, serializeProviderKey(config), (raw, payload) =>
-        mergeProviderKeyPayload(raw, payload, CODEX_KEY_FIELDS)
-      )
-    ),
+    apiClient.post('/codex-api-key', serializeProviderKey(config)),
 
   updateCodexConfig: (original: ProviderKeyConfig, value: ProviderKeyConfig) =>
-    mutateLatestProviderList('codex-api-key', (latestItems) =>
-      replaceLatestProviderRecord(
-        latestItems,
-        (record) => matchesProviderConfig(record, original),
-        serializeProviderKey(value),
-        (raw, payload) => mergeProviderKeyPayload(raw, payload, CODEX_KEY_FIELDS)
-      )
-    ),
+    apiClient.patch('/codex-api-key', {
+      match: original.apiKey,
+      'match-base-url': original.baseUrl ?? '',
+      'match-auth-index': original.authIndex,
+      value: serializeProviderKeyPatch(value),
+    }),
 
   deleteCodexConfig: (apiKey: string, baseUrl?: string) =>
     apiClient.delete(`/codex-api-key${buildProviderDeleteQuery(apiKey, baseUrl)}`),
 
   async getClaudeConfigs(): Promise<ProviderKeyConfig[]> {
-    const data = await apiClient.get('/claude-api-key');
-    const list = extractArrayPayload(data, 'claude-api-key');
+    const list = await fetchAllProviderRecords('/claude-api-key', 'claude-api-key');
     return list
       .map((item) => normalizeProviderKeyConfig(item))
       .filter(Boolean) as ProviderKeyConfig[];
@@ -801,28 +758,21 @@ export const providersApi = {
     ),
 
   createClaudeConfig: (config: ProviderKeyConfig) =>
-    mutateLatestProviderList('claude-api-key', (latestItems) =>
-      appendLatestProviderRecord(latestItems, serializeProviderKey(config), (raw, payload) =>
-        mergeProviderKeyPayload(raw, payload, CLAUDE_KEY_FIELDS)
-      )
-    ),
+    apiClient.post('/claude-api-key', serializeProviderKey(config)),
 
   updateClaudeConfig: (original: ProviderKeyConfig, value: ProviderKeyConfig) =>
-    mutateLatestProviderList('claude-api-key', (latestItems) =>
-      replaceLatestProviderRecord(
-        latestItems,
-        (record) => matchesProviderConfig(record, original),
-        serializeProviderKey(value),
-        (raw, payload) => mergeProviderKeyPayload(raw, payload, CLAUDE_KEY_FIELDS)
-      )
-    ),
+    apiClient.patch('/claude-api-key', {
+      match: original.apiKey,
+      'match-base-url': original.baseUrl ?? '',
+      'match-auth-index': original.authIndex,
+      value: serializeProviderKeyPatch(value),
+    }),
 
   deleteClaudeConfig: (apiKey: string, baseUrl?: string) =>
     apiClient.delete(`/claude-api-key${buildProviderDeleteQuery(apiKey, baseUrl)}`),
 
   async getVertexConfigs(): Promise<ProviderKeyConfig[]> {
-    const data = await apiClient.get('/vertex-api-key');
-    const list = extractArrayPayload(data, 'vertex-api-key');
+    const list = await fetchAllProviderRecords('/vertex-api-key', 'vertex-api-key');
     return list
       .map((item) => normalizeProviderKeyConfig(item))
       .filter(Boolean) as ProviderKeyConfig[];
@@ -841,32 +791,28 @@ export const providersApi = {
     ),
 
   createVertexConfig: (config: ProviderKeyConfig) =>
-    mutateLatestProviderList('vertex-api-key', (latestItems) =>
-      appendLatestProviderRecord(latestItems, serializeVertexKey(config), (raw, payload) =>
-        mergeProviderKeyPayload(raw, payload, VERTEX_KEY_FIELDS)
-      )
-    ),
+    apiClient.post('/vertex-api-key', serializeVertexKey(config)),
 
   updateVertexConfig: (original: ProviderKeyConfig, value: ProviderKeyConfig) =>
-    mutateLatestProviderList('vertex-api-key', (latestItems) =>
-      replaceLatestProviderRecord(
-        latestItems,
-        (record) => matchesProviderConfig(record, original),
-        serializeVertexKey(value),
-        (raw, payload) => mergeProviderKeyPayload(raw, payload, VERTEX_KEY_FIELDS)
-      )
-    ),
+    apiClient.patch('/vertex-api-key', {
+      match: original.apiKey,
+      'match-base-url': original.baseUrl ?? '',
+      'match-auth-index': original.authIndex,
+      value: serializeVertexKeyPatch(value),
+    }),
 
   deleteVertexConfig: (apiKey: string, baseUrl?: string) =>
     apiClient.delete(`/vertex-api-key${buildProviderDeleteQuery(apiKey, baseUrl)}`),
 
   async getOpenAIProviders(): Promise<OpenAIProviderConfig[]> {
-    const data = await apiClient.get('/openai-compatibility');
-    const list = extractArrayPayload(data, 'openai-compatibility');
+    const list = await fetchAllProviderRecords('/openai-compatibility', 'openai-compatibility');
     const providers = list
       .map((item) => normalizeOpenAIProvider(item))
       .filter(Boolean) as OpenAIProviderConfig[];
-    return hydrateOpenAIProvidersDisableCooling(providers);
+    return providers.map((provider) => ({
+      ...provider,
+      disableCooling: provider.disableCooling ?? false,
+    }));
   },
 
   saveOpenAIProviders: async (providers: OpenAIProviderConfig[]) =>
@@ -882,24 +828,17 @@ export const providersApi = {
     ),
 
   createOpenAIProvider: (provider: OpenAIProviderConfig) =>
-    mutateLatestProviderList('openai-compatibility', (latestItems) =>
-      appendLatestProviderRecord(latestItems, serializeOpenAIProvider(provider), mergeOpenAIProviderPayload)
-    ),
+    apiClient.post('/openai-compatibility', serializeOpenAIProvider(provider)),
 
   updateOpenAIProvider: (
     originalName: string,
-    originalIndex: number,
+    _originalIndex: number,
     value: OpenAIProviderConfig
   ) =>
-    mutateLatestProviderList('openai-compatibility', (latestItems) =>
-      replaceLatestProviderRecord(
-        latestItems,
-        (record, index) =>
-          index === originalIndex && openAIProviderIdentity(record) === originalName.trim(),
-        serializeOpenAIProvider(value),
-        mergeOpenAIProviderPayload
-      )
-    ),
+    apiClient.patch('/openai-compatibility', {
+      name: originalName.trim(),
+      value: serializeOpenAIProviderPatch(value),
+    }),
 
   deleteOpenAIProvider: (name: string) =>
     apiClient.delete(`/openai-compatibility?name=${encodeURIComponent(name)}`),

@@ -57,3 +57,38 @@ func TestHandleUsageSummaryUsesQueryLimitAndPanelAuthorization(t *testing.T) {
 		t.Fatalf("models = %#v", summary.Models)
 	}
 }
+
+func TestHandleModelPricesUsesSQLPaginationAndSearch(t *testing.T) {
+	cfg := testutil.NewConfig(t)
+	st := testutil.NewStore(t, cfg)
+	if err := st.SaveModelPrices(context.Background(), map[string]model.ModelPrice{
+		"claude-a": {Prompt: 1},
+		"gpt-a":    {Prompt: 2, Source: "openai"},
+		"gpt-b":    {Prompt: 3, Source: "openai"},
+	}); err != nil {
+		t.Fatalf("save prices: %v", err)
+	}
+	handler := &Handler{App: &app.Context{
+		Config:            cfg,
+		AdminAuthService:  adminauthsvc.New(cfg, st),
+		ModelPriceService: modelpricesvc.New(st, nil),
+	}}
+
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/model-prices?search=gpt&page=2&page_size=1", nil)
+	req.Header.Set("Authorization", "Bearer "+testutil.AdminKey)
+	recorder := httptest.NewRecorder()
+	handler.Handle(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var page modelpricesvc.ListResponse
+	if err := json.NewDecoder(recorder.Body).Decode(&page); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if page.Total != 2 || page.Page != 2 || page.PageSize != 1 || page.HasMore || len(page.Prices) != 1 {
+		t.Fatalf("page = %#v", page)
+	}
+	if _, ok := page.Prices["gpt-b"]; !ok {
+		t.Fatalf("prices = %#v, want gpt-b", page.Prices)
+	}
+}

@@ -3,6 +3,7 @@ package management
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -11,6 +12,33 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
+
+type apiKeyUsageTestResponse struct {
+	Items      []apiKeyUsageItem `json:"items"`
+	Total      int               `json:"total"`
+	Page       int               `json:"page"`
+	PageSize   int               `json:"page_size"`
+	TotalPages int               `json:"total_pages"`
+	HasMore    bool              `json:"has_more"`
+}
+
+func decodeAPIKeyUsageResponse(t *testing.T, recorder *httptest.ResponseRecorder) apiKeyUsageTestResponse {
+	t.Helper()
+	var payload apiKeyUsageTestResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	return payload
+}
+
+func findAPIKeyUsageItem(payload apiKeyUsageTestResponse, provider, compositeKey string) *apiKeyUsageItem {
+	for i := range payload.Items {
+		if payload.Items[i].Provider == provider && payload.Items[i].CompositeKey == compositeKey {
+			return &payload.Items[i]
+		}
+	}
+	return nil
+}
 
 func sumRecentRequestBuckets(buckets []coreauth.RecentRequestBucket) (int64, int64) {
 	var success int64
@@ -63,12 +91,15 @@ func TestGetAPIKeyUsage_GroupsByProviderAndAPIKey(t *testing.T) {
 		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 
-	var payload map[string]map[string]apiKeyUsageEntry
-	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("decode payload: %v", err)
+	payload := decodeAPIKeyUsageResponse(t, rec)
+	if payload.Total != 2 || payload.Page != 1 || payload.PageSize != defaultAPIKeyUsagePageSize || payload.TotalPages != 1 || payload.HasMore {
+		t.Fatalf("pagination metadata = %+v", payload)
 	}
 
-	codexEntry := payload["codex"]["https://codex.example.com|codex-key"]
+	codexEntry := findAPIKeyUsageItem(payload, "codex", "https://codex.example.com|codex-key")
+	if codexEntry == nil {
+		t.Fatalf("missing codex entry: %+v", payload.Items)
+	}
 	if codexEntry.Success != 1 || codexEntry.Failed != 1 {
 		t.Fatalf("codex totals = %d/%d, want 1/1", codexEntry.Success, codexEntry.Failed)
 	}
@@ -80,7 +111,10 @@ func TestGetAPIKeyUsage_GroupsByProviderAndAPIKey(t *testing.T) {
 		t.Fatalf("codex totals = %d/%d, want 1/1", codexSuccess, codexFailed)
 	}
 
-	claudeEntry := payload["claude"]["https://claude.example.com|claude-key"]
+	claudeEntry := findAPIKeyUsageItem(payload, "claude", "https://claude.example.com|claude-key")
+	if claudeEntry == nil {
+		t.Fatalf("missing claude entry: %+v", payload.Items)
+	}
 	if claudeEntry.Success != 1 || claudeEntry.Failed != 0 {
 		t.Fatalf("claude totals = %d/%d, want 1/0", claudeEntry.Success, claudeEntry.Failed)
 	}
@@ -123,20 +157,60 @@ func TestGetAPIKeyUsage_GroupsOpenAICompatibleByCompatName(t *testing.T) {
 		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 
-	var payload map[string]map[string]apiKeyUsageEntry
-	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("decode payload: %v", err)
+	payload := decodeAPIKeyUsageResponse(t, rec)
+	vastEntry := findAPIKeyUsageItem(payload, "vast", "https://www.vastnum.com/v1|vast-key")
+	if vastEntry == nil {
+		t.Fatalf("missing compat provider entry in payload: %+v", payload.Items)
 	}
-
-	if _, exists := payload["openai-compatible-vast"]; exists {
-		t.Fatalf("unexpected namespaced provider bucket in payload: %#v", payload)
-	}
-	vastBucket, exists := payload["vast"]
-	if !exists {
-		t.Fatalf("missing compat provider bucket in payload: %#v", payload)
-	}
-	vastEntry := vastBucket["https://www.vastnum.com/v1|vast-key"]
 	if vastEntry.Success != 1 || vastEntry.Failed != 0 {
 		t.Fatalf("vast totals = %d/%d, want 1/0", vastEntry.Success, vastEntry.Failed)
+	}
+}
+
+func TestGetAPIKeyUsage_PaginatesAndFiltersBeforeRecentSnapshots(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	manager := coreauth.NewManager(nil, nil, nil)
+	providers := []string{"gemini", "codex", "claude"}
+	for index, provider := range providers {
+		if _, err := manager.Register(context.Background(), &coreauth.Auth{
+			ID:       fmt.Sprintf("auth-%d", index),
+			Provider: provider,
+			Attributes: map[string]string{
+				"api_key":  fmt.Sprintf("key-%d", index),
+				"base_url": fmt.Sprintf("https://%s.example.com", provider),
+			},
+		}); err != nil {
+			t.Fatalf("register %s auth: %v", provider, err)
+		}
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
+	rec := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(rec)
+	ginCtx.Request = httptest.NewRequest(http.MethodGet, "/v0/management/api-key-usage?provider=codex,gemini&search=key&page=2&page_size=1", nil)
+	h.GetAPIKeyUsage(ginCtx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	payload := decodeAPIKeyUsageResponse(t, rec)
+	if payload.Total != 2 || payload.Page != 2 || payload.PageSize != 1 || payload.TotalPages != 2 || payload.HasMore {
+		t.Fatalf("pagination metadata = %+v", payload)
+	}
+	if len(payload.Items) != 1 || payload.Items[0].Provider != "gemini" {
+		t.Fatalf("items = %+v, want second provider-filtered item", payload.Items)
+	}
+}
+
+func TestGetAPIKeyUsage_RejectsPageSizeAboveMaximum(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, coreauth.NewManager(nil, nil, nil))
+	rec := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(rec)
+	ginCtx.Request = httptest.NewRequest(http.MethodGet, "/v0/management/api-key-usage?page_size=201", nil)
+	h.GetAPIKeyUsage(ginCtx)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
 }

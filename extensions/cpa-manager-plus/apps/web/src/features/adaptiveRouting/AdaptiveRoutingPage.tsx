@@ -13,6 +13,8 @@ import {
 import { useNotificationStore } from '@/stores';
 import styles from './AdaptiveRoutingPage.module.scss';
 
+const SCORE_PAGE_SIZE = 100;
+
 const defaultConfig: AdaptiveRoutingConfig = {
   'top-k': 3,
   'ewma-alpha': 0.2,
@@ -42,6 +44,9 @@ export function AdaptiveRoutingPage() {
   const [model, setModel] = useState('');
   const [appliedProvider, setAppliedProvider] = useState('');
   const [appliedModel, setAppliedModel] = useState('');
+  const [scorePage, setScorePage] = useState(1);
+  const [scoreTotal, setScoreTotal] = useState(0);
+  const [scoreTotalPages, setScoreTotalPages] = useState(0);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -53,7 +58,12 @@ export function AdaptiveRoutingPage() {
       const [loadedConfig, strategy, snapshot] = await Promise.all([
         adaptiveRoutingApi.getConfig(),
         configApi.getRoutingStrategy(),
-        adaptiveRoutingApi.getScores(appliedProvider, appliedModel),
+        adaptiveRoutingApi.getScores({
+          provider: appliedProvider,
+          model: appliedModel,
+          page: scorePage,
+          pageSize: SCORE_PAGE_SIZE,
+        }),
       ]);
       setConfig({
         ...defaultConfig,
@@ -66,12 +76,15 @@ export function AdaptiveRoutingPage() {
       });
       setEnabled(strategy === 'adaptive' && snapshot.enabled);
       setScores(snapshot.items ?? []);
+      setScorePage(snapshot.page);
+      setScoreTotal(snapshot.total);
+      setScoreTotalPages(snapshot.total_pages);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : String(loadError));
     } finally {
       setLoading(false);
     }
-  }, [appliedModel, appliedProvider]);
+  }, [appliedModel, appliedProvider, scorePage]);
 
   useEffect(() => void load(), [load]);
   useHeaderRefresh(load);
@@ -122,12 +135,19 @@ export function AdaptiveRoutingPage() {
     }));
 
   const applyScoreFilters = () => {
-    setAppliedProvider(provider.trim());
-    setAppliedModel(model.trim());
-    if (provider.trim() === appliedProvider && model.trim() === appliedModel) {
+    const nextProvider = provider.trim();
+    const nextModel = model.trim();
+    const filtersUnchanged = nextProvider === appliedProvider && nextModel === appliedModel;
+    setScorePage(1);
+    setAppliedProvider(nextProvider);
+    setAppliedModel(nextModel);
+    if (filtersUnchanged && scorePage === 1) {
       void load();
     }
   };
+
+  const scorePageStart = scoreTotal === 0 ? 0 : (scorePage - 1) * SCORE_PAGE_SIZE + 1;
+  const scorePageEnd = Math.min(scoreTotal, scorePage * SCORE_PAGE_SIZE);
 
   return (
     <div className={styles.page}>
@@ -177,10 +197,17 @@ export function AdaptiveRoutingPage() {
         {loading ? <div className={styles.loading}>{t('common.loading')}</div> : null}
         {!loading && error ? <div className={styles.error}>{error}</div> : null}
         {!loading && !error && scores.length === 0 ? <div className={styles.empty}>{t('adaptive_routing.no_scores')}</div> : null}
-        {!loading && !error && scores.length > 0 ? <div className={styles.tableWrap}><table className={styles.table}>
-          <thead><tr><th>{t('adaptive_routing.rank')}</th><th>auth_index</th><th>{t('common.provider')}</th><th>{t('common.priority')}</th><th>{t('adaptive_routing.score')}</th><th>{t('adaptive_routing.active')}</th><th>{t('adaptive_routing.success_rate')}</th><th>TTFT</th><th>{t('adaptive_routing.samples')}</th><th>{t('common.status')}</th></tr></thead>
-          <tbody>{scores.map((item) => <tr key={item.auth_id}><td>{item.rank || '-'}</td><td><b>{item.auth_index || item.auth_id}</b><div className={styles.muted}>{item.auth_id}</div></td><td>{item.provider}</td><td>{item.priority}</td><td>{item.score.toFixed(3)}</td><td>{item.active_requests}</td><td>{(item.success_rate * 100).toFixed(1)}%</td><td>{item.ttft_ms > 0 ? `${Math.round(item.ttft_ms)} ms` : '-'}</td><td>{item.outcome_samples} / {item.ttft_samples}</td><td className={item.escape_sticky ? styles.warning : ''}>{item.escape_sticky ? t('adaptive_routing.escape') : item.eligible ? t('adaptive_routing.eligible') : t('adaptive_routing.ineligible')}</td></tr>)}</tbody>
-        </table></div> : null}
+        {!loading && !error && scores.length > 0 ? <>
+          <div className={styles.tableWrap}><table className={styles.table}>
+            <thead><tr><th>{t('adaptive_routing.rank')}</th><th>auth_index</th><th>{t('common.provider')}</th><th>{t('common.priority')}</th><th>{t('adaptive_routing.score')}</th><th>{t('adaptive_routing.active')}</th><th>{t('adaptive_routing.success_rate')}</th><th>TTFT</th><th>{t('adaptive_routing.samples')}</th><th>{t('common.status')}</th></tr></thead>
+            <tbody>{scores.map((item) => <tr key={item.auth_id}><td>{item.rank || '-'}</td><td><b>{item.auth_index || item.auth_id}</b><div className={styles.muted}>{item.auth_id}</div></td><td>{item.provider}</td><td>{item.priority}</td><td>{item.score.toFixed(3)}</td><td>{item.active_requests}</td><td>{(item.success_rate * 100).toFixed(1)}%</td><td>{item.ttft_ms > 0 ? `${Math.round(item.ttft_ms)} ms` : '-'}</td><td>{item.outcome_samples} / {item.ttft_samples}</td><td className={item.escape_sticky ? styles.warning : ''}>{item.escape_sticky ? t('adaptive_routing.escape') : item.eligible ? t('adaptive_routing.eligible') : t('adaptive_routing.ineligible')}</td></tr>)}</tbody>
+          </table></div>
+          {scoreTotalPages > 1 ? <div className={styles.pagination}>
+            <Button variant="secondary" size="sm" onClick={() => setScorePage((current) => Math.max(1, current - 1))} disabled={loading || scorePage <= 1}>{t('common.previous')}</Button>
+            <span>{scorePageStart}-{scorePageEnd} / {scoreTotal} · {scorePage} / {scoreTotalPages}</span>
+            <Button variant="secondary" size="sm" onClick={() => setScorePage((current) => Math.min(scoreTotalPages, current + 1))} disabled={loading || scorePage >= scoreTotalPages}>{t('common.next')}</Button>
+          </div> : null}
+        </> : null}
       </section>
     </div>
   );

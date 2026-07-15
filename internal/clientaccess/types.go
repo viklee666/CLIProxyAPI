@@ -90,6 +90,12 @@ type CredentialBindingBatch struct {
 	Groups      []CredentialGroupInput `json:"groups"`
 }
 
+type CredentialBindingChangeStats struct {
+	Matched   int `json:"matched"`
+	Updated   int `json:"updated"`
+	Unchanged int `json:"unchanged"`
+}
+
 type GroupCreate struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`

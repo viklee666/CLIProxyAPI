@@ -3,14 +3,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const { mocks } = vi.hoisted(() => ({
   mocks: {
     get: vi.fn(),
+    post: vi.fn(),
     put: vi.fn(),
+    patch: vi.fn(),
   },
 }));
 
 vi.mock('./client', () => ({
   apiClient: {
     get: mocks.get,
+    post: mocks.post,
     put: mocks.put,
+    patch: mocks.patch,
   },
 }));
 
@@ -18,10 +22,39 @@ import { providersApi } from './providers';
 
 beforeEach(() => {
   mocks.get.mockReset();
+  mocks.post.mockReset();
   mocks.put.mockReset();
+  mocks.patch.mockReset();
 });
 
 describe('providersApi auth-index preservation', () => {
+  it('continues bounded provider pages returned by the management API', async () => {
+    mocks.get
+      .mockResolvedValueOnce({
+        'gemini-api-key': [{ 'api-key': 'gemini-1' }],
+        page: 1,
+        page_size: 1,
+        total_pages: 2,
+        has_more: true,
+      })
+      .mockResolvedValueOnce({
+        'gemini-api-key': [{ 'api-key': 'gemini-2' }],
+        page: 2,
+        page_size: 1,
+        total_pages: 2,
+        has_more: false,
+      });
+
+    await expect(providersApi.getGeminiKeys()).resolves.toEqual([
+      expect.objectContaining({ apiKey: 'gemini-1' }),
+      expect.objectContaining({ apiKey: 'gemini-2' }),
+    ]);
+    expect(mocks.get).toHaveBeenNthCalledWith(1, '/gemini-api-key');
+    expect(mocks.get).toHaveBeenNthCalledWith(2, '/gemini-api-key', {
+      params: { page: 2, page_size: 1 },
+    });
+  });
+
   it('loads and saves native Interactions API keys through their management endpoint', async () => {
     mocks.get.mockResolvedValueOnce({
       'interactions-api-key': [
@@ -146,17 +179,13 @@ describe('providersApi auth-index preservation', () => {
     ]);
   });
 
-  it('falls back to serialized payload when raw config loading fails', async () => {
+  it('falls back to serialized payload when the raw provider page cannot be loaded', async () => {
     mocks.get.mockRejectedValue(new Error('forbidden'));
     mocks.put.mockResolvedValue({});
 
-    await providersApi.saveGeminiKeys([
-      { apiKey: 'gemini-key', authIndex: 'runtime-only-index' },
-    ]);
+    await providersApi.saveGeminiKeys([{ apiKey: 'gemini-key', authIndex: 'runtime-only-index' }]);
 
-    expect(mocks.put).toHaveBeenCalledWith('/gemini-api-key', [
-      { 'api-key': 'gemini-key' },
-    ]);
+    expect(mocks.put).toHaveBeenCalledWith('/gemini-api-key', [{ 'api-key': 'gemini-key' }]);
   });
 });
 
@@ -188,42 +217,25 @@ describe('providersApi v1.16 provider fields', () => {
     });
   });
 
-  it('fills missing OpenAI provider disable-cooling from /config fallback', async () => {
-    mocks.get.mockImplementation(async (url: string) => {
-      if (url === '/openai-compatibility') {
-        return {
-          'openai-compatibility': [
-            {
-              name: 'openai-compatible',
-              'base-url': 'https://api.example.com/v1',
-              'api-key-entries': [],
-            },
-          ],
-        };
-      }
-      if (url === '/config') {
-        return {
-          'openai-compatibility': [
-            {
-              name: 'openai-compatible',
-              'base-url': 'https://api.example.com/v1',
-              'api-key-entries': [],
-              'disable-cooling': true,
-            },
-          ],
-        };
-      }
-      throw new Error(`unexpected url: ${url}`);
+  it('defaults missing OpenAI disable-cooling without downloading full config', async () => {
+    mocks.get.mockResolvedValue({
+      'openai-compatibility': [
+        {
+          name: 'openai-compatible',
+          'base-url': 'https://api.example.com/v1',
+          'api-key-entries': [],
+        },
+      ],
     });
 
     const providers = await providersApi.getOpenAIProviders();
 
     expect(providers[0]).toMatchObject({
       name: 'openai-compatible',
-      disableCooling: true,
+      disableCooling: false,
     });
-    expect(mocks.get).toHaveBeenNthCalledWith(1, '/openai-compatibility');
-    expect(mocks.get).toHaveBeenNthCalledWith(2, '/config');
+    expect(mocks.get).toHaveBeenCalledTimes(1);
+    expect(mocks.get).toHaveBeenCalledWith('/openai-compatibility');
   });
 
   it('serializes Claude disable-cooling, cch signing, cloak cache, and model metadata', async () => {
@@ -621,58 +633,56 @@ describe('providersApi v1.16 provider fields', () => {
   });
 });
 
-describe('providersApi optimistic provider mutations', () => {
-  it('appends to the latest Gemini list without dropping concurrent records', async () => {
-    mocks.get.mockResolvedValueOnce({
-      'gemini-api-key': [{ 'api-key': 'concurrent-key', 'raw-field': 'keep' }],
-    });
-    mocks.put.mockResolvedValue({});
+describe('providersApi record-level provider mutations', () => {
+  it('creates one Gemini record without downloading or replacing the provider list', async () => {
+    mocks.post.mockResolvedValue({});
 
     await providersApi.createGeminiKey({ apiKey: 'new-key' });
 
-    expect(mocks.put).toHaveBeenCalledWith('/gemini-api-key', [
-      { 'api-key': 'concurrent-key', 'raw-field': 'keep' },
-      { 'api-key': 'new-key' },
-    ]);
-  });
-
-  it('updates only the matching auth-index record and preserves unrelated records', async () => {
-    mocks.get.mockResolvedValueOnce({
-      'codex-api-key': [
-        { 'auth-index': 'auth-1', 'api-key': 'old', 'raw-field': 'keep' },
-        { 'api-key': 'concurrent-key', priority: 9 },
-      ],
-    });
-    mocks.put.mockResolvedValue({});
-
-    await providersApi.updateCodexConfig(
-      { apiKey: '', authIndex: 'auth-1' },
-      { apiKey: '', authIndex: 'auth-1', prefix: 'updated' }
-    );
-
-    expect(mocks.put).toHaveBeenCalledWith('/codex-api-key', [
-      { 'raw-field': 'keep', 'auth-index': 'auth-1', prefix: 'updated' },
-      { 'api-key': 'concurrent-key', priority: 9 },
-    ]);
-  });
-
-  it('rejects an update when the original provider no longer exists', async () => {
-    mocks.get.mockResolvedValueOnce({ 'interactions-api-key': [] });
-
-    await expect(
-      providersApi.updateInteractionsKey({ apiKey: 'removed' }, { apiKey: 'updated' })
-    ).rejects.toThrow('Provider configuration changed; refresh and try again.');
+    expect(mocks.post).toHaveBeenCalledWith('/gemini-api-key', { 'api-key': 'new-key' });
+    expect(mocks.get).not.toHaveBeenCalled();
     expect(mocks.put).not.toHaveBeenCalled();
   });
 
-  it('updates OpenAI by original name and index while preserving concurrent records', async () => {
-    mocks.get.mockResolvedValueOnce({
-      'openai-compatibility': [
-        { name: 'target', 'base-url': 'https://old.example/v1', 'raw-field': 'keep' },
-        { name: 'concurrent', 'base-url': 'https://other.example/v1' },
-      ],
+  it('patches only the matching auth-index record without replacing unrelated records', async () => {
+    mocks.patch.mockResolvedValue({});
+
+    await providersApi.updateCodexConfig(
+      { apiKey: '', authIndex: 'auth-1', baseUrl: 'https://codex.example/v1' },
+      {
+        apiKey: '',
+        authIndex: 'auth-1',
+        baseUrl: 'https://codex.example/v1',
+        prefix: 'updated',
+      }
+    );
+
+    expect(mocks.patch).toHaveBeenCalledWith('/codex-api-key', {
+      match: '',
+      'match-base-url': 'https://codex.example/v1',
+      'match-auth-index': 'auth-1',
+      value: expect.objectContaining({
+        'auth-index': 'auth-1',
+        prefix: 'updated',
+        'base-url': 'https://codex.example/v1',
+      }),
     });
-    mocks.put.mockResolvedValue({});
+    expect(mocks.get).not.toHaveBeenCalled();
+    expect(mocks.put).not.toHaveBeenCalled();
+  });
+
+  it('propagates a record-level conflict without a fallback full-list write', async () => {
+    mocks.patch.mockRejectedValueOnce(new Error('item not found'));
+
+    await expect(
+      providersApi.updateInteractionsKey({ apiKey: 'removed' }, { apiKey: 'updated' })
+    ).rejects.toThrow('item not found');
+    expect(mocks.get).not.toHaveBeenCalled();
+    expect(mocks.put).not.toHaveBeenCalled();
+  });
+
+  it('patches OpenAI by original name without an index-sensitive full-list write', async () => {
+    mocks.patch.mockResolvedValue({});
 
     await providersApi.updateOpenAIProvider('target', 0, {
       name: 'renamed',
@@ -680,14 +690,15 @@ describe('providersApi optimistic provider mutations', () => {
       apiKeyEntries: [],
     });
 
-    expect(mocks.put).toHaveBeenCalledWith('/openai-compatibility', [
-      {
-        'raw-field': 'keep',
+    expect(mocks.patch).toHaveBeenCalledWith('/openai-compatibility', {
+      name: 'target',
+      value: expect.objectContaining({
         name: 'renamed',
         'base-url': 'https://new.example/v1',
         'api-key-entries': [],
-      },
-      { name: 'concurrent', 'base-url': 'https://other.example/v1' },
-    ]);
+      }),
+    });
+    expect(mocks.get).not.toHaveBeenCalled();
+    expect(mocks.put).not.toHaveBeenCalled();
   });
 });

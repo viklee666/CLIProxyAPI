@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -30,7 +31,17 @@ const (
 	// pluginReleaseFailureCacheTTL throttles retries after a failed lookup so a
 	// rate-limited or unreachable API is not hammered on every listing.
 	pluginReleaseFailureCacheTTL = 30 * time.Second
+	pluginRegistryCacheTTL       = 5 * time.Second
+	pluginRegistryFailureTTL     = 2 * time.Second
+	pluginRegistryWorkerLimit    = 4
+	pluginReleaseWorkerLimit     = 8
 )
+
+type pluginRegistryCacheEntry struct {
+	plugins   []pluginstore.Plugin
+	err       string
+	expiresAt time.Time
+}
 
 type pluginReleaseCacheEntry struct {
 	version   string
@@ -43,6 +54,11 @@ type pluginStoreListResponse struct {
 	Sources        []pluginStoreSource    `json:"sources"`
 	SourceErrors   []pluginStoreSourceErr `json:"source_errors,omitempty"`
 	Plugins        []pluginStoreListEntry `json:"plugins"`
+	Page           int                    `json:"page"`
+	PageSize       int                    `json:"page_size"`
+	Total          int                    `json:"total"`
+	TotalPages     int                    `json:"total_pages"`
+	HasMore        bool                   `json:"has_more"`
 }
 
 type pluginStoreSource struct {
@@ -130,6 +146,17 @@ type sourcedPlugin struct {
 }
 
 func (h *Handler) ListPluginStore(c *gin.Context) {
+	filterID := strings.TrimSpace(c.Query("id"))
+	if filterID != "" && !pluginhost.ValidatePluginID(filterID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_plugin_id", "message": "invalid plugin id"})
+		return
+	}
+	filterSourceID := strings.TrimSpace(c.Query("source"))
+	requestedPage, errPage := parsePluginCollectionPage(c, 0)
+	if errPage != nil {
+		writeInvalidPluginPagination(c, errPage)
+		return
+	}
 	pluginsEnabled, pluginsDir, proxyURL, sourceConfigs, storeAuth, configs, host := h.pluginStoreSnapshot()
 	sources, errSources := h.pluginStoreSources(sourceConfigs)
 	if errSources != nil {
@@ -141,7 +168,42 @@ func (h *Handler) ListPluginStore(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "plugin_store_registry_failed", "message": sourceErrors[0].Message})
 		return
 	}
-	statuses, errStatus := pluginLocalStatuses(pluginsEnabled, pluginsDir, configs, host)
+	allPlugins := plugins
+	if filterID != "" || filterSourceID != "" {
+		filtered := make([]sourcedPlugin, 0, len(plugins))
+		for _, item := range plugins {
+			if filterID != "" && item.plugin.ID != filterID {
+				continue
+			}
+			if filterSourceID != "" && item.source.ID != filterSourceID {
+				continue
+			}
+			filtered = append(filtered, item)
+		}
+		plugins = filtered
+	}
+	sort.SliceStable(plugins, func(i, j int) bool {
+		if plugins[i].source.ID != plugins[j].source.ID {
+			return plugins[i].source.ID < plugins[j].source.ID
+		}
+		if plugins[i].plugin.ID != plugins[j].plugin.ID {
+			return plugins[i].plugin.ID < plugins[j].plugin.ID
+		}
+		return plugins[i].plugin.Version < plugins[j].plugin.Version
+	})
+	page := pluginCollectionPageForTotal(requestedPage, len(plugins))
+	plugins = pluginCollectionPageSlice(plugins, page)
+	pagePluginIDs := make(map[string]struct{}, len(plugins))
+	for _, item := range plugins {
+		pagePluginIDs[item.plugin.ID] = struct{}{}
+	}
+	pluginSourceCounts := make(map[string]int, len(pagePluginIDs))
+	for _, item := range allPlugins {
+		if _, selected := pagePluginIDs[item.plugin.ID]; selected {
+			pluginSourceCounts[item.plugin.ID]++
+		}
+	}
+	statuses, errStatus := pluginLocalStatuses(pluginsEnabled, pluginsDir, configs, host, pagePluginIDs)
 	if errStatus != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "plugin_discovery_failed", "message": errStatus.Error()})
 		return
@@ -153,11 +215,6 @@ func (h *Handler) ListPluginStore(c *gin.Context) {
 	}
 	client := h.newPluginStoreClient(proxyURL, "", storeAuth)
 	latestVersions := h.latestPluginVersions(c.Request.Context(), client, latestInput)
-	pluginSourceCounts := make(map[string]int, len(plugins))
-	for _, item := range plugins {
-		pluginSourceCounts[item.plugin.ID]++
-	}
-
 	entries := make([]pluginStoreListEntry, 0, len(plugins))
 	for index, item := range plugins {
 		plugin := item.plugin
@@ -212,6 +269,11 @@ func (h *Handler) ListPluginStore(c *gin.Context) {
 		Sources:        sanitizePluginStoreSources(sources),
 		SourceErrors:   sanitizePluginStoreSourceErrors(sourceErrors),
 		Plugins:        entries,
+		Page:           page.page,
+		PageSize:       page.pageSize,
+		Total:          page.total,
+		TotalPages:     page.totalPages,
+		HasMore:        page.end < page.total,
 	})
 }
 
@@ -533,25 +595,86 @@ func (h *Handler) newPluginStoreClient(proxyURL string, registryURL string, stor
 }
 
 func (h *Handler) fetchSourcedPlugins(ctx context.Context, proxyURL string, storeAuth []pluginstore.AuthConfig, sources []pluginstore.Source) ([]sourcedPlugin, []pluginStoreSourceErr) {
+	type sourceResult struct {
+		plugins []pluginstore.Plugin
+		err     error
+	}
+	results := make([]sourceResult, len(sources))
+	workerCount := min(len(sources), pluginRegistryWorkerLimit)
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	for worker := 0; worker < workerCount; worker++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for index := range jobs {
+				source := sources[index]
+				client := h.newPluginStoreClient(proxyURL, source.URL, storeAuth)
+				results[index].plugins, results[index].err = h.fetchPluginRegistry(ctx, client, source)
+			}
+		}()
+	}
+	for index := range sources {
+		jobs <- index
+	}
+	close(jobs)
+	wg.Wait()
+
 	plugins := make([]sourcedPlugin, 0)
 	sourceErrors := make([]pluginStoreSourceErr, 0)
-	for _, source := range sources {
-		client := h.newPluginStoreClient(proxyURL, source.URL, storeAuth)
-		registry, errRegistry := client.FetchRegistry(ctx)
-		if errRegistry != nil {
+	for index, source := range sources {
+		result := results[index]
+		if result.err != nil {
 			sourceErrors = append(sourceErrors, pluginStoreSourceErr{
 				SourceID:   source.ID,
 				SourceName: source.Name,
 				SourceURL:  source.URL,
-				Message:    errRegistry.Error(),
+				Message:    result.err.Error(),
 			})
 			continue
 		}
-		for _, plugin := range registry.Plugins {
+		for _, plugin := range result.plugins {
 			plugins = append(plugins, sourcedPlugin{source: source, plugin: plugin})
 		}
 	}
 	return plugins, sourceErrors
+}
+
+func (h *Handler) fetchPluginRegistry(ctx context.Context, client pluginstore.Client, source pluginstore.Source) ([]pluginstore.Plugin, error) {
+	cacheKey := strings.TrimSpace(source.ID) + "\x00" + strings.TrimSpace(source.URL)
+	now := time.Now()
+	if h != nil {
+		h.pluginRegistryCacheMu.Lock()
+		cached, ok := h.pluginRegistryCache[cacheKey]
+		h.pluginRegistryCacheMu.Unlock()
+		if ok && now.Before(cached.expiresAt) {
+			if cached.err != "" {
+				return nil, errors.New(cached.err)
+			}
+			return append([]pluginstore.Plugin(nil), cached.plugins...), nil
+		}
+	}
+
+	registry, errRegistry := client.FetchRegistry(ctx)
+	entry := pluginRegistryCacheEntry{expiresAt: now.Add(pluginRegistryCacheTTL)}
+	if errRegistry != nil {
+		entry.err = errRegistry.Error()
+		entry.expiresAt = now.Add(pluginRegistryFailureTTL)
+	} else {
+		entry.plugins = append([]pluginstore.Plugin(nil), registry.Plugins...)
+	}
+	if h != nil {
+		h.pluginRegistryCacheMu.Lock()
+		if h.pluginRegistryCache == nil {
+			h.pluginRegistryCache = make(map[string]pluginRegistryCacheEntry)
+		}
+		h.pluginRegistryCache[cacheKey] = entry
+		h.pluginRegistryCacheMu.Unlock()
+	}
+	if errRegistry != nil {
+		return nil, errRegistry
+	}
+	return append([]pluginstore.Plugin(nil), entry.plugins...), nil
 }
 
 func (h *Handler) findPluginStoreInstallTarget(ctx context.Context, proxyURL string, storeAuth []pluginstore.AuthConfig, sources []pluginstore.Source, id string, requestedSourceID string, c *gin.Context) (pluginstore.Source, pluginstore.Plugin, pluginstore.Client, bool) {
@@ -562,12 +685,20 @@ func (h *Handler) findPluginStoreInstallTarget(ctx context.Context, proxyURL str
 				continue
 			}
 			client := h.newPluginStoreClient(proxyURL, source.URL, storeAuth)
-			registry, errRegistry := client.FetchRegistry(ctx)
+			registryPlugins, errRegistry := h.fetchPluginRegistry(ctx, client, source)
 			if errRegistry != nil {
 				c.JSON(http.StatusBadGateway, gin.H{"error": "plugin_store_registry_failed", "message": errRegistry.Error()})
 				return pluginstore.Source{}, pluginstore.Plugin{}, pluginstore.Client{}, false
 			}
-			plugin, okPlugin := registry.PluginByID(id)
+			var plugin pluginstore.Plugin
+			okPlugin := false
+			for _, candidate := range registryPlugins {
+				if candidate.ID == id {
+					plugin = candidate
+					okPlugin = true
+					break
+				}
+			}
 			if !okPlugin {
 				c.JSON(http.StatusNotFound, gin.H{"error": "plugin_not_found", "message": "plugin not found in registry source"})
 				return pluginstore.Source{}, pluginstore.Plugin{}, pluginstore.Client{}, false
@@ -664,14 +795,22 @@ func pluginAuthConfigured(source pluginstore.Source, plugin pluginstore.Plugin, 
 // Unresolved entries are left empty so callers can fall back gracefully.
 func (h *Handler) latestPluginVersions(ctx context.Context, client pluginstore.Client, plugins []pluginstore.Plugin) []string {
 	versions := make([]string, len(plugins))
+	workerCount := min(len(plugins), pluginReleaseWorkerLimit)
+	jobs := make(chan int)
 	var wg sync.WaitGroup
-	for index := range plugins {
+	for worker := 0; worker < workerCount; worker++ {
 		wg.Add(1)
-		go func(index int) {
+		go func() {
 			defer wg.Done()
-			versions[index] = h.latestPluginVersion(ctx, client, plugins[index])
-		}(index)
+			for index := range jobs {
+				versions[index] = h.latestPluginVersion(ctx, client, plugins[index])
+			}
+		}()
 	}
+	for index := range plugins {
+		jobs <- index
+	}
+	close(jobs)
 	wg.Wait()
 	return versions
 }
@@ -717,13 +856,25 @@ func (h *Handler) latestPluginVersion(ctx context.Context, client pluginstore.Cl
 	return version
 }
 
-func pluginLocalStatuses(pluginsEnabled bool, pluginsDir string, configs map[string]config.PluginInstanceConfig, host *pluginhost.Host) (map[string]pluginLocalStatus, error) {
+func pluginLocalStatuses(pluginsEnabled bool, pluginsDir string, configs map[string]config.PluginInstanceConfig, host *pluginhost.Host, selectedIDs map[string]struct{}) (map[string]pluginLocalStatus, error) {
 	statuses := map[string]pluginLocalStatus{}
-	files, errDiscover := pluginhost.DiscoverPluginFiles(pluginsDir, pluginStoreDesiredVersions(configs))
+	if len(selectedIDs) == 0 {
+		return statuses, nil
+	}
+	selectedConfigs := make(map[string]config.PluginInstanceConfig, len(selectedIDs))
+	for id := range selectedIDs {
+		if item, configured := configs[id]; configured {
+			selectedConfigs[id] = item
+		}
+	}
+	files, errDiscover := pluginhost.DiscoverPluginFiles(pluginsDir, pluginStoreDesiredVersions(selectedConfigs))
 	if errDiscover != nil {
 		return nil, errDiscover
 	}
 	for _, file := range files {
+		if _, selected := selectedIDs[file.ID]; !selected {
+			continue
+		}
 		status := statuses[file.ID]
 		status.Installed = true
 		status.Path = file.Path
@@ -733,7 +884,7 @@ func pluginLocalStatuses(pluginsEnabled bool, pluginsDir string, configs map[str
 		status.Enabled = true
 		statuses[file.ID] = status
 	}
-	for id, item := range configs {
+	for id, item := range selectedConfigs {
 		status := statuses[id]
 		status.Configured = true
 		status.Enabled = pluginInstanceEnabled(item)
@@ -742,11 +893,14 @@ func pluginLocalStatuses(pluginsEnabled bool, pluginsDir string, configs map[str
 	}
 	if host != nil {
 		for _, info := range host.RegisteredPlugins() {
+			if _, selected := selectedIDs[info.ID]; !selected {
+				continue
+			}
 			status := statuses[info.ID]
 			status.Installed = true
 			status.Registered = true
 			status.InstalledVersion = strings.TrimSpace(info.Metadata.Version)
-			if _, configured := configs[info.ID]; !configured && !status.Enabled {
+			if _, configured := selectedConfigs[info.ID]; !configured && !status.Enabled {
 				status.Enabled = false
 			}
 			statuses[info.ID] = status

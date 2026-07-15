@@ -6,10 +6,97 @@ import (
 	"html"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
+
+func TestServeManagementHTTPRejectsOversizedRequestBody(t *testing.T) {
+	called := false
+	host := newHostWithRecords(capabilityRecord{
+		id: "bounded-request",
+		plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{
+			ManagementAPI: &managementPluginDouble{routes: []pluginapi.ManagementRoute{{
+				Method: http.MethodPost,
+				Path:   "/plugins/bounded-request/run",
+				Handler: managementHandlerFunc(func(context.Context, pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
+					called = true
+					return pluginapi.ManagementResponse{}, nil
+				}),
+			}}},
+		}},
+	})
+	host.RegisterManagementRoutes(context.Background(), nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/v0/management/plugins/bounded-request/run", strings.NewReader(strings.Repeat("x", maxManagementBodyBytes+1)))
+	rec := httptest.NewRecorder()
+	if !host.ServeManagementHTTP(rec, req) {
+		t.Fatal("ServeManagementHTTP() = false, want true")
+	}
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusRequestEntityTooLarge)
+	}
+	if called {
+		t.Fatal("plugin handler was called for oversized request")
+	}
+}
+
+func TestServeManagementHTTPRejectsOversizedResponseBody(t *testing.T) {
+	host := newHostWithRecords(capabilityRecord{
+		id: "bounded-response",
+		plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{
+			ManagementAPI: &managementPluginDouble{routes: []pluginapi.ManagementRoute{{
+				Method: http.MethodGet,
+				Path:   "/plugins/bounded-response/run",
+				Handler: managementHandlerFunc(func(context.Context, pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
+					return pluginapi.ManagementResponse{Body: []byte(strings.Repeat("x", maxManagementReplyBytes+1))}, nil
+				}),
+			}}},
+		}},
+	})
+	host.RegisterManagementRoutes(context.Background(), nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/plugins/bounded-response/run", nil)
+	rec := httptest.NewRecorder()
+	if !host.ServeManagementHTTP(rec, req) {
+		t.Fatal("ServeManagementHTTP() = false, want true")
+	}
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadGateway)
+	}
+}
+
+func TestManagementRouteInventoryReturnsSortedRuntimeRoutes(t *testing.T) {
+	host := newHostWithRecords(capabilityRecord{
+		id:      "inventory-plugin",
+		version: "1.2.3",
+		plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{
+			ManagementAPI: &managementPluginDouble{routes: []pluginapi.ManagementRoute{
+				{Method: http.MethodPost, Path: "/plugins/inventory/z", Handler: managementHandlerFunc(func(context.Context, pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
+					return pluginapi.ManagementResponse{}, nil
+				})},
+				{Method: http.MethodGet, Path: "/plugins/inventory/a", Handler: managementHandlerFunc(func(context.Context, pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
+					return pluginapi.ManagementResponse{}, nil
+				})},
+			}},
+		}},
+	})
+	host.RegisterManagementRoutes(context.Background(), nil)
+
+	routes := host.ManagementRouteInventory()
+	if len(routes) != 2 {
+		t.Fatalf("routes=%#v", routes)
+	}
+	if routes[0].Path != "/v0/management/plugins/inventory/a" || routes[1].Path != "/v0/management/plugins/inventory/z" {
+		t.Fatalf("routes not sorted: %#v", routes)
+	}
+	for _, route := range routes {
+		if route.PluginID != "inventory-plugin" || route.Version != "1.2.3" {
+			t.Fatalf("unexpected route identity: %#v", route)
+		}
+	}
+}
 
 func TestRegisterManagementRoutesSkipsReservedAndUsesPriority(t *testing.T) {
 	high := &managementPluginDouble{

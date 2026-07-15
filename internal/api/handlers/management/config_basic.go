@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -19,16 +20,221 @@ import (
 )
 
 const (
-	latestReleaseURL       = "https://api.github.com/repos/router-for-me/CLIProxyAPI/releases/latest"
-	latestReleaseUserAgent = "CLIProxyAPI"
+	latestReleaseURL             = "https://api.github.com/repos/router-for-me/CLIProxyAPI/releases/latest"
+	latestReleaseUserAgent       = "CLIProxyAPI"
+	maxLatestReleaseBytes        = 256 * 1024
+	maxConfigYAMLBytes           = 16 * 1024 * 1024
+	maxConfigFullResponseBytes   = 32 * 1024 * 1024
+	maxConfigUIResponseBytes     = 2 * 1024 * 1024
+	maxConfigUICollectionEntries = 200
 )
 
 func (h *Handler) GetConfig(c *gin.Context) {
 	if h == nil || h.cfg == nil {
-		c.JSON(200, gin.H{})
+		c.JSON(http.StatusOK, gin.H{})
 		return
 	}
-	c.JSON(200, new(*h.cfg))
+	view := strings.ToLower(strings.TrimSpace(c.Query("view")))
+	if view == "" {
+		view = "full"
+	}
+	if view != "full" && view != "ui" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_view", "message": "view must be full or ui"})
+		return
+	}
+
+	h.mu.Lock()
+	var (
+		data []byte
+		err  error
+	)
+	if view == "ui" {
+		data, err = h.marshalUIConfigLocked()
+	} else {
+		data, err = json.Marshal(h.cfg)
+	}
+	h.mu.Unlock()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "encode_failed", "message": err.Error()})
+		return
+	}
+	maxBytes := int64(maxConfigFullResponseBytes)
+	if view == "ui" {
+		maxBytes = maxConfigUIResponseBytes
+	}
+	if int64(len(data)) > maxBytes {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{
+			"error":   "response_too_large",
+			"message": fmt.Sprintf("config %s response must not exceed %d bytes", view, maxBytes),
+		})
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.Header("X-Config-View", view)
+	c.Data(http.StatusOK, "application/json; charset=utf-8", data)
+}
+
+// marshalUIConfigLocked returns the bounded bootstrap projection used by the
+// management UI. Large editable collections have dedicated paginated APIs;
+// this view carries only the first lightweight identity records needed for
+// navigation, labels, and compatibility while reporting every omitted total.
+// The caller must hold h.mu.
+func (h *Handler) marshalUIConfigLocked() ([]byte, error) {
+	snapshot := *h.cfg
+	snapshot.SDKConfig = h.cfg.SDKConfig
+	snapshot.APIKeys = nil
+	snapshot.GeminiKey = nil
+	snapshot.InteractionsKey = nil
+	snapshot.CodexKey = nil
+	snapshot.XAIKey = nil
+	snapshot.ClaudeKey = nil
+	snapshot.VertexCompatAPIKey = nil
+	snapshot.OpenAICompatibility = nil
+	snapshot.OAuthExcludedModels = nil
+	snapshot.OAuthModelAlias = nil
+	snapshot.Payload = config.PayloadConfig{}
+	snapshot.Plugins = h.cfg.Plugins
+	snapshot.Plugins.StoreSources = nil
+	snapshot.Plugins.StoreAuth = nil
+	snapshot.Plugins.Configs = nil
+
+	base, err := json.Marshal(&snapshot)
+	if err != nil {
+		return nil, err
+	}
+	body := map[string]any{}
+	if err = json.Unmarshal(base, &body); err != nil {
+		return nil, err
+	}
+	delete(body, "payload")
+	if plugins, ok := body["plugins"].(map[string]any); ok {
+		delete(plugins, "store-sources")
+		delete(plugins, "store-auth")
+		delete(plugins, "configs")
+	}
+
+	totals := map[string]int{
+		"api-keys":             len(h.cfg.APIKeys),
+		"gemini-api-key":       len(h.cfg.GeminiKey),
+		"interactions-api-key": len(h.cfg.InteractionsKey),
+		"codex-api-key":        len(h.cfg.CodexKey),
+		"xai-api-key":          len(h.cfg.XAIKey),
+		"claude-api-key":       len(h.cfg.ClaudeKey),
+		"vertex-api-key":       len(h.cfg.VertexCompatAPIKey),
+		"openai-compatibility": len(h.cfg.OpenAICompatibility),
+	}
+	truncated := make([]string, 0, len(totals))
+	for key, total := range totals {
+		if total > maxConfigUICollectionEntries {
+			truncated = append(truncated, key)
+		}
+	}
+	sort.Strings(truncated)
+
+	body["api-keys"] = append([]string(nil), h.cfg.APIKeys[:boundedConfigCollectionLength(len(h.cfg.APIKeys))]...)
+	body["gemini-api-key"] = projectGeminiConfigIdentities(h.cfg.GeminiKey)
+	body["interactions-api-key"] = projectGeminiConfigIdentities(h.cfg.InteractionsKey)
+	body["codex-api-key"] = projectCodexConfigIdentities(h.cfg.CodexKey)
+	body["xai-api-key"] = projectCodexConfigIdentities(h.cfg.XAIKey)
+	body["claude-api-key"] = projectClaudeConfigIdentities(h.cfg.ClaudeKey)
+	body["vertex-api-key"] = projectVertexConfigIdentities(h.cfg.VertexCompatAPIKey)
+	body["openai-compatibility"] = projectOpenAIConfigIdentities(h.cfg.OpenAICompatibility)
+	body["collection_totals"] = totals
+	body["collections_truncated"] = truncated
+	body["projection"] = "ui"
+
+	return json.Marshal(body)
+}
+
+func boundedConfigCollectionLength(total int) int {
+	if total > maxConfigUICollectionEntries {
+		return maxConfigUICollectionEntries
+	}
+	return total
+}
+
+func projectProviderConfigIdentity(apiKey, prefix, baseURL string, excludedModels []string, disableCooling bool) gin.H {
+	item := gin.H{"api-key": apiKey}
+	if prefix != "" {
+		item["prefix"] = prefix
+	}
+	if baseURL != "" {
+		item["base-url"] = baseURL
+	}
+	if len(excludedModels) > 0 {
+		item["excluded-models"] = append([]string(nil), excludedModels...)
+	}
+	if disableCooling {
+		item["disable-cooling"] = true
+	}
+	return item
+}
+
+func projectGeminiConfigIdentities(items []config.GeminiKey) []gin.H {
+	items = items[:boundedConfigCollectionLength(len(items))]
+	out := make([]gin.H, 0, len(items))
+	for i := range items {
+		item := items[i]
+		out = append(out, projectProviderConfigIdentity(item.APIKey, item.Prefix, item.BaseURL, item.ExcludedModels, item.DisableCooling))
+	}
+	return out
+}
+
+func projectCodexConfigIdentities(items []config.CodexKey) []gin.H {
+	items = items[:boundedConfigCollectionLength(len(items))]
+	out := make([]gin.H, 0, len(items))
+	for i := range items {
+		item := items[i]
+		out = append(out, projectProviderConfigIdentity(item.APIKey, item.Prefix, item.BaseURL, item.ExcludedModels, item.DisableCooling))
+	}
+	return out
+}
+
+func projectClaudeConfigIdentities(items []config.ClaudeKey) []gin.H {
+	items = items[:boundedConfigCollectionLength(len(items))]
+	out := make([]gin.H, 0, len(items))
+	for i := range items {
+		item := items[i]
+		out = append(out, projectProviderConfigIdentity(item.APIKey, item.Prefix, item.BaseURL, item.ExcludedModels, item.DisableCooling))
+	}
+	return out
+}
+
+func projectVertexConfigIdentities(items []config.VertexCompatKey) []gin.H {
+	items = items[:boundedConfigCollectionLength(len(items))]
+	out := make([]gin.H, 0, len(items))
+	for i := range items {
+		item := items[i]
+		out = append(out, projectProviderConfigIdentity(item.APIKey, item.Prefix, item.BaseURL, item.ExcludedModels, false))
+	}
+	return out
+}
+
+func projectOpenAIConfigIdentities(items []config.OpenAICompatibility) []gin.H {
+	items = items[:boundedConfigCollectionLength(len(items))]
+	out := make([]gin.H, 0, len(items))
+	for i := range items {
+		item := items[i]
+		entry := gin.H{
+			"name":            item.Name,
+			"base-url":        item.BaseURL,
+			"disabled":        item.Disabled,
+			"disable-cooling": item.DisableCooling,
+		}
+		if item.Prefix != "" {
+			entry["prefix"] = item.Prefix
+		}
+		keys := item.APIKeyEntries[:boundedConfigCollectionLength(len(item.APIKeyEntries))]
+		keyEntries := make([]gin.H, 0, len(keys))
+		for j := range keys {
+			keyEntries = append(keyEntries, gin.H{"api-key": keys[j].APIKey})
+		}
+		entry["api-key-entries"] = keyEntries
+		entry["api-key-entries-total"] = len(item.APIKeyEntries)
+		entry["api-key-entries-truncated"] = len(item.APIKeyEntries) > len(keys)
+		out = append(out, entry)
+	}
+	return out
 }
 
 type releaseInfo struct {
@@ -73,12 +279,15 @@ func (h *Handler) GetLatestVersion(c *gin.Context) {
 		return
 	}
 
-	var info releaseInfo
-	if errDecode := json.NewDecoder(resp.Body).Decode(&info); errDecode != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "decode_failed", "message": errDecode.Error()})
+	info, errRead := readLatestReleaseInfo(resp.Body)
+	if errRead != nil {
+		if isManagementRequestTooLarge(errRead) {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "response_too_large", "message": fmt.Sprintf("latest release response exceeds %d bytes", maxLatestReleaseBytes)})
+			return
+		}
+		c.JSON(http.StatusBadGateway, gin.H{"error": "read_failed", "message": errRead.Error()})
 		return
 	}
-
 	version := strings.TrimSpace(info.TagName)
 	if version == "" {
 		version = strings.TrimSpace(info.Name)
@@ -89,6 +298,18 @@ func (h *Handler) GetLatestVersion(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"latest-version": version})
+}
+
+func readLatestReleaseInfo(body io.Reader) (releaseInfo, error) {
+	data, err := readManagementResponseBody(body, maxLatestReleaseBytes)
+	if err != nil {
+		return releaseInfo{}, err
+	}
+	var info releaseInfo
+	if err := json.Unmarshal(data, &info); err != nil {
+		return releaseInfo{}, err
+	}
+	return info, nil
 }
 
 func WriteConfig(path string, data []byte) error {
@@ -109,8 +330,15 @@ func WriteConfig(path string, data []byte) error {
 }
 
 func (h *Handler) PutConfigYAML(c *gin.Context) {
-	body, err := io.ReadAll(c.Request.Body)
+	body, err := readManagementRequestBody(c, maxConfigYAMLBytes)
 	if err != nil {
+		if isManagementRequestTooLarge(err) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{
+				"error":   "request_too_large",
+				"message": fmt.Sprintf("config YAML must not exceed %d bytes", maxConfigYAMLBytes),
+			})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_yaml", "message": "cannot read request body"})
 		return
 	}
@@ -165,7 +393,7 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 // GetConfigYAML returns the raw config.yaml file bytes without re-encoding.
 // It preserves comments and original formatting/styles.
 func (h *Handler) GetConfigYAML(c *gin.Context) {
-	data, err := os.ReadFile(h.configFilePath)
+	file, err := os.Open(h.configFilePath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "not_found", "message": "config file not found"})
@@ -174,11 +402,20 @@ func (h *Handler) GetConfigYAML(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "read_failed", "message": err.Error()})
 		return
 	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "stat_failed", "message": err.Error()})
+		return
+	}
+	if info.Size() > maxConfigYAMLBytes {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "response_too_large", "message": fmt.Sprintf("config YAML must not exceed %d bytes", maxConfigYAMLBytes)})
+		return
+	}
 	c.Header("Content-Type", "application/yaml; charset=utf-8")
 	c.Header("Cache-Control", "no-store")
 	c.Header("X-Content-Type-Options", "nosniff")
-	// Write raw bytes as-is
-	_, _ = c.Writer.Write(data)
+	c.DataFromReader(http.StatusOK, info.Size(), "application/yaml; charset=utf-8", file, nil)
 }
 
 // Debug

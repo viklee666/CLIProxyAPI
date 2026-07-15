@@ -357,6 +357,7 @@ func TestListAuthFilesQueryReturnsOnlyStatusesUpdatedAfterCursor(t *testing.T) {
 		Files        []map[string]any `json:"files"`
 		Total        int              `json:"total"`
 		ServerTimeMS int64            `json:"server_time_ms"`
+		SnapshotETag string           `json:"snapshot_etag"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode response: %v", err)
@@ -366,5 +367,107 @@ func TestListAuthFilesQueryReturnsOnlyStatusesUpdatedAfterCursor(t *testing.T) {
 	}
 	if response.ServerTimeMS <= cursor.UnixMilli() {
 		t.Fatalf("server time = %d, cursor = %d", response.ServerTimeMS, cursor.UnixMilli())
+	}
+	if response.SnapshotETag == "" {
+		t.Fatal("snapshot etag is empty")
+	}
+}
+
+func TestAuthFileSnapshotETagIsOrderIndependentAndIdentitySensitive(t *testing.T) {
+	t.Parallel()
+
+	first := authFileCandidate{
+		name:      "one.json",
+		provider:  "codex",
+		planType:  "plus",
+		authIndex: "auth-one",
+		status:    "active",
+	}
+	second := authFileCandidate{
+		name:      "two.json",
+		provider:  "gemini",
+		planType:  "pro",
+		authIndex: "auth-two",
+	}
+	base := authFileSnapshotETag([]authFileCandidate{first, second})
+	if base == "" {
+		t.Fatal("snapshot etag is empty")
+	}
+	if reordered := authFileSnapshotETag([]authFileCandidate{second, first}); reordered != base {
+		t.Fatalf("etag changed after reorder: %q != %q", reordered, base)
+	}
+	first.status = "disabled"
+	if statusOnly := authFileSnapshotETag([]authFileCandidate{first, second}); statusOnly != base {
+		t.Fatalf("status-only change altered identity etag: %q != %q", statusOnly, base)
+	}
+	first.planType = "team"
+	if changed := authFileSnapshotETag([]authFileCandidate{first, second}); changed == base {
+		t.Fatal("plan identity change did not alter etag")
+	}
+}
+
+func TestListAuthFilesWithoutQueryUsesBoundedDefaultPage(t *testing.T) {
+	manager := coreauth.NewManager(nil, nil, nil)
+	for i := 0; i < defaultAuthFilesPageSize+25; i++ {
+		name := fmt.Sprintf("auth-%03d.json", i)
+		if _, errRegister := manager.Register(context.Background(), &coreauth.Auth{
+			ID:       name,
+			FileName: name,
+			Provider: "codex",
+			Attributes: map[string]string{
+				"path": filepath.Join(t.TempDir(), name),
+			},
+			UpdatedAt: time.Now(),
+		}); errRegister != nil {
+			t.Fatalf("register %s: %v", name, errRegister)
+		}
+	}
+	h := NewHandlerWithoutConfigFilePath(nil, manager)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v0/management/auth-files", nil)
+
+	h.ListAuthFiles(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Files    []map[string]any `json:"files"`
+		Total    int              `json:"total"`
+		PageSize int              `json:"page_size"`
+		HasMore  bool             `json:"has_more"`
+	}
+	if errDecode := json.Unmarshal(recorder.Body.Bytes(), &response); errDecode != nil {
+		t.Fatalf("decode response: %v", errDecode)
+	}
+	if len(response.Files) != defaultAuthFilesPageSize || response.Total != defaultAuthFilesPageSize+25 || response.PageSize != defaultAuthFilesPageSize || !response.HasMore {
+		t.Fatalf("unexpected bounded response: %#v", response)
+	}
+}
+
+func TestCachedAuthFileCandidatesReuseSnapshotUntilInvalidated(t *testing.T) {
+	manager := coreauth.NewManager(nil, nil, nil)
+	if _, errRegister := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "cached.json",
+		FileName: "cached.json",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"path": filepath.Join(t.TempDir(), "cached.json"),
+		},
+	}); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+	h := NewHandlerWithoutConfigFilePath(nil, manager)
+	now := time.Now()
+	first, firstETag := h.cachedAuthFileCandidatesFromManager(now)
+	second, secondETag := h.cachedAuthFileCandidatesFromManager(now.Add(time.Second))
+	if len(first) != 1 || len(second) != 1 || first[0].auth != second[0].auth || firstETag != secondETag {
+		t.Fatalf("candidate cache was not reused: first=%#v second=%#v", first, second)
+	}
+	h.invalidateAuthFileCandidateCatalog()
+	third, _ := h.cachedAuthFileCandidatesFromManager(now.Add(time.Second))
+	if len(third) != 1 || third[0].auth == first[0].auth {
+		t.Fatalf("candidate cache was not rebuilt after invalidation")
 	}
 }

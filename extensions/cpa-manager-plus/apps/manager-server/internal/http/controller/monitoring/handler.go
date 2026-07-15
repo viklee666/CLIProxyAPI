@@ -1,8 +1,8 @@
 package monitoring
 
 import (
-	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -41,8 +41,7 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req monitoringsvc.Request
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.Error(w, http.StatusBadRequest, err)
+	if !response.DecodeJSON(w, r, &req, response.JSONDecodeOptions{}) {
 		return
 	}
 	if err := validateRequest(req); err != nil {
@@ -64,10 +63,7 @@ func (h *Handler) handleAccountHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req monitoringsvc.AccountHistoryRequest
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&req); err != nil {
-		response.Error(w, http.StatusBadRequest, err)
+	if !response.DecodeJSON(w, r, &req, response.JSONDecodeOptions{DisallowUnknownFields: true}) {
 		return
 	}
 	if err := validateAccountHistoryRequest(req); err != nil {
@@ -98,6 +94,14 @@ func (h *Handler) handleHeaderSnapshots(w http.ResponseWriter, r *http.Request) 
 		response.Error(w, http.StatusBadRequest, err)
 		return
 	}
+	if days > monitoringsvc.MaxHeaderSnapshotDays {
+		response.Error(w, http.StatusBadRequest, fmt.Errorf("days must be less than or equal to %d", monitoringsvc.MaxHeaderSnapshotDays))
+		return
+	}
+	if limit > monitoringsvc.MaxHeaderSnapshotLimit {
+		response.Error(w, http.StatusBadRequest, fmt.Errorf("limit must be less than or equal to %d", monitoringsvc.MaxHeaderSnapshotLimit))
+		return
+	}
 	result, err := h.App.MonitoringService.HeaderSnapshots(r.Context(), monitoringsvc.HeaderSnapshotsRequest{
 		Days:  days,
 		Limit: limit,
@@ -116,11 +120,27 @@ func validateRequest(req monitoringsvc.Request) error {
 	if req.Include.EventsPage != nil && req.Include.EventsPage.Limit > 50000 {
 		return errors.New("events_page.limit must be less than or equal to 50000")
 	}
-	if req.Include.AccountStatsLimit > 50000 {
-		return errors.New("account_stats_limit must be less than or equal to 50000")
+	if req.Include.AccountStatsLimit > monitoringsvc.MaxAggregatePageLimit {
+		return errors.New("account_stats_limit must be less than or equal to 200")
 	}
-	if req.Include.APIKeyStatsLimit > 50000 {
-		return errors.New("api_key_stats_limit must be less than or equal to 50000")
+	if req.Include.APIKeyStatsLimit > monitoringsvc.MaxAggregatePageLimit {
+		return errors.New("api_key_stats_limit must be less than or equal to 200")
+	}
+	for name, page := range map[string]*monitoringsvc.AggregatePage{
+		"model_stats_page":      req.Include.ModelStatsPage,
+		"account_stats_page":    req.Include.AccountStatsPage,
+		"credential_stats_page": req.Include.CredentialStatsPage,
+		"api_key_stats_page":    req.Include.APIKeyStatsPage,
+	} {
+		if page == nil {
+			continue
+		}
+		if page.Page < 0 {
+			return fmt.Errorf("%s.page must be greater than or equal to 0", name)
+		}
+		if page.Limit < 0 || page.Limit > monitoringsvc.MaxAggregatePageLimit {
+			return fmt.Errorf("%s.limit must be between 0 and 200", name)
+		}
 	}
 	return nil
 }
@@ -129,8 +149,8 @@ func validateAccountHistoryRequest(req monitoringsvc.AccountHistoryRequest) erro
 	if len(req.Accounts) == 0 {
 		return errors.New("accounts are required")
 	}
-	if len(req.Accounts) > 200 {
-		return errors.New("accounts must be less than or equal to 200")
+	if len(req.Accounts) > monitoringsvc.MaxAccountHistoryTargets {
+		return fmt.Errorf("accounts must be less than or equal to %d", monitoringsvc.MaxAccountHistoryTargets)
 	}
 	return nil
 }

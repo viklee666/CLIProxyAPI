@@ -14,6 +14,7 @@ type Repository interface {
 	UpsertActive(ctx context.Context, cooldown model.QuotaCooldownUpsert) (model.QuotaCooldown, error)
 	ListDue(ctx context.Context, nowMS int64, limit int) ([]model.QuotaCooldown, error)
 	ListActive(ctx context.Context) ([]model.QuotaCooldown, error)
+	ListActivePage(ctx context.Context, query ListQuery) (ListPage, error)
 	MarkRecovered(ctx context.Context, id int64, recoveredAtMS int64) error
 	MarkSkipped(ctx context.Context, id int64, reason string) error
 	RecordFailure(ctx context.Context, id int64, reason string) error

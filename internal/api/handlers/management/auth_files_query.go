@@ -2,6 +2,8 @@ package management
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"os"
@@ -20,7 +22,14 @@ import (
 const (
 	defaultAuthFilesPageSize = 50
 	maxAuthFilesPageSize     = 500
+	authFileCatalogTTL       = 2 * time.Second
 )
+
+type authFileCandidateCatalog struct {
+	expiresAt    time.Time
+	candidates   []authFileCandidate
+	snapshotETag string
+}
 
 type authFileQuery struct {
 	view      string
@@ -105,7 +114,9 @@ func parseAuthFileQuery(c *gin.Context) (authFileQuery, error) {
 	if !hasPageSize {
 		rawPageSize, hasPageSize = c.GetQuery("limit")
 	}
-	q.paged = hasPage || hasPageSize
+	// Every list response is bounded. Legacy callers that omitted pagination now
+	// receive the first default-sized page plus total/has_more metadata.
+	q.paged = true
 	if hasPage {
 		parsed, err := strconv.Atoi(strings.TrimSpace(rawPage))
 		if err != nil || parsed <= 0 {
@@ -229,8 +240,16 @@ func (h *Handler) listAuthFilesQuery(c *gin.Context) {
 	responseTime := time.Now()
 
 	var candidates []authFileCandidate
+	snapshotETag := ""
 	if h.authManager != nil {
-		candidates = h.authFileCandidatesFromManager()
+		if q.updatedAt.IsZero() {
+			candidates, snapshotETag = h.cachedAuthFileCandidatesFromManager(responseTime)
+		} else {
+			// Incremental status polling must observe the live manager snapshot. A
+			// short-lived catalog could otherwise advance server_time_ms past an
+			// update that happened after the catalog was built and miss it forever.
+			candidates = h.authFileCandidatesFromManager()
+		}
 	} else {
 		candidates, err = h.authFileCandidatesFromDisk()
 		if err != nil {
@@ -295,6 +314,12 @@ func (h *Handler) listAuthFilesQuery(c *gin.Context) {
 		"facets":         gin.H{"providers": providerCounts, "plan_types": planTypeCounts},
 		"server_time_ms": responseTime.UnixMilli(),
 	}
+	if q.view == "snapshot" {
+		if snapshotETag == "" {
+			snapshotETag = authFileSnapshotETag(candidates)
+		}
+		response["snapshot_etag"] = snapshotETag
+	}
 	if q.paged {
 		totalPages := 0
 		if total > 0 {
@@ -307,6 +332,54 @@ func (h *Handler) listAuthFilesQuery(c *gin.Context) {
 	}
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, response)
+}
+
+func authFileSnapshotETag(candidates []authFileCandidate) string {
+	identities := make([]string, 0, len(candidates))
+	for i := range candidates {
+		candidate := candidates[i]
+		identities = append(identities, strings.Join([]string{
+			strings.ToLower(strings.TrimSpace(candidate.authIndex)),
+			strings.ToLower(strings.TrimSpace(candidate.name)),
+			strings.ToLower(strings.TrimSpace(candidate.provider)),
+			strings.ToLower(strings.TrimSpace(candidate.planType)),
+		}, "\x00"))
+	}
+	sort.Strings(identities)
+	digest := sha256.New()
+	for _, identity := range identities {
+		_, _ = digest.Write([]byte(identity))
+		_, _ = digest.Write([]byte{'\n'})
+	}
+	return hex.EncodeToString(digest.Sum(nil))
+}
+
+func (h *Handler) cachedAuthFileCandidatesFromManager(now time.Time) ([]authFileCandidate, string) {
+	if h == nil || h.authManager == nil {
+		return nil, ""
+	}
+	h.authFileCatalogMu.Lock()
+	defer h.authFileCatalogMu.Unlock()
+	if now.Before(h.authFileCatalog.expiresAt) && h.authFileCatalog.candidates != nil {
+		return append([]authFileCandidate(nil), h.authFileCatalog.candidates...), h.authFileCatalog.snapshotETag
+	}
+	candidates := h.authFileCandidatesFromManager()
+	etag := authFileSnapshotETag(candidates)
+	h.authFileCatalog = authFileCandidateCatalog{
+		expiresAt:    now.Add(authFileCatalogTTL),
+		candidates:   append([]authFileCandidate(nil), candidates...),
+		snapshotETag: etag,
+	}
+	return candidates, etag
+}
+
+func (h *Handler) invalidateAuthFileCandidateCatalog() {
+	if h == nil {
+		return
+	}
+	h.authFileCatalogMu.Lock()
+	h.authFileCatalog = authFileCandidateCatalog{}
+	h.authFileCatalogMu.Unlock()
 }
 
 func (h *Handler) authFileCandidatesFromManager() []authFileCandidate {
@@ -388,6 +461,7 @@ func (h *Handler) authFileCandidatesFromDisk() ([]authFileCandidate, error) {
 			planType = strings.ToLower(strings.TrimSpace(gjson.GetBytes(data, "planType").String()))
 		}
 		email := strings.TrimSpace(gjson.GetBytes(data, "email").String())
+		projectID := strings.TrimSpace(gjson.GetBytes(data, "project_id").String())
 		note := strings.TrimSpace(gjson.GetBytes(data, "note").String())
 		priority := int(gjson.GetBytes(data, "priority").Int())
 		disabled := gjson.GetBytes(data, "disabled").Bool()
@@ -404,11 +478,26 @@ func (h *Handler) authFileCandidatesFromDisk() ([]authFileCandidate, error) {
 		if note != "" {
 			fileEntry["note"] = note
 		}
+		if projectID != "" {
+			fileEntry["project_id"] = projectID
+		}
 		if priority != 0 {
 			fileEntry["priority"] = priority
 		}
 		if planType != "" {
 			fileEntry["plan_type"] = planType
+		}
+		if websockets := gjson.GetBytes(data, "websockets"); websockets.Exists() {
+			switch websockets.Type {
+			case gjson.True:
+				fileEntry["websockets"] = true
+			case gjson.False:
+				fileEntry["websockets"] = false
+			case gjson.String:
+				if parsed, errParse := strconv.ParseBool(strings.TrimSpace(websockets.String())); errParse == nil {
+					fileEntry["websockets"] = parsed
+				}
+			}
 		}
 		result = append(result, authFileCandidate{
 			entry:     fileEntry,

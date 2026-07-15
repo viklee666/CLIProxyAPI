@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/accountaction"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
 )
 
@@ -86,5 +87,38 @@ func TestUpsertMergesPendingCandidateByAuthFileAndAction(t *testing.T) {
 	}
 	if third.ID == first.ID || third.HitCount != 1 || third.Status != model.AccountActionStatusPending {
 		t.Fatalf("third candidate = %#v", third)
+	}
+}
+
+func TestListPageFiltersSearchesAndCountsBeforeLimit(t *testing.T) {
+	ctx := context.Background()
+	cfg := testutil.NewConfig(t)
+	st := testutil.NewStore(t, cfg)
+	repo := st.AccountActions
+
+	for _, input := range []model.AccountActionCandidateUpsert{
+		{ActionType: model.AccountActionTypeDelete, AuthFileName: "alpha.json", AccountSnapshot: "alpha@example.com", Reason: "token revoked", EvidenceJSON: `{"headerTraceId":"trace-alpha"}`, SeenAtMS: 1000},
+		{ActionType: model.AccountActionTypeReauth, AuthFileName: "beta.json", AccountSnapshot: "beta@example.com", Reason: "reauth required", SeenAtMS: 2000},
+		{ActionType: model.AccountActionTypeReview, AuthFileName: "gamma.json", AccountSnapshot: "gamma@example.com", Reason: "manual review", SeenAtMS: 3000},
+	} {
+		if _, err := repo.Upsert(ctx, input); err != nil {
+			t.Fatalf("upsert %s: %v", input.AuthFileName, err)
+		}
+	}
+
+	page, err := repo.ListPage(ctx, accountaction.ListQuery{Status: model.AccountActionStatusPending, Page: 2, PageSize: 1})
+	if err != nil {
+		t.Fatalf("list page: %v", err)
+	}
+	if page.Total != 3 || len(page.Items) != 1 || page.Items[0].AuthFileName != "beta.json" {
+		t.Fatalf("page = %#v", page)
+	}
+
+	searched, err := repo.ListPage(ctx, accountaction.ListQuery{Status: "all", Search: "trace-alpha", Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("search page: %v", err)
+	}
+	if searched.Total != 1 || len(searched.Items) != 1 || searched.Items[0].AuthFileName != "alpha.json" {
+		t.Fatalf("searched = %#v", searched)
 	}
 }

@@ -16,7 +16,7 @@ vi.mock('./client', () => ({
   },
 }));
 
-import { logsApi, normalizeLogsResponse } from './logs';
+import { logsApi, normalizeErrorLogsResponse, normalizeLogsResponse } from './logs';
 
 beforeEach(() => {
   mocks.get.mockReset();
@@ -68,6 +68,37 @@ describe('logs API', () => {
 
     expect(mocks.get).toHaveBeenCalledWith('/logs', {
       params: { cursor: 'cursor-1', after: 123, limit: 100 },
+      timeout: expect.any(Number),
+    });
+  });
+
+  it('normalizes paged error-log responses', () => {
+    expect(
+      normalizeErrorLogsResponse({
+        files: [{ name: 'error-one.log', size: '12', modified: 34 }],
+        total: '5',
+        page: 2,
+        page_size: 1,
+        total_pages: 5,
+        has_more: true,
+      })
+    ).toEqual({
+      files: [{ name: 'error-one.log', size: 12, modified: 34 }],
+      total: 5,
+      page: 2,
+      page_size: 1,
+      total_pages: 5,
+      has_more: true,
+    });
+  });
+
+  it('passes pagination and count view when fetching error logs', async () => {
+    mocks.get.mockResolvedValue({ files: [], total: 12 });
+
+    await logsApi.fetchErrorLogs({ page: 2, pageSize: 50, view: 'count' });
+
+    expect(mocks.get).toHaveBeenCalledWith('/request-error-logs', {
+      params: { page: 2, page_size: 50, search: undefined, view: 'count' },
       timeout: expect.any(Number),
     });
   });

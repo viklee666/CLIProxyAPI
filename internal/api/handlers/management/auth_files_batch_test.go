@@ -1,7 +1,9 @@
 package management
 
 import (
+	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/json"
 	"mime/multipart"
 	"net/http"
@@ -189,6 +191,126 @@ func TestDeleteAuthFile_BatchQuery(t *testing.T) {
 	for _, name := range files {
 		if _, err := os.Stat(filepath.Join(authDir, name)); !os.IsNotExist(err) {
 			t.Fatalf("expected auth file %s to be removed, stat err: %v", name, err)
+		}
+	}
+}
+
+func TestPatchAuthFileStatusBatchReturnsPartialResults(t *testing.T) {
+	manager := coreauth.NewManager(&memoryAuthStore{}, nil, nil)
+	for _, auth := range []*coreauth.Auth{
+		{ID: "alpha.json", FileName: "alpha.json", Index: "auth-a", Provider: "codex", Metadata: map[string]any{"type": "codex"}},
+		{ID: "beta.json", FileName: "beta.json", Index: "auth-b", Provider: "claude", Metadata: map[string]any{"type": "claude"}},
+	} {
+		if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+			t.Fatalf("register auth: %v", errRegister)
+		}
+	}
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
+
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPatch, "/v0/management/auth-files/status/batch", bytes.NewBufferString(`{
+		"items":[{"name":"alpha.json"},{"name":"beta.json"},{"name":"missing.json"}],
+		"disabled":true
+	}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	h.PatchAuthFileStatusBatch(ctx)
+
+	if rec.Code != http.StatusMultiStatus {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusMultiStatus, rec.Body.String())
+	}
+	for _, id := range []string{"alpha.json", "beta.json"} {
+		auth, ok := manager.GetByID(id)
+		if !ok || auth == nil || !auth.Disabled {
+			t.Fatalf("auth %s was not disabled: %#v", id, auth)
+		}
+	}
+	var payload struct {
+		Updated int              `json:"updated"`
+		Failed  []map[string]any `json:"failed"`
+	}
+	if errDecode := json.Unmarshal(rec.Body.Bytes(), &payload); errDecode != nil {
+		t.Fatalf("decode response: %v", errDecode)
+	}
+	if payload.Updated != 2 || len(payload.Failed) != 1 {
+		t.Fatalf("unexpected response: %#v", payload)
+	}
+}
+
+func TestPatchAuthFileFieldsBatchUpdatesManyTargets(t *testing.T) {
+	manager := coreauth.NewManager(&memoryAuthStore{}, nil, nil)
+	for _, auth := range []*coreauth.Auth{
+		{ID: "alpha.json", FileName: "alpha.json", Index: "auth-a", Provider: "codex", Metadata: map[string]any{"type": "codex"}},
+		{ID: "beta.json", FileName: "beta.json", Index: "auth-b", Provider: "claude", Metadata: map[string]any{"type": "claude"}},
+	} {
+		if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+			t.Fatalf("register auth: %v", errRegister)
+		}
+	}
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
+
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPatch, "/v0/management/auth-files/fields/batch", bytes.NewBufferString(`{
+		"items":[{"name":"alpha.json"},{"name":"beta.json","auth_indices":["auth-b"]}],
+		"fields":{"prefix":"team-a","priority":7,"websockets":false}
+	}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	h.PatchAuthFileFieldsBatch(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	for _, id := range []string{"alpha.json", "beta.json"} {
+		auth, ok := manager.GetByID(id)
+		if !ok || auth == nil {
+			t.Fatalf("auth %s missing", id)
+		}
+		if auth.Prefix != "team-a" || auth.Attributes["priority"] != "7" || auth.Attributes["websockets"] != "false" {
+			t.Fatalf("auth %s fields not patched: %#v", id, auth)
+		}
+	}
+}
+
+func TestDownloadAuthFilesBatchStreamsZipAndFailureManifest(t *testing.T) {
+	authDir := t.TempDir()
+	for name, content := range map[string]string{
+		"alpha.json": `{"type":"codex","email":"alpha@example.com"}`,
+		"beta.json":  `{"type":"claude","email":"beta@example.com"}`,
+	} {
+		if errWrite := os.WriteFile(filepath.Join(authDir, name), []byte(content), 0o600); errWrite != nil {
+			t.Fatalf("write %s: %v", name, errWrite)
+		}
+	}
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, nil)
+
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v0/management/auth-files/download", bytes.NewBufferString(`{
+		"names":["alpha.json","beta.json","missing.json"]
+	}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	h.DownloadAuthFilesBatch(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if rec.Header().Get("X-Auth-Files-Included") != "2" || rec.Header().Get("X-Auth-Files-Failed") != "1" {
+		t.Fatalf("unexpected count headers: %#v", rec.Header())
+	}
+	reader, errZip := zip.NewReader(bytes.NewReader(rec.Body.Bytes()), int64(rec.Body.Len()))
+	if errZip != nil {
+		t.Fatalf("open zip: %v", errZip)
+	}
+	wantEntries := map[string]bool{"alpha.json": false, "beta.json": false, "_errors.json": false}
+	for _, file := range reader.File {
+		if _, ok := wantEntries[file.Name]; ok {
+			wantEntries[file.Name] = true
+		}
+	}
+	for name, found := range wantEntries {
+		if !found {
+			t.Fatalf("zip entry %s missing; entries=%#v", name, reader.File)
 		}
 	}
 }

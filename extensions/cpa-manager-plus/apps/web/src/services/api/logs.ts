@@ -28,6 +28,18 @@ export interface ErrorLogFile {
 
 export interface ErrorLogsResponse {
   files?: ErrorLogFile[];
+  total?: number;
+  page?: number;
+  page_size?: number;
+  total_pages?: number;
+  has_more?: boolean;
+}
+
+export interface ErrorLogsQuery {
+  page?: number;
+  pageSize?: number;
+  search?: string;
+  view?: 'detail' | 'count';
 }
 
 const asRecord = (value: unknown): Record<string, unknown> =>
@@ -74,6 +86,37 @@ export const normalizeLogsResponse = (value: unknown): LogsResponse => {
   };
 };
 
+export const normalizeErrorLogsResponse = (value: unknown): ErrorLogsResponse => {
+  const source = asRecord(value);
+  const files = Array.isArray(source.files)
+    ? source.files.map((item) => {
+        const record = asRecord(item);
+        return {
+          name: String(record.name ?? ''),
+          size: numberValue(record.size),
+          modified: numberValue(record.modified),
+        };
+      }).filter((item) => item.name.trim() !== '')
+    : [];
+  const total = Math.max(0, numberValue(source.total) ?? files.length);
+  const page = Math.max(1, numberValue(source.page) ?? 1);
+  const pageSize = Math.max(0, numberValue(source.page_size ?? source.pageSize) ?? files.length);
+  const totalPages = Math.max(
+    0,
+    numberValue(source.total_pages ?? source.totalPages) ??
+      (pageSize > 0 && total > 0 ? Math.ceil(total / pageSize) : 0)
+  );
+
+  return {
+    files,
+    total,
+    page,
+    page_size: pageSize,
+    total_pages: totalPages,
+    has_more: booleanValue(source.has_more ?? source.hasMore),
+  };
+};
+
 export const logsApi = {
   async fetchLogs(params: LogsQuery = {}): Promise<LogsResponse> {
     const data = await apiClient.get('/logs', { params, timeout: LOGS_TIMEOUT_MS });
@@ -82,8 +125,18 @@ export const logsApi = {
 
   clearLogs: () => apiClient.delete('/logs'),
 
-  fetchErrorLogs: (): Promise<ErrorLogsResponse> =>
-    apiClient.get('/request-error-logs', { timeout: LOGS_TIMEOUT_MS }),
+  async fetchErrorLogs(query: ErrorLogsQuery = {}): Promise<ErrorLogsResponse> {
+    const data = await apiClient.get('/request-error-logs', {
+      params: {
+        page: query.page,
+        page_size: query.pageSize,
+        search: query.search?.trim() || undefined,
+        view: query.view,
+      },
+      timeout: LOGS_TIMEOUT_MS,
+    });
+    return normalizeErrorLogsResponse(data);
+  },
 
   downloadErrorLog: (filename: string) =>
     apiClient.getRaw(`/request-error-logs/${encodeURIComponent(filename)}`, {

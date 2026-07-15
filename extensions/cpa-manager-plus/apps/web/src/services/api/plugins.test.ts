@@ -25,6 +25,7 @@ import {
   normalizePluginList,
   normalizePluginStoreList,
   normalizePluginStoreInstallResult,
+  pluginsApi,
   pluginStoreApi,
 } from './plugins';
 
@@ -87,6 +88,13 @@ describe('plugin API normalizers', () => {
     });
     expect(result.plugins[0]?.configFields[0]?.enumValues).toEqual(['fast', 'safe']);
     expect(result.plugins[0]?.menus[0]?.path).toBe('/plugins/demo/page');
+    expect(result).toMatchObject({
+      page: 1,
+      pageSize: 1,
+      total: 1,
+      totalPages: 1,
+      hasMore: false,
+    });
   });
 
   it('normalizes explicit plugin OAuth providers without legacy fallback override', () => {
@@ -164,6 +172,11 @@ describe('plugin API normalizers', () => {
           message: 'timeout',
         },
       ],
+      page: 2,
+      page_size: 25,
+      total: 60,
+      total_pages: 3,
+      has_more: true,
       plugins: [
         {
           store_id: 'official/demo',
@@ -212,6 +225,13 @@ describe('plugin API normalizers', () => {
       authRequired: true,
       authConfigured: false,
       platforms: [{ goos: 'linux', goarch: 'amd64' }],
+    });
+    expect(store).toMatchObject({
+      page: 2,
+      pageSize: 25,
+      total: 60,
+      totalPages: 3,
+      hasMore: true,
     });
 
     expect(
@@ -264,6 +284,90 @@ describe('plugin API normalizers', () => {
       status: 'installed',
       sourceId: 'official',
       id: 'demo/plugin',
+    });
+  });
+
+  it('automatically follows plugin pages and keeps legacy id polling compatible', async () => {
+    mocks.get
+      .mockResolvedValueOnce({
+        plugins: [{ id: 'alpha' }],
+        page: 1,
+        page_size: 1,
+        total: 2,
+        total_pages: 2,
+        has_more: true,
+      })
+      .mockResolvedValueOnce({
+        plugins: [{ id: 'bravo' }],
+        page: 2,
+        page_size: 1,
+        total: 2,
+        total_pages: 2,
+        has_more: false,
+      })
+      .mockResolvedValueOnce({ plugins: [{ id: 'target' }] });
+
+    const all = await pluginsApi.list();
+    const target = await pluginsApi.list({ id: ' target ' });
+
+    expect(all.plugins.map((plugin) => plugin.id)).toEqual(['alpha', 'bravo']);
+    expect(all).toMatchObject({ page: 1, pageSize: 1, total: 2, totalPages: 2, hasMore: false });
+    expect(target.plugins.map((plugin) => plugin.id)).toEqual(['target']);
+    expect(mocks.get).toHaveBeenNthCalledWith(1, '/plugins', {
+      params: { page: 1, page_size: 200 },
+    });
+    expect(mocks.get).toHaveBeenNthCalledWith(2, '/plugins', {
+      params: { page: 2, page_size: 1 },
+    });
+    expect(mocks.get).toHaveBeenNthCalledWith(3, '/plugins', {
+      params: { id: 'target', page: 1, page_size: 200 },
+    });
+  });
+
+  it('automatically follows store pages and merges repeated source metadata', async () => {
+    mocks.get
+      .mockResolvedValueOnce({
+        sources: [{ id: 'official', name: 'Official', url: 'https://official.test' }],
+        source_errors: [
+          { source_id: 'slow', source_url: 'https://slow.test', message: 'timeout' },
+        ],
+        plugins: [{ id: 'demo', store_id: 'official/demo-v1', source_id: 'official' }],
+        page: 1,
+        page_size: 1,
+        total: 2,
+        total_pages: 2,
+        has_more: true,
+      })
+      .mockResolvedValueOnce({
+        sources: [
+          { id: 'official', name: 'Official', url: 'https://official.test' },
+          { id: 'community', name: 'Community', url: 'https://community.test' },
+        ],
+        source_errors: [
+          { source_id: 'slow', source_url: 'https://slow.test', message: 'timeout' },
+        ],
+        plugins: [{ id: 'demo', store_id: 'official/demo-v2', source_id: 'official' }],
+        page: 2,
+        page_size: 1,
+        total: 2,
+        total_pages: 2,
+        has_more: false,
+      });
+
+    const result = await pluginStoreApi.list({ id: ' demo ', sourceId: ' official ' });
+
+    expect(result.plugins.map((plugin) => plugin.storeId)).toEqual([
+      'official/demo-v1',
+      'official/demo-v2',
+    ]);
+    expect(result.sources.map((source) => source.id)).toEqual(['official', 'community']);
+    expect(result.sourceErrors).toHaveLength(1);
+    expect(result.hasMore).toBe(false);
+    expect(mocks.get).toHaveBeenNthCalledWith(1, '/plugin-store', {
+      params: { id: 'demo', source: 'official', page: 1, page_size: 200 },
+    });
+    expect(mocks.get).toHaveBeenNthCalledWith(2, '/plugin-store', {
+      params: { id: 'demo', source: 'official', page: 2, page_size: 1 },
     });
   });
 });

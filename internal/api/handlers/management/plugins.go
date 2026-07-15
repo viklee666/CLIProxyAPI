@@ -18,10 +18,29 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	defaultPluginCollectionPageSize = 100
+	maxPluginCollectionPageSize     = 200
+)
+
+type pluginCollectionPage struct {
+	page       int
+	pageSize   int
+	total      int
+	totalPages int
+	start      int
+	end        int
+}
+
 type pluginListResponse struct {
 	PluginsEnabled bool              `json:"plugins_enabled"`
 	PluginsDir     string            `json:"plugins_dir"`
 	Plugins        []pluginListEntry `json:"plugins"`
+	Page           int               `json:"page"`
+	PageSize       int               `json:"page_size"`
+	Total          int               `json:"total"`
+	TotalPages     int               `json:"total_pages"`
+	HasMore        bool              `json:"has_more"`
 }
 
 type pluginListEntry struct {
@@ -61,12 +80,87 @@ type pluginMenuInfo struct {
 	Description string `json:"description"`
 }
 
+type pluginRouteListResponse struct {
+	Routes     []pluginhost.ManagementRouteInfo `json:"routes"`
+	Page       int                              `json:"page"`
+	PageSize   int                              `json:"page_size"`
+	Total      int                              `json:"total"`
+	TotalPages int                              `json:"total_pages"`
+	HasMore    bool                             `json:"has_more"`
+}
+
+func parsePluginCollectionPage(c *gin.Context, total int) (pluginCollectionPage, error) {
+	page := pluginCollectionPage{
+		page:     1,
+		pageSize: defaultPluginCollectionPageSize,
+	}
+	if rawPage := strings.TrimSpace(c.Query("page")); rawPage != "" {
+		parsed, err := strconv.Atoi(rawPage)
+		if err != nil || parsed < 1 {
+			return page, errors.New("page must be a positive integer")
+		}
+		page.page = parsed
+	}
+	if rawPageSize := strings.TrimSpace(c.Query("page_size")); rawPageSize != "" {
+		parsed, err := strconv.Atoi(rawPageSize)
+		if err != nil || parsed < 1 || parsed > maxPluginCollectionPageSize {
+			return page, fmt.Errorf("page_size must be an integer between 1 and %d", maxPluginCollectionPageSize)
+		}
+		page.pageSize = parsed
+	}
+	return pluginCollectionPageForTotal(page, total), nil
+}
+
+func pluginCollectionPageForTotal(page pluginCollectionPage, total int) pluginCollectionPage {
+	page.total = total
+	page.totalPages = 0
+	page.start = 0
+	page.end = 0
+	if total == 0 {
+		return page
+	}
+	page.totalPages = (total + page.pageSize - 1) / page.pageSize
+	if page.page > page.totalPages {
+		page.start = total
+		page.end = total
+		return page
+	}
+	page.start = (page.page - 1) * page.pageSize
+	page.end = min(page.start+page.pageSize, total)
+	return page
+}
+
+func pluginCollectionPageSlice[T any](items []T, page pluginCollectionPage) []T {
+	paged := make([]T, page.end-page.start)
+	copy(paged, items[page.start:page.end])
+	return paged
+}
+
+func writeInvalidPluginPagination(c *gin.Context, err error) {
+	c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_pagination", "message": err.Error()})
+}
+
 // ListPlugins returns discovered, configured, and registered plugin entries.
 func (h *Handler) ListPlugins(c *gin.Context) {
+	filterID := strings.TrimSpace(c.Query("id"))
+	if filterID != "" && !pluginhost.ValidatePluginID(filterID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_plugin_id", "message": "invalid plugin id"})
+		return
+	}
+	requestedPage, errPage := parsePluginCollectionPage(c, 0)
+	if errPage != nil {
+		writeInvalidPluginPagination(c, errPage)
+		return
+	}
 	if h == nil || h.cfg == nil {
 		c.JSON(http.StatusOK, pluginListResponse{
 			PluginsDir: "plugins",
 			Plugins:    []pluginListEntry{},
+			Page:       requestedPage.page,
+			PageSize:   requestedPage.pageSize,
+			Total:      requestedPage.total,
+			TotalPages: requestedPage.totalPages,
+			HasMore:    false,
 		})
 		return
 	}
@@ -88,6 +182,9 @@ func (h *Handler) ListPlugins(c *gin.Context) {
 		return
 	}
 	for _, file := range files {
+		if filterID != "" && file.ID != filterID {
+			continue
+		}
 		entries[file.ID] = pluginListEntry{
 			ID:           htmlsanitize.String(file.ID),
 			Path:         htmlsanitize.String(file.Path),
@@ -97,6 +194,9 @@ func (h *Handler) ListPlugins(c *gin.Context) {
 		}
 	}
 	for id, item := range configs {
+		if filterID != "" && id != filterID {
+			continue
+		}
 		entry := entries[id]
 		entry.ID = htmlsanitize.String(id)
 		entry.Configured = true
@@ -111,6 +211,9 @@ func (h *Handler) ListPlugins(c *gin.Context) {
 	}
 	if host != nil {
 		for _, info := range host.RegisteredPlugins() {
+			if filterID != "" && info.ID != filterID {
+				continue
+			}
 			entry := entries[info.ID]
 			entry.ID = htmlsanitize.String(info.ID)
 			entry.Registered = true
@@ -126,11 +229,16 @@ func (h *Handler) ListPlugins(c *gin.Context) {
 
 	ids := make([]string, 0, len(entries))
 	for id := range entries {
+		if filterID != "" && id != filterID {
+			continue
+		}
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	out := make([]pluginListEntry, 0, len(ids))
-	for _, id := range ids {
+	page := pluginCollectionPageForTotal(requestedPage, len(ids))
+	pagedIDs := pluginCollectionPageSlice(ids, page)
+	out := make([]pluginListEntry, 0, len(pagedIDs))
+	for _, id := range pagedIDs {
 		entry := entries[id]
 		entry.EffectiveEnabled = pluginsEnabled && entry.Enabled && entry.Registered
 		if entry.ConfigFields == nil {
@@ -146,6 +254,41 @@ func (h *Handler) ListPlugins(c *gin.Context) {
 		PluginsEnabled: pluginsEnabled,
 		PluginsDir:     htmlsanitize.String(pluginsDir),
 		Plugins:        out,
+		Page:           page.page,
+		PageSize:       page.pageSize,
+		Total:          page.total,
+		TotalPages:     page.totalPages,
+		HasMore:        page.end < page.total,
+	})
+}
+
+// ListPluginRoutes exposes the runtime-loaded dynamic management route set so
+// route audits can verify plugin APIs that cannot be enumerated statically.
+func (h *Handler) ListPluginRoutes(c *gin.Context) {
+	if h == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "handler not initialized"})
+		return
+	}
+	requestedPage, errPage := parsePluginCollectionPage(c, 0)
+	if errPage != nil {
+		writeInvalidPluginPagination(c, errPage)
+		return
+	}
+	h.mu.Lock()
+	host := h.pluginHost
+	h.mu.Unlock()
+	routes := []pluginhost.ManagementRouteInfo{}
+	if host != nil {
+		routes = host.ManagementRouteInventory()
+	}
+	page := pluginCollectionPageForTotal(requestedPage, len(routes))
+	c.JSON(http.StatusOK, pluginRouteListResponse{
+		Routes:     pluginCollectionPageSlice(routes, page),
+		Page:       page.page,
+		PageSize:   page.pageSize,
+		Total:      page.total,
+		TotalPages: page.totalPages,
+		HasMore:    page.end < page.total,
 	})
 }
 

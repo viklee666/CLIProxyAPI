@@ -3025,6 +3025,7 @@
     "model_caller_distribution": "Caller Client Key Distribution",
     "rank_show_all": "Show all ({{count}})",
     "rank_collapse": "Collapse",
+    "server_page_truncated": "Server paginated; current page only",
     "cost_share_title": "Cost Share",
     "model_compare_title": "Model Trend Comparison",
     "api_key_compare_title": "Client Key Trend",

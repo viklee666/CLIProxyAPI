@@ -79,6 +79,52 @@ func TestServerCompatQuotaCooldownsRequiresPanelAuth(t *testing.T) {
 	testutil.RequireStatus(t, post, http.StatusMethodNotAllowed)
 }
 
+func TestServerCompatQuotaCooldownsFiltersAndPaginates(t *testing.T) {
+	cfg := testutil.NewConfig(t)
+	db := testutil.NewStore(t, cfg)
+	manager := collector.NewManager(cfg, db)
+	handler := New(cfg, db, manager).Handler()
+
+	for index, seed := range []model.QuotaCooldownUpsert{
+		{AuthFileName: "codex-a.json", AuthIndex: "auth-a", AccountSnapshot: "alice@example.com", Provider: "codex", Owner: model.QuotaCooldownOwnerUsage429, RecoverAtMS: 100},
+		{AuthFileName: "codex-b.json", AuthIndex: "auth-b", AccountSnapshot: "bob@example.com", Provider: "codex", Owner: model.QuotaCooldownOwnerCodexInspection, RecoverAtMS: 200},
+		{AuthFileName: "xai-a.json", AuthIndex: "auth-x", AccountSnapshot: "xavier@example.com", Provider: "xai", Owner: model.QuotaCooldownOwnerXAIFreeUsage, RecoverAtMS: 300},
+	} {
+		seed.DisabledAtMS = int64(index + 1)
+		if _, err := db.QuotaCooldowns.UpsertActive(context.Background(), seed); err != nil {
+			t.Fatalf("seed %d: %v", index, err)
+		}
+	}
+
+	rr := testutil.Request(t, handler, http.MethodGet, "/usage-service/quota-cooldowns?provider=codex&page=2&page_size=1", "", testutil.AdminKey)
+	testutil.RequireStatus(t, rr, http.StatusOK)
+	var page struct {
+		Items []struct {
+			AuthFileName string `json:"authFileName"`
+		} `json:"items"`
+		Total      int64 `json:"total"`
+		Page       int   `json:"page"`
+		PageSize   int   `json:"page_size"`
+		TotalPages int   `json:"total_pages"`
+		HasMore    bool  `json:"has_more"`
+	}
+	testutil.DecodeJSON(t, rr, &page)
+	if len(page.Items) != 1 || page.Items[0].AuthFileName != "codex-b.json" || page.Total != 2 || page.Page != 2 || page.PageSize != 1 || page.TotalPages != 2 || page.HasMore {
+		t.Fatalf("page = %#v", page)
+	}
+
+	authRR := testutil.Request(t, handler, http.MethodGet, "/usage-service/quota-cooldowns?auth=auth-x", "", testutil.AdminKey)
+	testutil.RequireStatus(t, authRR, http.StatusOK)
+	if !strings.Contains(authRR.Body.String(), `"authFileName":"xai-a.json"`) {
+		t.Fatalf("auth filter body = %s", authRR.Body.String())
+	}
+	searchRR := testutil.Request(t, handler, http.MethodGet, "/usage-service/quota-cooldowns?search=alice", "", testutil.AdminKey)
+	testutil.RequireStatus(t, searchRR, http.StatusOK)
+	if !strings.Contains(searchRR.Body.String(), `"authFileName":"codex-a.json"`) || strings.Contains(searchRR.Body.String(), `"authFileName":"codex-b.json"`) {
+		t.Fatalf("search filter body = %s", searchRR.Body.String())
+	}
+}
+
 func containsInternalField(body string) bool {
 	for _, needle := range []string{"accountSnapshot", "account_snapshot", "eventHash", "event_hash", "preDisabledState", "lastError"} {
 		if strings.Contains(body, needle) {

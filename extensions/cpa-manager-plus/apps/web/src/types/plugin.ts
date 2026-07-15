@@ -46,7 +46,15 @@ export interface PluginListEntry {
   metadata: PluginMetadata | null;
 }
 
-export interface PluginListResponse {
+export interface PluginCollectionPagination {
+  page?: number;
+  pageSize?: number;
+  total?: number;
+  totalPages?: number;
+  hasMore?: boolean;
+}
+
+export interface PluginListResponse extends PluginCollectionPagination {
   pluginsEnabled: boolean;
   pluginsDir: string;
   plugins: PluginListEntry[];
@@ -108,7 +116,7 @@ export interface PluginStoreSourceError {
   message: string;
 }
 
-export interface PluginStoreResponse {
+export interface PluginStoreResponse extends PluginCollectionPagination {
   pluginsEnabled: boolean;
   pluginsDir: string;
   sources: PluginStoreSource[];

@@ -47,7 +47,7 @@ type openAICompatibilityWithAuthIndex struct {
 	APIKeyEntries  []openAICompatibilityAPIKeyWithAuthIndex `json:"api-key-entries,omitempty"`
 	Models         []config.OpenAICompatibilityModel        `json:"models,omitempty"`
 	Headers        map[string]string                        `json:"headers,omitempty"`
-	DisableCooling bool                                     `json:"disable-cooling,omitempty"`
+	DisableCooling bool                                     `json:"disable-cooling"`
 	AuthIndex      string                                   `json:"auth-index,omitempty"`
 }
 
@@ -81,6 +81,46 @@ func (h *Handler) liveAuthIndexByID() map[string]string {
 		out[id] = idx
 	}
 	return out
+}
+
+type apiKeyConfigIdentity interface {
+	GetAPIKey() string
+	GetBaseURL() string
+}
+
+func findAPIKeyConfigIndexByAuthIndex[T apiKeyConfigIdentity](entries []T, kind string, target string, liveIndexByID map[string]string) int {
+	target = strings.TrimSpace(target)
+	if target == "" || len(entries) == 0 || len(liveIndexByID) == 0 {
+		return -1
+	}
+	idGen := synthesizer.NewStableIDGenerator()
+	for i := range entries {
+		key := strings.TrimSpace(entries[i].GetAPIKey())
+		if key == "" {
+			continue
+		}
+		id, _ := idGen.Next(kind, key, entries[i].GetBaseURL())
+		if strings.TrimSpace(liveIndexByID[id]) == target {
+			return i
+		}
+	}
+	return -1
+}
+
+func findVertexConfigIndexByAuthIndex(entries []config.VertexCompatKey, target string, liveIndexByID map[string]string) int {
+	target = strings.TrimSpace(target)
+	if target == "" || len(entries) == 0 || len(liveIndexByID) == 0 {
+		return -1
+	}
+	idGen := synthesizer.NewStableIDGenerator()
+	for i := range entries {
+		entry := entries[i]
+		id, _ := idGen.Next("vertex:apikey", entry.APIKey, entry.BaseURL, entry.ProxyURL)
+		if strings.TrimSpace(liveIndexByID[id]) == target {
+			return i
+		}
+	}
+	return -1
 }
 
 func (h *Handler) geminiKeysWithAuthIndex() []geminiKeyWithAuthIndex {

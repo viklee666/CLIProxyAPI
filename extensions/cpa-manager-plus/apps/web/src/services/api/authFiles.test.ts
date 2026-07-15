@@ -4,6 +4,7 @@ const { mocks } = vi.hoisted(() => ({
   mocks: {
     get: vi.fn(),
     getRaw: vi.fn(),
+    requestRaw: vi.fn(),
     postForm: vi.fn(),
     patch: vi.fn(),
   },
@@ -13,6 +14,7 @@ vi.mock('./client', () => ({
   apiClient: {
     get: mocks.get,
     getRaw: mocks.getRaw,
+    requestRaw: mocks.requestRaw,
     postForm: mocks.postForm,
     patch: mocks.patch,
   },
@@ -23,11 +25,61 @@ import { authFilesApi } from './authFiles';
 beforeEach(() => {
   mocks.get.mockReset();
   mocks.getRaw.mockReset();
+  mocks.requestRaw.mockReset();
   mocks.postForm.mockReset();
   mocks.patch.mockReset();
 });
 
 describe('authFilesApi OAuth model alias normalization', () => {
+  it('merges paginated OAuth maps and model definitions', async () => {
+    mocks.get
+      .mockResolvedValueOnce({
+        'oauth-model-alias': { codex: [{ name: 'source-1', alias: 'alias-1' }] },
+        page: 1,
+        page_size: 1,
+        total_pages: 2,
+        has_more: true,
+      })
+      .mockResolvedValueOnce({
+        'oauth-model-alias': { codex: [{ name: 'source-2', alias: 'alias-2' }] },
+        page: 2,
+        page_size: 1,
+        total_pages: 2,
+        has_more: false,
+      })
+      .mockResolvedValueOnce({
+        models: [{ id: 'model-1' }],
+        page: 1,
+        page_size: 1,
+        total_pages: 2,
+        has_more: true,
+      })
+      .mockResolvedValueOnce({
+        models: [{ id: 'model-2' }],
+        page: 2,
+        page_size: 1,
+        total_pages: 2,
+        has_more: false,
+      });
+
+    await expect(authFilesApi.getOauthModelAlias()).resolves.toEqual({
+      codex: [
+        { name: 'source-1', alias: 'alias-1' },
+        { name: 'source-2', alias: 'alias-2' },
+      ],
+    });
+    await expect(authFilesApi.getModelDefinitions('codex')).resolves.toEqual([
+      { id: 'model-1' },
+      { id: 'model-2' },
+    ]);
+    expect(mocks.get).toHaveBeenNthCalledWith(2, '/oauth-model-alias', {
+      params: { page: 2, page_size: 1 },
+    });
+    expect(mocks.get).toHaveBeenNthCalledWith(4, '/model-definitions/codex', {
+      params: { page: 2, page_size: 1 },
+    });
+  });
+
   it('preserves force-mapping returned by CPA', async () => {
     mocks.get.mockResolvedValue({
       'oauth-model-alias': {
@@ -230,21 +282,14 @@ describe('authFilesApi save auth file upload contracts', () => {
     );
   });
 
-  it('uploadFiles sends multi-file selections as separate requests', async () => {
+  it('uploadFiles sends a multi-file selection in one multipart request', async () => {
     // Arrange
-    mocks.postForm
-      .mockResolvedValueOnce({
-        status: 'ok',
-        uploaded: 1,
-        files: ['first-auth.json'],
-        failed: [],
-      })
-      .mockResolvedValueOnce({
-        status: 'ok',
-        uploaded: 1,
-        files: ['second-auth.json'],
-        failed: [],
-      });
+    mocks.postForm.mockResolvedValueOnce({
+      status: 'ok',
+      uploaded: 2,
+      files: ['first-auth.json', 'second-auth.json'],
+      failed: [],
+    });
 
     const firstFile = new File(['{"type":"codex"}'], 'first-auth.json', {
       type: 'application/json',
@@ -263,26 +308,21 @@ describe('authFilesApi save auth file upload contracts', () => {
       files: ['first-auth.json', 'second-auth.json'],
       failed: [],
     });
-    expect(mocks.postForm).toHaveBeenCalledTimes(2);
+    expect(mocks.postForm).toHaveBeenCalledTimes(1);
 
-    const firstFormData = mocks.postForm.mock.calls[0]?.[1] as FormData;
-    const secondFormData = mocks.postForm.mock.calls[1]?.[1] as FormData;
-    expect(Array.from(firstFormData.getAll('file'))).toHaveLength(1);
-    expect(Array.from(secondFormData.getAll('file'))).toHaveLength(1);
-    expect((firstFormData.get('file') as File).name).toBe('first-auth.json');
-    expect((secondFormData.get('file') as File).name).toBe('second-auth.json');
+    const formData = mocks.postForm.mock.calls[0]?.[1] as FormData;
+    const uploadedFiles = formData.getAll('files') as File[];
+    expect(uploadedFiles.map((file) => file.name)).toEqual(['first-auth.json', 'second-auth.json']);
   });
 
-  it('uploadFiles aggregates per-file upload failures after successful uploads', async () => {
+  it('uploadFiles preserves partial failures returned by the batch endpoint', async () => {
     // Arrange
-    mocks.postForm
-      .mockResolvedValueOnce({
-        status: 'ok',
-        uploaded: 1,
-        files: ['first-auth.json'],
-        failed: [],
-      })
-      .mockRejectedValueOnce(new Error('request body too large'));
+    mocks.postForm.mockResolvedValueOnce({
+      status: 'partial',
+      uploaded: 1,
+      files: ['first-auth.json'],
+      failed: [{ name: 'second-auth.json', error: 'request body too large' }],
+    });
 
     const firstFile = new File(['{"type":"codex"}'], 'first-auth.json', {
       type: 'application/json',
@@ -301,7 +341,7 @@ describe('authFilesApi save auth file upload contracts', () => {
       files: ['first-auth.json'],
       failed: [{ name: 'second-auth.json', error: 'request body too large' }],
     });
-    expect(mocks.postForm).toHaveBeenCalledTimes(2);
+    expect(mocks.postForm).toHaveBeenCalledTimes(1);
   });
 
   it('saveJsonObject throws Upload failed when backend reports zero uploaded files without explicit failures', async () => {
@@ -435,5 +475,74 @@ describe('authFilesApi patchFieldsForAuthIndexes', () => {
         { type: 'codex', authIndex: 'auth-3', priority: 3, websocket: true },
       ])
     );
+  });
+});
+
+describe('authFilesApi batch management contracts', () => {
+  it('updates many statuses with one PATCH request', async () => {
+    mocks.patch.mockResolvedValueOnce({
+      status: 'partial',
+      updated: 1,
+      items: [{ name: 'alpha.json', auth_index: 'auth-a', disabled: true }],
+      failed: [{ name: 'missing.json', error: 'auth file not found' }],
+    });
+
+    const result = await authFilesApi.setStatuses(
+      [{ name: 'alpha.json', authIndex: 'auth-a' }, { name: 'missing.json' }],
+      true
+    );
+
+    expect(mocks.patch).toHaveBeenCalledWith('/auth-files/status/batch', {
+      items: [{ name: 'alpha.json', auth_index: 'auth-a' }, { name: 'missing.json' }],
+      disabled: true,
+    });
+    expect(result).toEqual({
+      status: 'partial',
+      updated: 1,
+      items: [{ name: 'alpha.json', authIndex: 'auth-a', disabled: true }],
+      failed: [{ name: 'missing.json', error: 'auth file not found' }],
+    });
+  });
+
+  it('patches fields for grouped auth indexes with one request', async () => {
+    mocks.patch.mockResolvedValueOnce({ status: 'ok', updated: 2, failed: [] });
+
+    const result = await authFilesApi.patchFieldsBatch(
+      [{ name: 'shared.json', authIndexes: ['auth-1', 'auth-2'] }],
+      { priority: 8 }
+    );
+
+    expect(mocks.patch).toHaveBeenCalledWith('/auth-files/fields/batch', {
+      items: [{ name: 'shared.json', auth_indices: ['auth-1', 'auth-2'] }],
+      fields: { priority: 8 },
+    });
+    expect(result).toEqual({ status: 'ok', updated: 2, failed: [] });
+  });
+
+  it('downloads selected files as one ZIP response', async () => {
+    const blob = new Blob(['zip'], { type: 'application/zip' });
+    mocks.requestRaw.mockResolvedValueOnce({
+      data: blob,
+      headers: {
+        'content-disposition': 'attachment; filename="auth-files-20260715.zip"',
+        'x-auth-files-included': '2',
+        'x-auth-files-failed': '1',
+      },
+    });
+
+    const result = await authFilesApi.downloadFiles(['alpha.json', 'beta.json', 'missing.json']);
+
+    expect(mocks.requestRaw).toHaveBeenCalledWith({
+      method: 'POST',
+      url: '/auth-files/download',
+      data: { names: ['alpha.json', 'beta.json', 'missing.json'] },
+      responseType: 'blob',
+    });
+    expect(result).toEqual({
+      blob,
+      filename: 'auth-files-20260715.zip',
+      included: 2,
+      failed: 1,
+    });
   });
 });

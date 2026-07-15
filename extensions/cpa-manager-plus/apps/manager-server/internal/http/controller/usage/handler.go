@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/app"
@@ -29,17 +30,42 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 			h.Export(w, r)
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		writer := &countingWriter{writer: w}
-		err := h.App.UsageService.WriteCompatibleUsage(r.Context(), writer, h.App.Config.QueryLimit)
+		query := r.URL.Query()
+		page, err := positiveQueryInt(query.Get("page"), 1)
 		if err != nil {
-			if writer.written == 0 {
-				response.Error(w, http.StatusInternalServerError, err)
-			} else {
-				log.Printf("usage compatible stream failed after %d bytes: %v", writer.written, err)
-			}
+			response.Error(w, http.StatusBadRequest, errors.New("page must be a positive integer"))
 			return
 		}
+		if page > 1_000_000 {
+			response.Error(w, http.StatusBadRequest, errors.New("page must be less than or equal to 1000000"))
+			return
+		}
+		pageSizeRaw := query.Get("page_size")
+		if strings.TrimSpace(pageSizeRaw) == "" {
+			pageSizeRaw = query.Get("limit")
+		}
+		pageSize, err := positiveQueryInt(pageSizeRaw, 200)
+		if err != nil {
+			response.Error(w, http.StatusBadRequest, errors.New("page_size must be a positive integer"))
+			return
+		}
+		if pageSize > 500 {
+			pageSize = 500
+		}
+		result, err := h.App.UsageService.CompatibleUsage(r.Context(), usagesvc.CompatibleUsageRequest{
+			Page:     page,
+			PageSize: pageSize,
+			Cursor:   query.Get("cursor"),
+		})
+		if err != nil {
+			status := http.StatusInternalServerError
+			if errors.Is(err, usagesvc.ErrInvalidUsageCursor) {
+				status = http.StatusBadRequest
+			}
+			response.Error(w, status, err)
+			return
+		}
+		response.JSON(w, http.StatusOK, result)
 	case http.MethodPost:
 		if strings.HasSuffix(r.URL.Path, "/import") {
 			h.Import(w, r)
@@ -49,6 +75,18 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 	default:
 		response.MethodNotAllowed(w)
 	}
+}
+
+func positiveQueryInt(raw string, fallback int) (int, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return fallback, nil
+	}
+	value, err := strconv.Atoi(trimmed)
+	if err != nil || value <= 0 {
+		return 0, errors.New("query value must be a positive integer")
+	}
+	return value, nil
 }
 
 func (h *Handler) Export(w http.ResponseWriter, r *http.Request) {

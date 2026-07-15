@@ -4,13 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/vertex"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+)
+
+const (
+	maxVertexImportFileBytes    = 1024 * 1024
+	maxVertexImportRequestBytes = 2 * 1024 * 1024
 )
 
 // ImportVertexCredential handles uploading a Vertex service account JSON and saving it as an auth record.
@@ -24,9 +28,18 @@ func (h *Handler) ImportVertexCredential(c *gin.Context) {
 		return
 	}
 
+	limitManagementRequestBody(c, maxVertexImportRequestBytes)
 	fileHeader, err := c.FormFile("file")
 	if err != nil {
+		if isManagementRequestTooLarge(err) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request_too_large", "message": fmt.Sprintf("multipart request must not exceed %d bytes", maxVertexImportRequestBytes)})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": "file required"})
+		return
+	}
+	if fileHeader.Size > maxVertexImportFileBytes {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file_too_large", "message": fmt.Sprintf("service account file must not exceed %d bytes", maxVertexImportFileBytes)})
 		return
 	}
 
@@ -37,8 +50,12 @@ func (h *Handler) ImportVertexCredential(c *gin.Context) {
 	}
 	defer file.Close()
 
-	data, err := io.ReadAll(file)
+	data, err := readManagementResponseBody(file, maxVertexImportFileBytes)
 	if err != nil {
+		if isManagementRequestTooLarge(err) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file_too_large", "message": fmt.Sprintf("service account file must not exceed %d bytes", maxVertexImportFileBytes)})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("failed to read file: %v", err)})
 		return
 	}

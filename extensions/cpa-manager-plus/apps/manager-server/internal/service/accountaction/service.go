@@ -26,7 +26,17 @@ type Service struct {
 
 type ListResponse struct {
 	Items        []model.AccountActionCandidate `json:"items"`
+	Total        int64                          `json:"total"`
+	Page         int                            `json:"page"`
+	PageSize     int                            `json:"page_size"`
 	PendingCount int64                          `json:"pendingCount"`
+}
+
+type ListRequest struct {
+	Status   string
+	Search   string
+	Page     int
+	PageSize int
 }
 
 type authFile = cpaauthfiles.File
@@ -40,7 +50,25 @@ func New(st *store.Store, managerConfigService *managerconfigsvc.Service, client
 }
 
 func (s *Service) List(ctx context.Context, status string, limit int) (ListResponse, error) {
-	items, err := s.store.ListAccountActionCandidates(ctx, strings.TrimSpace(status), limit)
+	return s.ListPage(ctx, ListRequest{Status: status, Page: 1, PageSize: limit})
+}
+
+func (s *Service) ListPage(ctx context.Context, request ListRequest) (ListResponse, error) {
+	if request.Page <= 0 {
+		request.Page = 1
+	}
+	if request.PageSize <= 0 {
+		request.PageSize = 50
+	}
+	if request.PageSize > 200 {
+		request.PageSize = 200
+	}
+	page, err := s.store.ListAccountActionCandidatesPage(ctx, store.AccountActionCandidateListQuery{
+		Status:   strings.TrimSpace(request.Status),
+		Search:   strings.TrimSpace(request.Search),
+		Page:     request.Page,
+		PageSize: request.PageSize,
+	})
 	if err != nil {
 		return ListResponse{}, err
 	}
@@ -48,7 +76,13 @@ func (s *Service) List(ctx context.Context, status string, limit int) (ListRespo
 	if err != nil {
 		return ListResponse{}, err
 	}
-	return ListResponse{Items: items, PendingCount: pendingCount}, nil
+	return ListResponse{
+		Items:        page.Items,
+		Total:        page.Total,
+		Page:         request.Page,
+		PageSize:     request.PageSize,
+		PendingCount: pendingCount,
+	}, nil
 }
 
 func (s *Service) Ignore(ctx context.Context, id int64) (model.AccountActionCandidate, error) {

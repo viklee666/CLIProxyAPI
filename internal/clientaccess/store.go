@@ -154,6 +154,11 @@ func normalizeListOptions(opts ListOptions) ListOptions {
 	return opts
 }
 
+const (
+	sqliteVariableChunkSize  = 400
+	sqliteInsertRowsPerBatch = 200
+)
+
 func nullableMillis(value *time.Time) any {
 	if value == nil || value.IsZero() {
 		return nil
@@ -232,10 +237,28 @@ func (s *Store) ListGroups(ctx context.Context, opts ListOptions) (Page[Group], 
 		return Page[Group]{}, fmt.Errorf("count client groups: %w", errCount)
 	}
 	queryArgs := append(append([]any(nil), args...), opts.PageSize, (opts.Page-1)*opts.PageSize)
-	rows, errQuery := s.db.QueryContext(ctx, `SELECT g.id, g.name, g.description, g.enabled, g.created_at_ms, g.updated_at_ms,
-		(SELECT COUNT(*) FROM client_access_key_groups kg WHERE kg.group_id = g.id),
-		(SELECT COUNT(*) FROM client_access_credential_groups cg WHERE cg.group_id = g.id)
-		FROM client_access_groups g`+where+` ORDER BY g.name COLLATE NOCASE ASC, g.id ASC LIMIT ? OFFSET ?`, queryArgs...)
+	rows, errQuery := s.db.QueryContext(ctx, `WITH page AS (
+		SELECT id, name, description, enabled, created_at_ms, updated_at_ms
+		FROM client_access_groups`+where+`
+		ORDER BY name COLLATE NOCASE ASC, id ASC
+		LIMIT ? OFFSET ?
+	), key_counts AS (
+		SELECT group_id, COUNT(*) AS key_count
+		FROM client_access_key_groups
+		WHERE group_id IN (SELECT id FROM page)
+		GROUP BY group_id
+	), credential_counts AS (
+		SELECT group_id, COUNT(*) AS credential_count
+		FROM client_access_credential_groups
+		WHERE group_id IN (SELECT id FROM page)
+		GROUP BY group_id
+	)
+	SELECT p.id, p.name, p.description, p.enabled, p.created_at_ms, p.updated_at_ms,
+		COALESCE(k.key_count, 0), COALESCE(c.credential_count, 0)
+	FROM page p
+	LEFT JOIN key_counts k ON k.group_id = p.id
+	LEFT JOIN credential_counts c ON c.group_id = p.id
+	ORDER BY p.name COLLATE NOCASE ASC, p.id ASC`, queryArgs...)
 	if errQuery != nil {
 		return Page[Group]{}, fmt.Errorf("list client groups: %w", errQuery)
 	}
@@ -461,22 +484,50 @@ func (s *Store) ListAllStoredKeys(ctx context.Context) ([]storedKey, error) {
 	if errQuery != nil {
 		return nil, errQuery
 	}
-	defer rows.Close()
 	items := make([]storedKey, 0)
+	now := time.Now().UTC()
 	for rows.Next() {
 		item, hash, errScan := scanKey(rows)
 		if errScan != nil {
+			_ = rows.Close()
 			return nil, errScan
 		}
-		ids, errGroups := s.keyGroupIDs(ctx, item.ID)
-		if errGroups != nil {
-			return nil, errGroups
-		}
-		item.GroupIDs = ids
-		normalizeExpiredKeyUsage(&item, time.Now().UTC())
+		normalizeExpiredKeyUsage(&item, now)
 		items = append(items, storedKey{Key: item, Hash: hash})
 	}
-	return items, rows.Err()
+	if errRows := rows.Err(); errRows != nil {
+		_ = rows.Close()
+		return nil, errRows
+	}
+	if errClose := rows.Close(); errClose != nil {
+		return nil, errClose
+	}
+	groupRows, errGroups := s.db.QueryContext(ctx, `SELECT key_id, group_id FROM client_access_key_groups ORDER BY key_id, group_id`)
+	if errGroups != nil {
+		return nil, errGroups
+	}
+	positions := make(map[int64]int, len(items))
+	for index := range items {
+		positions[items[index].ID] = index
+	}
+	for groupRows.Next() {
+		var keyID, groupID int64
+		if errScan := groupRows.Scan(&keyID, &groupID); errScan != nil {
+			_ = groupRows.Close()
+			return nil, errScan
+		}
+		if index, ok := positions[keyID]; ok {
+			items[index].GroupIDs = append(items[index].GroupIDs, groupID)
+		}
+	}
+	if errRows := groupRows.Err(); errRows != nil {
+		_ = groupRows.Close()
+		return nil, errRows
+	}
+	if errClose := groupRows.Close(); errClose != nil {
+		return nil, errClose
+	}
+	return items, nil
 }
 
 func (s *Store) ListKeys(ctx context.Context, opts ListOptions) (Page[Key], error) {
@@ -501,29 +552,98 @@ func (s *Store) ListKeys(ctx context.Context, opts ListOptions) (Page[Key], erro
 	if errQuery != nil {
 		return Page[Key]{}, errQuery
 	}
-	defer rows.Close()
 	items := make([]Key, 0, opts.PageSize)
 	for rows.Next() {
 		item, _, errScan := scanKey(rows)
 		if errScan != nil {
+			_ = rows.Close()
 			return Page[Key]{}, errScan
 		}
-		ids, errGroups := s.keyGroupIDs(ctx, item.ID)
-		if errGroups != nil {
-			return Page[Key]{}, errGroups
-		}
-		item.GroupIDs = ids
-		reserved, errReserved := s.ReservedTokens(ctx, item.ID, time.Now())
-		if errReserved != nil {
-			return Page[Key]{}, errReserved
-		}
-		item.TokenReserved = reserved
 		items = append(items, item)
 	}
 	if errRows := rows.Err(); errRows != nil {
+		_ = rows.Close()
 		return Page[Key]{}, errRows
 	}
+	if errClose := rows.Close(); errClose != nil {
+		return Page[Key]{}, errClose
+	}
+	if errRelations := s.populateKeyRelations(ctx, items, time.Now().UTC()); errRelations != nil {
+		return Page[Key]{}, errRelations
+	}
 	return Page[Key]{Items: items, Total: total, Page: opts.Page, PageSize: opts.PageSize}, nil
+}
+
+func (s *Store) populateKeyRelations(ctx context.Context, items []Key, now time.Time) error {
+	if len(items) == 0 {
+		return nil
+	}
+	positions := make(map[int64]int, len(items))
+	ids := make([]int64, 0, len(items))
+	for index := range items {
+		positions[items[index].ID] = index
+		ids = append(ids, items[index].ID)
+	}
+	for start := 0; start < len(ids); start += sqliteVariableChunkSize {
+		end := start + sqliteVariableChunkSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunk := ids[start:end]
+		placeholders := strings.TrimRight(strings.Repeat("?,", len(chunk)), ",")
+		args := make([]any, 0, len(chunk))
+		for _, id := range chunk {
+			args = append(args, id)
+		}
+		groupRows, errGroups := s.db.QueryContext(ctx, `SELECT key_id, group_id FROM client_access_key_groups WHERE key_id IN (`+placeholders+`) ORDER BY key_id, group_id`, args...)
+		if errGroups != nil {
+			return errGroups
+		}
+		for groupRows.Next() {
+			var keyID, groupID int64
+			if errScan := groupRows.Scan(&keyID, &groupID); errScan != nil {
+				_ = groupRows.Close()
+				return errScan
+			}
+			if index, ok := positions[keyID]; ok {
+				items[index].GroupIDs = append(items[index].GroupIDs, groupID)
+			}
+		}
+		if errRows := groupRows.Err(); errRows != nil {
+			_ = groupRows.Close()
+			return errRows
+		}
+		if errClose := groupRows.Close(); errClose != nil {
+			return errClose
+		}
+
+		reservationArgs := append(append([]any(nil), args...), now.UnixMilli())
+		reservationRows, errReservations := s.db.QueryContext(ctx, `SELECT key_id, COALESCE(SUM(reserved_tokens), 0)
+			FROM client_access_token_reservations
+			WHERE key_id IN (`+placeholders+`) AND settled = 0 AND expires_at_ms > ?
+			GROUP BY key_id`, reservationArgs...)
+		if errReservations != nil {
+			return errReservations
+		}
+		for reservationRows.Next() {
+			var keyID, reserved int64
+			if errScan := reservationRows.Scan(&keyID, &reserved); errScan != nil {
+				_ = reservationRows.Close()
+				return errScan
+			}
+			if index, ok := positions[keyID]; ok {
+				items[index].TokenReserved = reserved
+			}
+		}
+		if errRows := reservationRows.Err(); errRows != nil {
+			_ = reservationRows.Close()
+			return errRows
+		}
+		if errClose := reservationRows.Close(); errClose != nil {
+			return errClose
+		}
+	}
+	return nil
 }
 
 func (s *Store) UpdateKey(ctx context.Context, id int64, input KeyUpdate) (Key, error) {
@@ -730,38 +850,202 @@ func (s *Store) ListCredentialBindings(ctx context.Context, opts ListOptions) (P
 }
 
 func (s *Store) ReplaceCredentialBindings(ctx context.Context, authIndices []string, groups []CredentialGroupInput) error {
+	_, errReplace := s.ReplaceCredentialBindingsWithStats(ctx, authIndices, groups)
+	return errReplace
+}
+
+func (s *Store) ReplaceCredentialBindingsWithStats(ctx context.Context, authIndices []string, groups []CredentialGroupInput) (CredentialBindingChangeStats, error) {
+	authIndices = normalizeAuthIndices(authIndices)
+	groups = normalizeCredentialGroups(groups)
+	stats := CredentialBindingChangeStats{Matched: len(authIndices)}
+	if len(authIndices) == 0 {
+		return stats, nil
+	}
 	tx, errBegin := s.db.BeginTx(ctx, nil)
 	if errBegin != nil {
-		return errBegin
+		return CredentialBindingChangeStats{}, errBegin
 	}
 	defer func() { _ = tx.Rollback() }()
+	if errValidate := validateCredentialGroups(ctx, tx, groups); errValidate != nil {
+		return CredentialBindingChangeStats{}, errValidate
+	}
+
+	existing := make(map[string]map[int64]int, len(authIndices))
+	for start := 0; start < len(authIndices); start += sqliteVariableChunkSize {
+		end := start + sqliteVariableChunkSize
+		if end > len(authIndices) {
+			end = len(authIndices)
+		}
+		chunk := authIndices[start:end]
+		placeholders := strings.TrimRight(strings.Repeat("?,", len(chunk)), ",")
+		args := make([]any, 0, len(chunk))
+		for _, authIndex := range chunk {
+			args = append(args, authIndex)
+		}
+		rows, errQuery := tx.QueryContext(ctx, `SELECT auth_index, group_id, priority FROM client_access_credential_groups WHERE auth_index IN (`+placeholders+`)`, args...)
+		if errQuery != nil {
+			return CredentialBindingChangeStats{}, errQuery
+		}
+		for rows.Next() {
+			var authIndex string
+			var groupID int64
+			var priority int
+			if errScan := rows.Scan(&authIndex, &groupID, &priority); errScan != nil {
+				_ = rows.Close()
+				return CredentialBindingChangeStats{}, errScan
+			}
+			memberships := existing[authIndex]
+			if memberships == nil {
+				memberships = make(map[int64]int)
+				existing[authIndex] = memberships
+			}
+			memberships[groupID] = priority
+		}
+		if errRows := rows.Err(); errRows != nil {
+			_ = rows.Close()
+			return CredentialBindingChangeStats{}, errRows
+		}
+		if errClose := rows.Close(); errClose != nil {
+			return CredentialBindingChangeStats{}, errClose
+		}
+	}
+
+	desired := make(map[int64]int, len(groups))
+	for _, group := range groups {
+		desired[group.GroupID] = group.Priority
+	}
+	changedAuthIndices := make([]string, 0, len(authIndices))
+	for _, authIndex := range authIndices {
+		if credentialMembershipsEqual(existing[authIndex], desired) {
+			stats.Unchanged++
+			continue
+		}
+		changedAuthIndices = append(changedAuthIndices, authIndex)
+	}
+	stats.Updated = len(changedAuthIndices)
+	if len(changedAuthIndices) == 0 {
+		if errCommit := tx.Commit(); errCommit != nil {
+			return CredentialBindingChangeStats{}, errCommit
+		}
+		return stats, nil
+	}
+
+	for start := 0; start < len(changedAuthIndices); start += sqliteVariableChunkSize {
+		end := start + sqliteVariableChunkSize
+		if end > len(changedAuthIndices) {
+			end = len(changedAuthIndices)
+		}
+		chunk := changedAuthIndices[start:end]
+		placeholders := strings.TrimRight(strings.Repeat("?,", len(chunk)), ",")
+		args := make([]any, 0, len(chunk))
+		for _, authIndex := range chunk {
+			args = append(args, authIndex)
+		}
+		if _, errDelete := tx.ExecContext(ctx, `DELETE FROM client_access_credential_groups WHERE auth_index IN (`+placeholders+`)`, args...); errDelete != nil {
+			return CredentialBindingChangeStats{}, errDelete
+		}
+	}
+
 	nowMS := time.Now().UTC().UnixMilli()
-	seenAuth := make(map[string]struct{}, len(authIndices))
-	for _, rawIndex := range authIndices {
-		authIndex := strings.TrimSpace(rawIndex)
-		if authIndex == "" {
-			continue
+	values := make([]string, 0, sqliteInsertRowsPerBatch)
+	insertArgs := make([]any, 0, sqliteInsertRowsPerBatch*4)
+	flushInsert := func() error {
+		if len(values) == 0 {
+			return nil
 		}
-		if _, ok := seenAuth[authIndex]; ok {
-			continue
-		}
-		seenAuth[authIndex] = struct{}{}
-		if _, errDelete := tx.ExecContext(ctx, `DELETE FROM client_access_credential_groups WHERE auth_index = ?`, authIndex); errDelete != nil {
-			return errDelete
-		}
-		seenGroups := make(map[int64]struct{}, len(groups))
+		_, errInsert := tx.ExecContext(ctx, `INSERT INTO client_access_credential_groups(auth_index, group_id, priority, created_at_ms) VALUES `+strings.Join(values, ","), insertArgs...)
+		values = values[:0]
+		insertArgs = insertArgs[:0]
+		return errInsert
+	}
+	for _, authIndex := range changedAuthIndices {
 		for _, group := range groups {
-			if group.GroupID <= 0 {
-				continue
-			}
-			if _, ok := seenGroups[group.GroupID]; ok {
-				continue
-			}
-			seenGroups[group.GroupID] = struct{}{}
-			if _, errInsert := tx.ExecContext(ctx, `INSERT INTO client_access_credential_groups(auth_index, group_id, priority, created_at_ms) VALUES(?, ?, ?, ?)`, authIndex, group.GroupID, group.Priority, nowMS); errInsert != nil {
-				return errInsert
+			values = append(values, "(?, ?, ?, ?)")
+			insertArgs = append(insertArgs, authIndex, group.GroupID, group.Priority, nowMS)
+			if len(values) >= sqliteInsertRowsPerBatch {
+				if errInsert := flushInsert(); errInsert != nil {
+					return CredentialBindingChangeStats{}, errInsert
+				}
 			}
 		}
 	}
-	return tx.Commit()
+	if errInsert := flushInsert(); errInsert != nil {
+		return CredentialBindingChangeStats{}, errInsert
+	}
+	if errCommit := tx.Commit(); errCommit != nil {
+		return CredentialBindingChangeStats{}, errCommit
+	}
+	return stats, nil
+}
+
+func normalizeAuthIndices(values []string) []string {
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, rawValue := range values {
+		value := strings.TrimSpace(rawValue)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
+}
+
+func normalizeCredentialGroups(values []CredentialGroupInput) []CredentialGroupInput {
+	result := make([]CredentialGroupInput, 0, len(values))
+	seen := make(map[int64]struct{}, len(values))
+	for _, value := range values {
+		if value.GroupID <= 0 {
+			continue
+		}
+		if _, ok := seen[value.GroupID]; ok {
+			continue
+		}
+		seen[value.GroupID] = struct{}{}
+		result = append(result, value)
+	}
+	return result
+}
+
+func validateCredentialGroups(ctx context.Context, tx *sql.Tx, groups []CredentialGroupInput) error {
+	if len(groups) == 0 {
+		return nil
+	}
+	for start := 0; start < len(groups); start += sqliteVariableChunkSize {
+		end := start + sqliteVariableChunkSize
+		if end > len(groups) {
+			end = len(groups)
+		}
+		chunk := groups[start:end]
+		placeholders := strings.TrimRight(strings.Repeat("?,", len(chunk)), ",")
+		args := make([]any, 0, len(chunk))
+		for _, group := range chunk {
+			args = append(args, group.GroupID)
+		}
+		var count int
+		if errCount := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM client_access_groups WHERE id IN (`+placeholders+`)`, args...).Scan(&count); errCount != nil {
+			return errCount
+		}
+		if count != len(chunk) {
+			return errors.New("one or more client groups do not exist")
+		}
+	}
+	return nil
+}
+
+func credentialMembershipsEqual(existing, desired map[int64]int) bool {
+	if len(existing) != len(desired) {
+		return false
+	}
+	for groupID, priority := range desired {
+		existingPriority, ok := existing[groupID]
+		if !ok || existingPriority != priority {
+			return false
+		}
+	}
+	return true
 }

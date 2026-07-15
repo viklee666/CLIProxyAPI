@@ -24,6 +24,10 @@ import (
 
 const (
 	defaultLogFileName      = "main.log"
+	defaultLogLineLimit     = 1000
+	maxLogLineLimit         = 10000
+	defaultErrorLogPageSize = 100
+	maxErrorLogPageSize     = 200
 	logScannerInitialBuffer = 64 * 1024
 	logScannerMaxBuffer     = 8 * 1024 * 1024
 	logCursorVersion        = 1
@@ -204,7 +208,7 @@ func (h *Handler) GetRequestErrorLogs(c *gin.Context) {
 		return
 	}
 	if h.cfg.RequestLog {
-		c.JSON(http.StatusOK, gin.H{"files": []any{}})
+		writeRequestErrorLogsResponse(c, []requestErrorLog{}, 0, 1, defaultErrorLogPageSize)
 		return
 	}
 
@@ -214,46 +218,51 @@ func (h *Handler) GetRequestErrorLogs(c *gin.Context) {
 		return
 	}
 
-	entries, err := os.ReadDir(dir)
+	query, errQuery := parseRequestErrorLogQuery(c)
+	if errQuery != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": errQuery.Error()})
+		return
+	}
+
+	catalog, err := loadRequestLogCatalog(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			c.JSON(http.StatusOK, gin.H{"files": []any{}})
+			writeRequestErrorLogsResponse(c, []requestErrorLog{}, 0, query.page, query.pageSize)
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to list request error logs: %v", err)})
 		return
 	}
 
-	type errorLog struct {
-		Name     string `json:"name"`
-		Size     int64  `json:"size"`
-		Modified int64  `json:"modified"`
+	if query.countOnly {
+		total := countMatchingRequestErrorLogNames(catalog.errorNames, query.search)
+		writeRequestErrorLogsResponse(c, []requestErrorLog{}, total, 1, 0)
+		return
 	}
 
-	files := make([]errorLog, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		if !strings.HasPrefix(name, "error-") || !strings.HasSuffix(name, ".log") {
-			continue
-		}
-		info, errInfo := entry.Info()
-		if errInfo != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to read log info for %s: %v", name, errInfo)})
-			return
-		}
-		files = append(files, errorLog{
-			Name:     name,
-			Size:     info.Size(),
-			Modified: info.ModTime().Unix(),
-		})
+	files, errDetails := requestErrorLogDetails(catalog)
+	if errDetails != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to read request error log details: %v", errDetails)})
+		return
 	}
-
-	sort.Slice(files, func(i, j int) bool { return files[i].Modified > files[j].Modified })
-
-	c.JSON(http.StatusOK, gin.H{"files": files})
+	files = filterRequestErrorLogs(files, query.search)
+	total := len(files)
+	totalPages := 0
+	if total > 0 {
+		totalPages = (total + query.pageSize - 1) / query.pageSize
+		if query.page > totalPages {
+			query.page = totalPages
+		}
+	}
+	start := (query.page - 1) * query.pageSize
+	if start > total {
+		start = total
+	}
+	end := start + query.pageSize
+	if end > total {
+		end = total
+	}
+	writeRequestErrorLogsResponse(c, files[start:end], total, query.page, query.pageSize)
 }
 
 // GetRequestLogByID finds and downloads a request log file by its request ID.
@@ -287,7 +296,7 @@ func (h *Handler) GetRequestLogByID(c *gin.Context) {
 		return
 	}
 
-	entries, err := os.ReadDir(dir)
+	catalog, err := loadRequestLogCatalog(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "log directory not found"})
@@ -297,18 +306,7 @@ func (h *Handler) GetRequestLogByID(c *gin.Context) {
 		return
 	}
 
-	suffix := "-" + requestID + ".log"
-	var matchedFile string
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		if strings.HasSuffix(name, suffix) {
-			matchedFile = name
-			break
-		}
-	}
+	matchedFile := requestLogNameByID(catalog, requestID)
 
 	if matchedFile == "" {
 		c.JSON(http.StatusNotFound, gin.H{"error": "log file not found for the given request ID"})
@@ -1214,10 +1212,96 @@ func parseCutoff(raw string) int64 {
 	return ts
 }
 
+type requestErrorLogQuery struct {
+	page      int
+	pageSize  int
+	search    string
+	countOnly bool
+}
+
+func parseRequestErrorLogQuery(c *gin.Context) (requestErrorLogQuery, error) {
+	query := requestErrorLogQuery{
+		page:     1,
+		pageSize: defaultErrorLogPageSize,
+	}
+	if c == nil {
+		return query, nil
+	}
+	view := strings.ToLower(strings.TrimSpace(c.Query("view")))
+	switch view {
+	case "", "detail":
+	case "count":
+		query.countOnly = true
+	default:
+		return query, fmt.Errorf("view must be detail or count")
+	}
+	query.search = strings.ToLower(strings.TrimSpace(c.Query("search")))
+
+	if rawPage := strings.TrimSpace(c.Query("page")); rawPage != "" {
+		page, errPage := strconv.Atoi(rawPage)
+		if errPage != nil || page <= 0 || page > 1_000_000 {
+			return query, fmt.Errorf("page must be an integer between 1 and 1000000")
+		}
+		query.page = page
+	}
+	if rawPageSize := strings.TrimSpace(c.Query("page_size")); rawPageSize != "" {
+		pageSize, errPageSize := strconv.Atoi(rawPageSize)
+		if errPageSize != nil || pageSize <= 0 || pageSize > maxErrorLogPageSize {
+			return query, fmt.Errorf("page_size must be an integer between 1 and %d", maxErrorLogPageSize)
+		}
+		query.pageSize = pageSize
+	}
+	return query, nil
+}
+
+func countMatchingRequestErrorLogNames(names []string, search string) int {
+	if search == "" {
+		return len(names)
+	}
+	total := 0
+	for _, name := range names {
+		if strings.Contains(strings.ToLower(name), search) {
+			total++
+		}
+	}
+	return total
+}
+
+func filterRequestErrorLogs(files []requestErrorLog, search string) []requestErrorLog {
+	if search == "" {
+		return files
+	}
+	filtered := make([]requestErrorLog, 0, len(files))
+	for _, file := range files {
+		if strings.Contains(strings.ToLower(file.Name), search) {
+			filtered = append(filtered, file)
+		}
+	}
+	return filtered
+}
+
+func writeRequestErrorLogsResponse(c *gin.Context, files []requestErrorLog, total, page, pageSize int) {
+	if files == nil {
+		files = []requestErrorLog{}
+	}
+	totalPages := 0
+	if pageSize > 0 && total > 0 {
+		totalPages = (total + pageSize - 1) / pageSize
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"files":       files,
+		"total":       total,
+		"page":        page,
+		"page_size":   pageSize,
+		"total_pages": totalPages,
+		"has_more":    pageSize > 0 && page < totalPages,
+	})
+}
+
 func parseLimit(raw string) (int, error) {
 	value := strings.TrimSpace(raw)
 	if value == "" {
-		return 0, nil
+		return defaultLogLineLimit, nil
 	}
 	limit, err := strconv.Atoi(value)
 	if err != nil {
@@ -1225,6 +1309,9 @@ func parseLimit(raw string) (int, error) {
 	}
 	if limit <= 0 {
 		return 0, fmt.Errorf("must be greater than zero")
+	}
+	if limit > maxLogLineLimit {
+		return 0, fmt.Errorf("must not exceed %d", maxLogLineLimit)
 	}
 	return limit, nil
 }

@@ -1034,13 +1034,78 @@ func TestAnalyticsAccountAndAPIKeyStatsUseFullFilteredScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("limited analytics: %v", err)
 	}
-	if len(limited.AccountStats) != 1 || len(limited.AccountStats[0].Models) != 1 ||
-		limited.AccountStats[0].Calls != 1 {
+	if len(limited.AccountStats) != 1 || len(limited.AccountStats[0].Models) != 2 ||
+		limited.AccountStats[0].Calls != 3 {
 		t.Fatalf("limited account stats = %#v", limited.AccountStats)
 	}
-	if len(limited.APIKeyStats) != 1 || len(limited.APIKeyStats[0].Contexts) != 1 ||
-		limited.APIKeyStats[0].Calls != 1 {
+	if limited.AccountStatsPagination == nil || limited.AccountStatsPagination.Total != 1 ||
+		limited.AccountStatsPagination.Count != 1 {
+		t.Fatalf("limited account pagination = %#v", limited.AccountStatsPagination)
+	}
+	if len(limited.APIKeyStats) != 1 || len(limited.APIKeyStats[0].Contexts) != 2 ||
+		limited.APIKeyStats[0].Calls != 3 {
 		t.Fatalf("limited api key stats = %#v", limited.APIKeyStats)
+	}
+	if limited.APIKeyStatsPagination == nil || limited.APIKeyStatsPagination.Total != 1 ||
+		limited.APIKeyStatsPagination.Count != 1 {
+		t.Fatalf("limited api key pagination = %#v", limited.APIKeyStatsPagination)
+	}
+}
+
+func TestAnalyticsModelStatsDefaultAndExplicitPagesAreBounded(t *testing.T) {
+	db := newMonitoringTestStore(t)
+	ctx := context.Background()
+	fromMS := int64(1_778_060_000_000)
+	toMS := fromMS + 60*60*1000
+	events := make([]usage.Event, 0, 55)
+	for index := 0; index < 55; index++ {
+		events = append(events, monitoringEvent(
+			fmt.Sprintf("model-page-%02d", index),
+			fromMS+int64(index+1)*1000,
+			fmt.Sprintf("model-%02d", index),
+			fmt.Sprintf("auth-%02d", index),
+			fmt.Sprintf("source-%02d", index),
+			false,
+			1,
+			1,
+			0,
+			0,
+			2,
+			nil,
+		))
+	}
+	if _, err := db.InsertEvents(ctx, events); err != nil {
+		t.Fatalf("insert events: %v", err)
+	}
+
+	legacy, err := New(db).Analytics(ctx, Request{
+		FromMS:  fromMS,
+		ToMS:    toMS,
+		Include: Include{ModelStats: true},
+	})
+	if err != nil {
+		t.Fatalf("legacy model stats: %v", err)
+	}
+	if len(legacy.ModelStats) != 50 || legacy.ModelStatsPagination == nil ||
+		legacy.ModelStatsPagination.Total != 55 || !legacy.ModelStatsPagination.Truncated ||
+		!legacy.ModelStatsPagination.HasMore {
+		t.Fatalf("legacy model page = rows:%d page:%#v", len(legacy.ModelStats), legacy.ModelStatsPagination)
+	}
+
+	second, err := New(db).Analytics(ctx, Request{
+		FromMS: fromMS,
+		ToMS:   toMS,
+		Include: Include{
+			ModelStatsPage: &AggregatePage{Page: 2, Limit: 20},
+		},
+	})
+	if err != nil {
+		t.Fatalf("second model page: %v", err)
+	}
+	if len(second.ModelStats) != 20 || second.ModelStatsPagination == nil ||
+		second.ModelStatsPagination.Page != 2 || second.ModelStatsPagination.Count != 20 ||
+		second.ModelStatsPagination.Total != 55 || !second.ModelStatsPagination.HasMore {
+		t.Fatalf("second model page = rows:%d page:%#v", len(second.ModelStats), second.ModelStatsPagination)
 	}
 }
 
@@ -1364,6 +1429,11 @@ func TestAnalyticsFilterOptionsIgnoreActiveScopeFilters(t *testing.T) {
 	}
 	if len(resp.FilterOptions.ModelStats) != 2 {
 		t.Fatalf("model filter options should ignore active account/model filters: %#v", resp.FilterOptions.ModelStats)
+	}
+	if resp.FilterOptions.AccountStatsPagination == nil || resp.FilterOptions.AccountStatsPagination.Total != 2 ||
+		resp.FilterOptions.APIKeyStatsPagination == nil || resp.FilterOptions.APIKeyStatsPagination.Total != 2 ||
+		resp.FilterOptions.ModelStatsPagination == nil || resp.FilterOptions.ModelStatsPagination.Total != 2 {
+		t.Fatalf("filter option pagination = %#v", resp.FilterOptions)
 	}
 	if len(resp.FilterOptions.ChannelShare) != 2 {
 		t.Fatalf("channel/provider filter options should ignore active account/model filters: %#v", resp.FilterOptions.ChannelShare)

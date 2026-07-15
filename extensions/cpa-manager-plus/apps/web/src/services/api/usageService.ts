@@ -123,6 +123,17 @@ export interface QuotaCooldownInfo {
 
 export interface QuotaCooldownsResponse {
   items: QuotaCooldownInfo[];
+  total?: number;
+  page?: number;
+  page_size?: number;
+  total_pages?: number;
+  has_more?: boolean;
+}
+
+export interface QuotaCooldownQuery {
+  provider?: string;
+  auth?: string;
+  search?: string;
 }
 
 export interface UsageServiceSetupRequest {
@@ -290,12 +301,27 @@ export interface CodexInspectionLog {
 
 export interface CodexInspectionRunsResponse {
   items: CodexInspectionRun[];
+  page?: number;
+  page_size?: number;
+  total?: number;
+  total_pages?: number;
+  has_more?: boolean;
+}
+
+export interface CodexInspectionPageMetadata {
+  page: number;
+  page_size: number;
+  total: number;
+  total_pages: number;
+  has_more: boolean;
 }
 
 export interface CodexInspectionRunDetail {
   run: CodexInspectionRun;
   results: CodexInspectionResult[];
   logs: CodexInspectionLog[];
+  results_pagination?: CodexInspectionPageMetadata;
+  logs_pagination?: CodexInspectionPageMetadata;
 }
 
 export interface CodexInspectionActionOutcome {
@@ -316,6 +342,11 @@ export interface CodexInspectionActionsResponse {
 
 export interface ModelPricesResponse {
   prices: Record<string, ModelPrice>;
+  page?: number;
+  page_size?: number;
+  total?: number;
+  total_pages?: number;
+  has_more?: boolean;
 }
 
 export interface ModelPriceUsageStat {
@@ -371,6 +402,12 @@ export interface ApiKeyAlias {
 
 export interface ApiKeyAliasesResponse {
   items: ApiKeyAlias[];
+  page?: number;
+  page_size?: number;
+  total?: number;
+  total_pages?: number;
+  has_more?: boolean;
+  updated?: number;
 }
 
 export type AccountActionType = 'delete' | 'reauth' | 'review' | string;
@@ -398,7 +435,17 @@ export interface AccountActionCandidate {
 
 export interface AccountActionCandidatesResponse {
   items: AccountActionCandidate[];
+  total: number;
+  page: number;
+  page_size: number;
   pendingCount: number;
+}
+
+export interface AccountActionCandidatesParams {
+  status?: string;
+  search?: string;
+  page?: number;
+  pageSize?: number;
 }
 
 export interface AccountActionCandidateResponse {
@@ -637,6 +684,21 @@ export interface MonitoringAnalyticsDrilldownPreviewRequest {
   limit?: number;
 }
 
+export interface MonitoringAnalyticsAggregatePageRequest {
+  page?: number;
+  limit?: number;
+  search?: string;
+}
+
+export interface MonitoringAnalyticsAggregatePagination {
+  page: number;
+  limit: number;
+  total: number;
+  count: number;
+  has_more: boolean;
+  truncated: boolean;
+}
+
 export interface MonitoringAnalyticsInclude {
   summary?: boolean;
   summary_profile?: 'full' | 'compact';
@@ -647,13 +709,17 @@ export interface MonitoringAnalyticsInclude {
   model_share?: boolean;
   channel_share?: boolean;
   model_stats?: boolean;
+  model_stats_page?: MonitoringAnalyticsAggregatePageRequest;
   failure_sources?: boolean;
   account_stats?: boolean;
   account_stats_limit?: number;
+  account_stats_page?: MonitoringAnalyticsAggregatePageRequest;
   credential_stats?: boolean;
+  credential_stats_page?: MonitoringAnalyticsAggregatePageRequest;
   credential_timeline?: boolean;
   api_key_stats?: boolean;
   api_key_stats_limit?: number;
+  api_key_stats_page?: MonitoringAnalyticsAggregatePageRequest;
   filter_options?: boolean;
   filter_selectors?: boolean;
   heatmap?: boolean;
@@ -990,9 +1056,12 @@ export interface MonitoringAnalyticsApiKeyContextRow {
 
 export interface MonitoringAnalyticsFilterOptions {
   account_stats?: MonitoringAnalyticsAccountStatRow[];
+  account_stats_pagination?: MonitoringAnalyticsAggregatePagination;
   api_key_stats?: MonitoringAnalyticsApiKeyStatRow[];
+  api_key_stats_pagination?: MonitoringAnalyticsAggregatePagination;
   channel_share?: MonitoringAnalyticsChannelShareRow[];
   model_stats?: MonitoringAnalyticsModelStat[];
+  model_stats_pagination?: MonitoringAnalyticsAggregatePagination;
   models?: string[];
   api_key_hashes?: string[];
   providers?: string[];
@@ -1224,12 +1293,16 @@ export interface MonitoringAnalyticsResponse {
   anomaly_points?: MonitoringAnalyticsAnomalyPoint[];
   model_share?: MonitoringAnalyticsModelShareRow[];
   model_stats?: MonitoringAnalyticsModelStat[];
+  model_stats_pagination?: MonitoringAnalyticsAggregatePagination;
   channel_share?: MonitoringAnalyticsChannelShareRow[];
   failure_sources?: MonitoringAnalyticsFailureSourceRow[];
   account_stats?: MonitoringAnalyticsAccountStatRow[];
+  account_stats_pagination?: MonitoringAnalyticsAggregatePagination;
   credential_stats?: MonitoringAnalyticsCredentialStatRow[];
+  credential_stats_pagination?: MonitoringAnalyticsAggregatePagination;
   credential_timeline?: MonitoringAnalyticsCredentialTimelinePoint[];
   api_key_stats?: MonitoringAnalyticsApiKeyStatRow[];
+  api_key_stats_pagination?: MonitoringAnalyticsAggregatePagination;
   filter_options?: MonitoringAnalyticsFilterOptions;
   task_buckets?: MonitoringAnalyticsTaskBucketRow[];
   recent_failures?: MonitoringAnalyticsRecentFailure[];
@@ -1382,16 +1455,26 @@ const getDemoAccountActionCandidateResponse = (
 };
 
 const getDemoAccountActionCandidatesResponse = (
-  status: string,
-  limit: number
+  params: AccountActionCandidatesParams
 ): AccountActionCandidatesResponse => {
   const response = getDemoAccountActionCandidates();
+  const status = params.status ?? 'pending';
+  const search = params.search?.trim().toLowerCase() ?? '';
+  const page = Math.max(1, params.page ?? 1);
+  const pageSize = Math.min(200, Math.max(1, params.pageSize ?? 50));
   const filtered =
     !status || status === 'all'
       ? response.items
       : response.items.filter((item) => item.status === status);
+  const searched = search
+    ? filtered.filter((item) => JSON.stringify(item).toLowerCase().includes(search))
+    : filtered;
+  const offset = (page - 1) * pageSize;
   return {
-    items: filtered.slice(0, limit),
+    items: searched.slice(offset, offset + pageSize),
+    total: searched.length,
+    page,
+    page_size: pageSize,
     pendingCount: response.pendingCount,
   };
 };
@@ -1459,6 +1542,66 @@ const getDemoModelPriceSyncResponse = (models?: string[]): ModelPriceSyncRespons
     proxyUsed: false,
     sourceResults: [{ source: 'demo', models: Object.keys(selectedPrices).length, skipped: 0 }],
   };
+};
+
+const CODEX_INSPECTION_DETAIL_PAGE_SIZE = 200;
+const CODEX_INSPECTION_ACTION_BATCH_SIZE = 200;
+
+const fetchCodexInspectionDetailPage = async (
+  base: string,
+  managementKey: string | undefined,
+  id: number,
+  params: Record<string, string | number | boolean>
+): Promise<CodexInspectionRunDetail> => {
+  const response = await axios.get<CodexInspectionRunDetail>(
+    buildUrl(base, `/v0/management/codex-inspection/runs/${id}`),
+    {
+      timeout: USAGE_SERVICE_TIMEOUT_MS,
+      headers: authHeaders(managementKey),
+      params,
+    }
+  );
+  return response.data;
+};
+
+const hydrateCodexInspectionDetail = async (
+  base: string,
+  managementKey: string | undefined,
+  initial: CodexInspectionRunDetail
+): Promise<CodexInspectionRunDetail> => {
+  const results = [...(initial.results ?? [])];
+  const logs = [...(initial.logs ?? [])];
+  const resultPages = Math.max(1, initial.results_pagination?.total_pages ?? 1);
+  const resultPageSize = Math.max(
+    1,
+    initial.results_pagination?.page_size ?? CODEX_INSPECTION_DETAIL_PAGE_SIZE
+  );
+  for (let page = 2; page <= resultPages; page += 1) {
+    const next = await fetchCodexInspectionDetailPage(base, managementKey, initial.run.id, {
+      include_results: true,
+      include_logs: false,
+      results_page: page,
+      results_page_size: resultPageSize,
+    });
+    results.push(...(next.results ?? []));
+  }
+
+  const logPages = Math.max(1, initial.logs_pagination?.total_pages ?? 1);
+  const logPageSize = Math.max(
+    1,
+    initial.logs_pagination?.page_size ?? CODEX_INSPECTION_DETAIL_PAGE_SIZE
+  );
+  for (let page = 2; page <= logPages; page += 1) {
+    const next = await fetchCodexInspectionDetailPage(base, managementKey, initial.run.id, {
+      include_results: false,
+      include_logs: true,
+      logs_page: page,
+      logs_page_size: logPageSize,
+    });
+    logs.push(...(next.logs ?? []));
+  }
+
+  return { ...initial, results, logs };
 };
 
 export const usageServiceApi = {
@@ -1539,9 +1682,18 @@ export const usageServiceApi = {
     managementKey?: string,
     limit = 20
   ): Promise<CodexInspectionRunsResponse> => {
+    const pageSize = Math.min(100, Math.max(1, Math.trunc(limit) || 20));
     if (__DEMO_SITE__ && isDemoMode()) {
       const response = getDemoCodexInspectionRuns();
-      return { items: response.items.slice(0, limit) };
+      const items = response.items.slice(0, pageSize);
+      return {
+        items,
+        page: 1,
+        page_size: pageSize,
+        total: response.items.length,
+        total_pages: response.items.length > 0 ? Math.ceil(response.items.length / pageSize) : 0,
+        has_more: response.items.length > items.length,
+      };
     }
 
     return withUsageServiceError(async () => {
@@ -1550,7 +1702,7 @@ export const usageServiceApi = {
         {
           timeout: USAGE_SERVICE_TIMEOUT_MS,
           headers: authHeaders(managementKey),
-          params: { limit },
+          params: { page: 1, page_size: pageSize },
         }
       );
       return response.data;
@@ -1567,14 +1719,13 @@ export const usageServiceApi = {
     }
 
     return withUsageServiceError(async () => {
-      const response = await axios.get<CodexInspectionRunDetail>(
-        buildUrl(base, `/v0/management/codex-inspection/runs/${id}`),
-        {
-          timeout: USAGE_SERVICE_TIMEOUT_MS,
-          headers: authHeaders(managementKey),
-        }
-      );
-      return response.data;
+      const initial = await fetchCodexInspectionDetailPage(base, managementKey, id, {
+        results_page: 1,
+        results_page_size: CODEX_INSPECTION_DETAIL_PAGE_SIZE,
+        logs_page: 1,
+        logs_page_size: CODEX_INSPECTION_DETAIL_PAGE_SIZE,
+      });
+      return hydrateCodexInspectionDetail(base, managementKey, initial);
     });
   },
 
@@ -1595,7 +1746,7 @@ export const usageServiceApi = {
           headers: authHeaders(managementKey),
         }
       );
-      return response.data;
+      return hydrateCodexInspectionDetail(base, managementKey, response.data);
     });
   },
 
@@ -1610,15 +1761,32 @@ export const usageServiceApi = {
     }
 
     return withUsageServiceError(async () => {
-      const response = await axios.post<CodexInspectionActionsResponse>(
-        buildUrl(base, `/v0/management/codex-inspection/runs/${runId}/actions`),
-        { resultIds },
-        {
-          timeout: CODEX_INSPECTION_RUN_TIMEOUT_MS,
-          headers: authHeaders(managementKey),
-        }
-      );
-      return response.data;
+      const batches: number[][] = [];
+      for (let index = 0; index < resultIds.length; index += CODEX_INSPECTION_ACTION_BATCH_SIZE) {
+        batches.push(resultIds.slice(index, index + CODEX_INSPECTION_ACTION_BATCH_SIZE));
+      }
+      if (batches.length === 0) batches.push([]);
+      const outcomes: CodexInspectionActionOutcome[] = [];
+      let detail: CodexInspectionRunDetail | null = null;
+      for (const batch of batches) {
+        const response = await axios.post<CodexInspectionActionsResponse>(
+          buildUrl(base, `/v0/management/codex-inspection/runs/${runId}/actions`),
+          { resultIds: batch },
+          {
+            timeout: CODEX_INSPECTION_RUN_TIMEOUT_MS,
+            headers: authHeaders(managementKey),
+          }
+        );
+        outcomes.push(...(response.data.outcomes ?? []));
+        detail = response.data.detail;
+      }
+      if (!detail) {
+        throw new Error('codex inspection action response is missing detail');
+      }
+      return {
+        outcomes,
+        detail: await hydrateCodexInspectionDetail(base, managementKey, detail),
+      };
     });
   },
 
@@ -1680,21 +1848,52 @@ export const usageServiceApi = {
 
   getActiveQuotaCooldowns: async (
     base: string,
-    managementKey?: string
+    managementKey?: string,
+    query: QuotaCooldownQuery = {}
   ): Promise<QuotaCooldownInfo[]> => {
     if (__DEMO_SITE__ && isDemoMode()) {
-      return getDemoQuotaCooldowns();
+      const provider = query.provider?.trim().toLowerCase() ?? '';
+      const auth = query.auth?.trim().toLowerCase() ?? '';
+      const search = query.search?.trim().toLowerCase() ?? '';
+      return getDemoQuotaCooldowns().filter((item) => {
+        if (provider && item.provider?.toLowerCase() !== provider) return false;
+        if (
+          auth &&
+          item.authFileName.toLowerCase() !== auth &&
+          item.authIndex?.toLowerCase() !== auth
+        ) {
+          return false;
+        }
+        return !search || JSON.stringify(item).toLowerCase().includes(search);
+      });
     }
 
     return withUsageServiceError(async () => {
-      const response = await axios.get<QuotaCooldownsResponse>(
-        buildUrl(base, '/usage-service/quota-cooldowns'),
-        {
-          timeout: USAGE_SERVICE_TIMEOUT_MS,
-          headers: authHeaders(managementKey),
-        }
-      );
-      return response.data.items ?? [];
+      const pageSize = 200;
+      const items: QuotaCooldownInfo[] = [];
+      for (let page = 1; ; page += 1) {
+        const response = await axios.get<QuotaCooldownsResponse>(
+          buildUrl(base, '/usage-service/quota-cooldowns'),
+          {
+            timeout: USAGE_SERVICE_TIMEOUT_MS,
+            headers: authHeaders(managementKey),
+            params: {
+              provider: query.provider,
+              auth: query.auth,
+              search: query.search,
+              page,
+              page_size: pageSize,
+            },
+          }
+        );
+        const nextItems = response.data.items ?? [];
+        items.push(...nextItems);
+        if (response.data.has_more !== true) break;
+        const totalPages = response.data.total_pages ?? 0;
+        if (totalPages > 0 && page >= totalPages) break;
+        if ((totalPages <= 0 && nextItems.length < pageSize) || page >= 10_000) break;
+      }
+      return items;
     });
   },
 
@@ -1740,14 +1939,30 @@ export const usageServiceApi = {
     }
 
     return withUsageServiceError(async () => {
-      const response = await axios.get<ModelPricesResponse>(
+      let response = await axios.get<ModelPricesResponse>(
         buildUrl(base, '/v0/management/model-prices'),
         {
           timeout: USAGE_SERVICE_TIMEOUT_MS,
           headers: authHeaders(managementKey),
         }
       );
-      return response.data;
+      const prices = { ...(response.data.prices ?? {}) };
+      let page = response.data.page ?? 1;
+      const pageSize = response.data.page_size ?? 100;
+      const totalPages = response.data.total_pages;
+      while (response.data.has_more === true && (!totalPages || page < totalPages)) {
+        page += 1;
+        response = await axios.get<ModelPricesResponse>(
+          buildUrl(base, '/v0/management/model-prices'),
+          {
+            timeout: USAGE_SERVICE_TIMEOUT_MS,
+            headers: authHeaders(managementKey),
+            params: { page, page_size: pageSize },
+          }
+        );
+        Object.assign(prices, response.data.prices ?? {});
+      }
+      return { ...response.data, prices, page: 1, has_more: false };
     });
   },
 
@@ -1804,14 +2019,30 @@ export const usageServiceApi = {
     }
 
     return withUsageServiceError(async () => {
-      const response = await axios.get<ApiKeyAliasesResponse>(
+      let response = await axios.get<ApiKeyAliasesResponse>(
         buildUrl(base, '/v0/management/api-key-aliases'),
         {
           timeout: USAGE_SERVICE_TIMEOUT_MS,
           headers: authHeaders(managementKey),
         }
       );
-      return response.data;
+      const items = [...(response.data.items ?? [])];
+      let page = response.data.page ?? 1;
+      const pageSize = response.data.page_size ?? 100;
+      const totalPages = response.data.total_pages;
+      while (response.data.has_more === true && (!totalPages || page < totalPages)) {
+        page += 1;
+        response = await axios.get<ApiKeyAliasesResponse>(
+          buildUrl(base, '/v0/management/api-key-aliases'),
+          {
+            timeout: USAGE_SERVICE_TIMEOUT_MS,
+            headers: authHeaders(managementKey),
+            params: { page, page_size: pageSize },
+          }
+        );
+        items.push(...(response.data.items ?? []));
+      }
+      return { ...response.data, items, page: 1, has_more: false };
     });
   },
 
@@ -1873,11 +2104,15 @@ export const usageServiceApi = {
   listAccountActionCandidates: async (
     base: string,
     managementKey?: string,
-    status = 'pending',
-    limit = 100
+    paramsOrStatus: AccountActionCandidatesParams | string = { status: 'pending' },
+    legacyLimit = 100
   ): Promise<AccountActionCandidatesResponse> => {
+    const params: AccountActionCandidatesParams =
+      typeof paramsOrStatus === 'string'
+        ? { status: paramsOrStatus, page: 1, pageSize: legacyLimit }
+        : paramsOrStatus;
     if (__DEMO_SITE__ && isDemoMode()) {
-      return getDemoAccountActionCandidatesResponse(status, limit);
+      return getDemoAccountActionCandidatesResponse(params);
     }
 
     return withUsageServiceError(async () => {
@@ -1886,7 +2121,12 @@ export const usageServiceApi = {
         {
           timeout: USAGE_SERVICE_TIMEOUT_MS,
           headers: authHeaders(managementKey),
-          params: { status, limit },
+          params: {
+            status: params.status,
+            search: params.search,
+            page: params.page,
+            page_size: params.pageSize,
+          },
         }
       );
       return response.data;
@@ -2010,7 +2250,8 @@ export const usageServiceApi = {
           headers: authHeaders(managementKey),
         }
       );
-      return response.data;
+      const refreshed = await usageServiceApi.getModelPrices(base, managementKey);
+      return { ...response.data, prices: refreshed.prices };
     });
   },
 

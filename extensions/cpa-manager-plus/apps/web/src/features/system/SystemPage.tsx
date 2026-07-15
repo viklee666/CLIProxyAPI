@@ -108,8 +108,8 @@ export function SystemPage() {
     }
 
     try {
-      const list = await apiKeysApi.list();
-      const normalized = normalizeApiKeyList(list);
+      const first = await apiKeysApi.first();
+      const normalized = normalizeApiKeyList(first ? [first] : []);
       if (normalized.length) {
         apiKeysCache.current = normalized;
       }

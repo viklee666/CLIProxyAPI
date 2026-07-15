@@ -89,7 +89,8 @@ func writeClientAccessError(c *gin.Context, err error) {
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 	case strings.Contains(strings.ToLower(err.Error()), "required"),
 		strings.Contains(strings.ToLower(err.Error()), "cannot"),
-		strings.Contains(strings.ToLower(err.Error()), "must contain"):
+		strings.Contains(strings.ToLower(err.Error()), "must contain"),
+		strings.Contains(strings.ToLower(err.Error()), "do not exist"):
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 	default:
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

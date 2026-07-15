@@ -3025,6 +3025,7 @@
     "model_caller_distribution": "Распределение по клиентским ключам",
     "rank_show_all": "Показать все ({{count}})",
     "rank_collapse": "Свернуть",
+    "server_page_truncated": "Серверная пагинация; показана текущая страница",
     "cost_share_title": "Доля стоимости",
     "model_compare_title": "Сравнение трендов моделей",
     "api_key_compare_title": "Тренд клиентского ключа",

@@ -10,6 +10,53 @@ import { useCredentialStatusStore } from '@/stores/useCredentialStatusStore';
 
 type StatusError = { status?: number };
 type AuthFileStatusResponse = { status: string; disabled: boolean };
+export type AuthFileStatusTarget = {
+  name: string;
+  authIndex?: AuthFilePatchAuthIndex | null;
+};
+type AuthFileBatchStatusItem = {
+  name?: unknown;
+  auth_index?: unknown;
+  disabled?: unknown;
+};
+type AuthFileBatchStatusFailure = {
+  name?: unknown;
+  auth_index?: unknown;
+  error?: unknown;
+};
+type AuthFileBatchStatusResponse = {
+  status?: unknown;
+  updated?: unknown;
+  items?: unknown;
+  failed?: unknown;
+};
+export type AuthFileBatchStatusResult = {
+  status: string;
+  updated: number;
+  items: Array<{ name: string; authIndex: string; disabled: boolean }>;
+  failed: AuthFileBatchFailure[];
+};
+export type AuthFileFieldsTarget = {
+  name: string;
+  authIndexes?: AuthFilePatchAuthIndex[];
+};
+type AuthFileBatchFieldsResponse = {
+  status?: unknown;
+  updated?: unknown;
+  items?: unknown;
+  failed?: unknown;
+};
+export type AuthFileBatchFieldsResult = {
+  status: string;
+  updated: number;
+  failed: AuthFileBatchFailure[];
+};
+export type AuthFileBatchDownloadResult = {
+  blob: Blob;
+  filename: string;
+  included: number;
+  failed: number;
+};
 type AuthFilePatchPayload = { name: string; disabled?: boolean; [key: string]: unknown };
 type AuthFileEntry = AuthFilesResponse['files'][number];
 export type AuthFilesListQuery = {
@@ -157,44 +204,6 @@ const normalizeBatchUploadResponse = (
       typeof payload?.status === 'string' ? payload.status : failed.length > 0 ? 'partial' : 'ok',
     uploaded,
     files: uploadedFiles,
-    failed,
-  };
-};
-
-const readUploadErrorMessage = (err: unknown): string => {
-  if (err instanceof Error && err.message.trim()) return err.message;
-  if (typeof err === 'string' && err.trim()) return err.trim();
-  return 'Upload failed';
-};
-
-const uploadSingleAuthFile = async (file: File): Promise<AuthFileBatchUploadResult> => {
-  const formData = new FormData();
-  formData.append('file', file, file.name);
-  const payload = await apiClient.postForm<AuthFileBatchUploadResponse>('/auth-files', formData);
-  return normalizeBatchUploadResponse(payload, [file.name]);
-};
-
-const mergeBatchUploadResults = (
-  results: AuthFileBatchUploadResult[],
-  requestedNames: string[]
-): AuthFileBatchUploadResult => {
-  const uploaded = results.reduce((total, result) => total + Math.max(0, result.uploaded), 0);
-  const files = results.flatMap((result) => result.files);
-  const failed = results.flatMap((result) => result.failed);
-  const hasFailureStatus = results.some((result) => {
-    const status = result.status.trim().toLowerCase();
-    return status === 'error' || status === 'failed' || status === 'partial';
-  });
-
-  return {
-    status:
-      failed.length > 0 || hasFailureStatus || uploaded < requestedNames.length
-        ? uploaded > 0
-          ? 'partial'
-          : 'error'
-        : 'ok',
-    uploaded,
-    files,
     failed,
   };
 };
@@ -556,6 +565,7 @@ const listAllAuthFiles = async (
   let page = 1;
   let total = 0;
   let serverTimeMs = 0;
+  let snapshotETag = '';
   let facets: AuthFilesResponse['facets'] = undefined;
 
   while (true) {
@@ -570,6 +580,9 @@ const listAllAuthFiles = async (
     if (serverTimeMs <= 0 && (response.server_time_ms ?? 0) > 0) {
       serverTimeMs = response.server_time_ms ?? 0;
     }
+    if (!snapshotETag && response.snapshot_etag) {
+      snapshotETag = response.snapshot_etag;
+    }
     facets = response.facets ?? facets;
     if (!response.has_more && files.length >= total) break;
     if (response.files.length === 0 || response.files.length < AUTH_FILES_BULK_PAGE_SIZE) break;
@@ -581,6 +594,7 @@ const listAllAuthFiles = async (
     total,
     facets,
     server_time_ms: serverTimeMs || undefined,
+    snapshot_etag: snapshotETag || undefined,
   });
   useCredentialStatusStore.getState().upsertSnapshots(result.files);
   return result;
@@ -682,6 +696,50 @@ const normalizeOauthModelAlias = (payload: unknown): Record<string, OAuthModelAl
 
 const OAUTH_MODEL_ALIAS_ENDPOINT = '/oauth-model-alias';
 
+const readPageInteger = (value: unknown): number | null => {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+};
+
+const fetchAllPagedMap = async <T>(
+  endpoint: string,
+  normalize: (payload: unknown) => Record<string, T[]>
+): Promise<Record<string, T[]>> => {
+  let payload = await apiClient.get<unknown>(endpoint);
+  const merged: Record<string, T[]> = {};
+
+  while (true) {
+    const pageItems = normalize(payload);
+    Object.entries(pageItems).forEach(([key, values]) => {
+      merged[key] = [...(merged[key] ?? []), ...values];
+    });
+
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) break;
+    const pageRecord = payload as Record<string, unknown>;
+    if (pageRecord.has_more !== true) break;
+    const page = readPageInteger(pageRecord.page) ?? 1;
+    const pageSize = readPageInteger(pageRecord.page_size) ?? 100;
+    const totalPages = readPageInteger(pageRecord.total_pages);
+    if (totalPages && page >= totalPages) break;
+    payload = await apiClient.get<unknown>(endpoint, {
+      params: { page: page + 1, page_size: pageSize },
+    });
+  }
+
+  return merged;
+};
+
+const extractModelDefinitions = (
+  payload: unknown
+): { id: string; display_name?: string; type?: string; owned_by?: string }[] => {
+  if (!payload || typeof payload !== 'object') return [];
+  const record = payload as Record<string, unknown>;
+  const models = record.models ?? record['models'];
+  return Array.isArray(models)
+    ? (models as { id: string; display_name?: string; type?: string; owned_by?: string }[])
+    : [];
+};
+
 export const authFilesApi = {
   list: async (params?: AuthFilesListQuery) => {
     const response = dedupeAuthFilesResponse(
@@ -729,6 +787,70 @@ export const authFilesApi = {
     return response;
   },
 
+  setStatuses: async (
+    targets: AuthFileStatusTarget[],
+    disabled: boolean
+  ): Promise<AuthFileBatchStatusResult> => {
+    const seen = new Set<string>();
+    const items = targets.reduce<Array<{ name: string; auth_index?: string }>>((result, target) => {
+      const name = String(target?.name ?? '').trim();
+      const authIndex = normalizePatchAuthIndex(target?.authIndex);
+      if (!name) return result;
+      const key = `${name}\u0000${authIndex}`;
+      if (seen.has(key)) return result;
+      seen.add(key);
+      result.push({ name, ...(authIndex ? { auth_index: authIndex } : {}) });
+      return result;
+    }, []);
+    if (items.length === 0) {
+      return { status: 'ok', updated: 0, items: [], failed: [] };
+    }
+
+    const payload = await apiClient.patch<AuthFileBatchStatusResponse>('/auth-files/status/batch', {
+      items,
+      disabled,
+    });
+    const updatedItems = Array.isArray(payload?.items)
+      ? (payload.items as AuthFileBatchStatusItem[]).reduce<AuthFileBatchStatusResult['items']>(
+          (result, item) => {
+            const name = String(item?.name ?? '').trim();
+            const authIndex = normalizePatchAuthIndex(item?.auth_index);
+            if (!name || typeof item?.disabled !== 'boolean') return result;
+            result.push({ name, authIndex, disabled: item.disabled });
+            return result;
+          },
+          []
+        )
+      : [];
+    const failed = Array.isArray(payload?.failed)
+      ? (payload.failed as AuthFileBatchStatusFailure[]).reduce<AuthFileBatchFailure[]>(
+          (result, item) => {
+            const name = String(item?.name ?? '').trim();
+            const error = String(item?.error ?? '').trim();
+            if (!name && !error) return result;
+            result.push({ name, error: error || 'Unknown error' });
+            return result;
+          },
+          []
+        )
+      : [];
+    updatedItems.forEach((item) => {
+      useCredentialStatusStore
+        .getState()
+        .patchStatus({ name: item.name, authIndex: item.authIndex }, item.disabled);
+    });
+    return {
+      status:
+        typeof payload?.status === 'string' ? payload.status : failed.length ? 'partial' : 'ok',
+      updated:
+        typeof payload?.updated === 'number' && Number.isFinite(payload.updated)
+          ? payload.updated
+          : updatedItems.length,
+      items: updatedItems,
+      failed,
+    };
+  },
+
   setStatusWithFallback: async (
     name: string,
     disabled: boolean,
@@ -749,6 +871,41 @@ export const authFilesApi = {
   patchFields: (name: string, fields: AuthFileFieldsPatch) =>
     apiClient.patch('/auth-files/fields', { name, ...fields }),
 
+  patchFieldsBatch: async (
+    targets: AuthFileFieldsTarget[],
+    fields: AuthFileFieldsPatch
+  ): Promise<AuthFileBatchFieldsResult> => {
+    const items = targets.reduce<Array<{ name: string; auth_indices?: string[] }>>(
+      (result, target) => {
+        const name = String(target?.name ?? '').trim();
+        if (!name) return result;
+        const authIndexes = Array.from(
+          new Set((target.authIndexes ?? []).map(normalizePatchAuthIndex).filter(Boolean))
+        );
+        result.push({ name, ...(authIndexes.length ? { auth_indices: authIndexes } : {}) });
+        return result;
+      },
+      []
+    );
+    if (items.length === 0 || Object.keys(fields).length === 0) {
+      return { status: 'ok', updated: 0, failed: [] };
+    }
+    const payload = await apiClient.patch<AuthFileBatchFieldsResponse>('/auth-files/fields/batch', {
+      items,
+      fields,
+    });
+    const failed = normalizeBatchFailures(payload?.failed);
+    return {
+      status:
+        typeof payload?.status === 'string' ? payload.status : failed.length ? 'partial' : 'ok',
+      updated:
+        typeof payload?.updated === 'number' && Number.isFinite(payload.updated)
+          ? payload.updated
+          : Math.max(0, items.length - failed.length),
+      failed,
+    };
+  },
+
   patchFieldsForAuthIndexes: async (
     name: string,
     authIndexes: AuthFilePatchAuthIndex[],
@@ -766,24 +923,11 @@ export const authFilesApi = {
       return { status: 'ok', uploaded: 0, files: [], failed: [] };
     }
 
-    if (files.length === 1) {
-      return uploadSingleAuthFile(files[0]);
-    }
-
-    const results: AuthFileBatchUploadResult[] = [];
-    for (const file of files) {
-      try {
-        results.push(await uploadSingleAuthFile(file));
-      } catch (err) {
-        results.push({
-          status: 'error',
-          uploaded: 0,
-          files: [],
-          failed: [{ name: file.name, error: readUploadErrorMessage(err) }],
-        });
-      }
-    }
-    return mergeBatchUploadResults(results, requestedNames);
+    const formData = new FormData();
+    const formField = files.length === 1 ? 'file' : 'files';
+    files.forEach((file) => formData.append(formField, file, file.name));
+    const payload = await apiClient.postForm<AuthFileBatchUploadResponse>('/auth-files', formData);
+    return normalizeBatchUploadResponse(payload, requestedNames);
   },
 
   upload: (file: File) => authFilesApi.uploadFiles([file]),
@@ -824,6 +968,45 @@ export const authFilesApi = {
     return response;
   },
 
+  downloadFiles: async (names: string[]): Promise<AuthFileBatchDownloadResult> => {
+    const requestedNames = normalizeRequestedAuthFileNames(names);
+    if (requestedNames.length === 0) {
+      return {
+        blob: new Blob([], { type: 'application/zip' }),
+        filename: 'auth-files.zip',
+        included: 0,
+        failed: 0,
+      };
+    }
+    const response = await apiClient.requestRaw({
+      method: 'POST',
+      url: '/auth-files/download',
+      data: { names: requestedNames },
+      responseType: 'blob',
+    });
+    const readHeader = (name: string): string => {
+      const headers = response.headers as unknown as {
+        get?: (key: string) => unknown;
+        [key: string]: unknown;
+      };
+      const direct = headers?.get?.(name) ?? headers?.[name] ?? headers?.[name.toLowerCase()];
+      return direct == null ? '' : String(direct);
+    };
+    const contentDisposition = readHeader('content-disposition');
+    const filenameMatch = /filename="?([^";]+)"?/i.exec(contentDisposition);
+    const included = Number.parseInt(readHeader('x-auth-files-included'), 10);
+    const failed = Number.parseInt(readHeader('x-auth-files-failed'), 10);
+    return {
+      blob:
+        response.data instanceof Blob
+          ? response.data
+          : new Blob([response.data], { type: 'application/zip' }),
+      filename: filenameMatch?.[1]?.trim() || 'auth-files.zip',
+      included: Number.isFinite(included) ? included : requestedNames.length,
+      failed: Number.isFinite(failed) ? failed : 0,
+    };
+  },
+
   downloadText: async (name: string): Promise<string> => {
     const response = await apiClient.getRaw(
       `/auth-files/download?name=${encodeURIComponent(name)}`,
@@ -847,8 +1030,7 @@ export const authFilesApi = {
 
   // OAuth 排除模型
   async getOauthExcludedModels(): Promise<Record<string, string[]>> {
-    const data = await apiClient.get('/oauth-excluded-models');
-    return normalizeOauthExcludedModels(data);
+    return fetchAllPagedMap('/oauth-excluded-models', normalizeOauthExcludedModels);
   },
 
   saveOauthExcludedModels: (provider: string, models: string[]) =>
@@ -862,8 +1044,7 @@ export const authFilesApi = {
 
   // OAuth 模型别名
   async getOauthModelAlias(): Promise<Record<string, OAuthModelAliasEntry[]>> {
-    const data = await apiClient.get(OAUTH_MODEL_ALIAS_ENDPOINT);
-    return normalizeOauthModelAlias(data);
+    return fetchAllPagedMap(OAUTH_MODEL_ALIAS_ENDPOINT, normalizeOauthModelAlias);
   },
 
   saveOauthModelAlias: async (channel: string, aliases: OAuthModelAliasEntry[]) => {
@@ -904,13 +1085,22 @@ export const authFilesApi = {
   async getModelsForAuthFile(
     name: string
   ): Promise<{ id: string; display_name?: string; type?: string; owned_by?: string }[]> {
-    const data = await apiClient.get<Record<string, unknown>>(
-      `/auth-files/models?name=${encodeURIComponent(name)}`
-    );
-    const models = data.models ?? data['models'];
-    return Array.isArray(models)
-      ? (models as { id: string; display_name?: string; type?: string; owned_by?: string }[])
-      : [];
+    const endpoint = '/auth-files/models';
+    let data = await apiClient.get<unknown>(endpoint, { params: { name } });
+    const models = extractModelDefinitions(data);
+    while (data && typeof data === 'object' && !Array.isArray(data)) {
+      const record = data as Record<string, unknown>;
+      if (record.has_more !== true) break;
+      const page = readPageInteger(record.page) ?? 1;
+      const pageSize = readPageInteger(record.page_size) ?? 100;
+      const totalPages = readPageInteger(record.total_pages);
+      if (totalPages && page >= totalPages) break;
+      data = await apiClient.get<unknown>(endpoint, {
+        params: { name, page: page + 1, page_size: pageSize },
+      });
+      models.push(...extractModelDefinitions(data));
+    }
+    return models;
   },
 
   // 获取指定 channel 的模型定义
@@ -921,12 +1111,21 @@ export const authFilesApi = {
       .trim()
       .toLowerCase();
     if (!normalizedChannel) return [];
-    const data = await apiClient.get<Record<string, unknown>>(
-      `/model-definitions/${encodeURIComponent(normalizedChannel)}`
-    );
-    const models = data.models ?? data['models'];
-    return Array.isArray(models)
-      ? (models as { id: string; display_name?: string; type?: string; owned_by?: string }[])
-      : [];
+    const endpoint = `/model-definitions/${encodeURIComponent(normalizedChannel)}`;
+    let data = await apiClient.get<unknown>(endpoint);
+    const models = extractModelDefinitions(data);
+    while (data && typeof data === 'object' && !Array.isArray(data)) {
+      const record = data as Record<string, unknown>;
+      if (record.has_more !== true) break;
+      const page = readPageInteger(record.page) ?? 1;
+      const pageSize = readPageInteger(record.page_size) ?? 100;
+      const totalPages = readPageInteger(record.total_pages);
+      if (totalPages && page >= totalPages) break;
+      data = await apiClient.get<unknown>(endpoint, {
+        params: { page: page + 1, page_size: pageSize },
+      });
+      models.push(...extractModelDefinitions(data));
+    }
+    return models;
   },
 };

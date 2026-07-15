@@ -6,12 +6,29 @@ import { apiClient } from './client';
 import type { Config } from '@/types';
 import { normalizeConfigResponse } from './transformers';
 
+export interface ConfigSummary {
+  apiKeys: number;
+  geminiApiKeys: number;
+  interactionsApiKeys: number;
+  codexApiKeys: number;
+  claudeApiKeys: number;
+  xaiApiKeys: number;
+  vertexApiKeys: number;
+  openAICompatibility: number;
+  providerCredentials: number;
+}
+
+const summaryCount = (value: unknown): number => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : 0;
+};
+
 export const configApi = {
   /**
-   * 获取配置（会进行字段规范化）
+   * 获取日常 UI 配置投影（会进行字段规范化）。大集合通过各自分页接口读取。
    */
   async getConfig(): Promise<Config> {
-    const raw = await apiClient.get('/config');
+    const raw = await apiClient.get('/config', { params: { view: 'ui' } });
     return normalizeConfigResponse(raw);
   },
 
@@ -19,6 +36,21 @@ export const configApi = {
    * 获取原始配置（不做转换）
    */
   getRawConfig: () => apiClient.get('/config'),
+
+  async getSummary(): Promise<ConfigSummary> {
+    const data = await apiClient.get<Record<string, unknown>>('/config/summary');
+    return {
+      apiKeys: summaryCount(data.api_keys),
+      geminiApiKeys: summaryCount(data.gemini_api_keys),
+      interactionsApiKeys: summaryCount(data.interactions_api_keys),
+      codexApiKeys: summaryCount(data.codex_api_keys),
+      claudeApiKeys: summaryCount(data.claude_api_keys),
+      xaiApiKeys: summaryCount(data.xai_api_keys),
+      vertexApiKeys: summaryCount(data.vertex_api_keys),
+      openAICompatibility: summaryCount(data.openai_compatibility),
+      providerCredentials: summaryCount(data.provider_credentials),
+    };
+  },
 
   /**
    * 更新 Debug 模式

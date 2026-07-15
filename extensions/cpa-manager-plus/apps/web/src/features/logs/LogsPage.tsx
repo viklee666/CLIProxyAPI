@@ -51,6 +51,7 @@ interface ErrorLogItem {
 // 初始只渲染最近 100 行，滚动到顶部再逐步加载更多（避免一次性渲染过多导致卡顿）
 const INITIAL_DISPLAY_LINES = 100;
 const MAX_BUFFER_LINES = 10000;
+const ERROR_LOG_PAGE_SIZE = 100;
 const LONG_PRESS_MS = 650;
 const LONG_PRESS_MOVE_THRESHOLD = 10;
 
@@ -108,6 +109,9 @@ export function LogsPage() {
     true
   );
   const [errorLogs, setErrorLogs] = useState<ErrorLogItem[]>([]);
+  const [errorLogsPage, setErrorLogsPage] = useState(1);
+  const [errorLogsTotal, setErrorLogsTotal] = useState(0);
+  const [errorLogsTotalPages, setErrorLogsTotalPages] = useState(0);
   const [loadingErrors, setLoadingErrors] = useState(false);
   const [errorLogsError, setErrorLogsError] = useState('');
   const [requestLogId, setRequestLogId] = useState<string | null>(null);
@@ -269,7 +273,7 @@ export function LogsPage() {
     showNotification(t('logs.download_success'), 'success');
   };
 
-  const loadErrorLogs = async () => {
+  const loadErrorLogs = async (requestedPage = errorLogsPage) => {
     if (connectionStatus !== 'connected') {
       setLoadingErrors(false);
       return;
@@ -278,12 +282,19 @@ export function LogsPage() {
     setLoadingErrors(true);
     setErrorLogsError('');
     try {
-      const res = await logsApi.fetchErrorLogs();
-      // API 返回 { files: [...] }
+      const res = await logsApi.fetchErrorLogs({
+        page: requestedPage,
+        pageSize: ERROR_LOG_PAGE_SIZE,
+      });
       setErrorLogs(Array.isArray(res.files) ? res.files : []);
+      setErrorLogsTotal(res.total ?? res.files?.length ?? 0);
+      setErrorLogsPage(res.page ?? requestedPage);
+      setErrorLogsTotalPages(res.total_pages ?? 0);
     } catch (err: unknown) {
       console.error('Failed to load error logs:', err);
       setErrorLogs([]);
+      setErrorLogsTotal(0);
+      setErrorLogsTotalPages(0);
       const message = getErrorMessage(err);
       setErrorLogsError(
         message ? `${t('logs.error_logs_load_error')}: ${message}` : t('logs.error_logs_load_error')
@@ -911,7 +922,7 @@ export function LogsPage() {
               <Button
                 variant="secondary"
                 size="sm"
-                onClick={loadErrorLogs}
+                onClick={() => void loadErrorLogs()}
                 loading={loadingErrors}
                 disabled={disableControls}
               >
@@ -958,6 +969,41 @@ export function LogsPage() {
                         </div>
                       </div>
                     ))}
+                    {errorLogsTotalPages > 1 && (
+                      <div className="pagination">
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => void loadErrorLogs(Math.max(1, errorLogsPage - 1))}
+                          disabled={disableControls || loadingErrors || errorLogsPage <= 1}
+                        >
+                          {t('common.previous')}
+                        </Button>
+                        <span>
+                          {t('auth_files.pagination_info', {
+                            current: errorLogsPage,
+                            total: errorLogsTotalPages,
+                            count: errorLogsTotal,
+                          })}
+                        </span>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={() =>
+                            void loadErrorLogs(
+                              Math.min(errorLogsTotalPages, errorLogsPage + 1)
+                            )
+                          }
+                          disabled={
+                            disableControls ||
+                            loadingErrors ||
+                            errorLogsPage >= errorLogsTotalPages
+                          }
+                        >
+                          {t('common.next')}
+                        </Button>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

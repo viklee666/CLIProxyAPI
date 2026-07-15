@@ -60,6 +60,7 @@ import {
 
 const USAGE_SEARCH_DEBOUNCE_MS = 350;
 const USAGE_HEATMAP_ALL_DATES_KEY = 'all';
+const USAGE_AGGREGATE_PAGE_SIZE = 25;
 
 type UsageAnalyticsMonitoringMeta = {
   authFiles: AuthFileItem[];
@@ -108,6 +109,9 @@ export function useUsageAnalytics() {
   const [selectedModelId, setSelectedModelId] = useState('');
   const [selectedApiKeyHash, setSelectedApiKeyHash] = useState('');
   const [selectedCredentialId, setSelectedCredentialId] = useState('');
+  const [modelPage, setModelPageState] = useState(1);
+  const [apiKeyPage, setApiKeyPageState] = useState(1);
+  const [credentialPage, setCredentialPageState] = useState(1);
   const [trendMetric, setTrendMetric] = useState<UsageTrendMetricKey>('requestCount');
   const [matrixDimension, setMatrixDimension] = useState<UsageMatrixDimension>('apiKeyModel');
   const [matrixMetric, setMatrixMetric] = useState<UsageMatrixMetricKey>('requestCount');
@@ -206,6 +210,10 @@ export function useUsageAnalytics() {
     filters.searchQuery.trim(),
     USAGE_SEARCH_DEBOUNCE_MS
   );
+  const debouncedApiKeyKeyword = useDebouncedValue(
+    filters.apiKeyKeyword.trim(),
+    USAGE_SEARCH_DEBOUNCE_MS
+  );
 
   const bounds = useMemo(() => getUsageRangeBounds(filters, nowMs), [filters, nowMs]);
   const heatmapRangeContext = useMemo(
@@ -250,8 +258,25 @@ export function useUsageAnalytics() {
     };
   }, [resolvedGranularity, selectedBucketMs]);
   const include = useMemo(
-    () => buildUsageAnalyticsInclude(activeTabState, resolvedGranularity, drilldownPreview),
-    [activeTabState, drilldownPreview, resolvedGranularity]
+    () =>
+      buildUsageAnalyticsInclude(activeTabState, resolvedGranularity, drilldownPreview, {
+        models: { page: modelPage, limit: USAGE_AGGREGATE_PAGE_SIZE },
+        apiKeys: {
+          page: apiKeyPage,
+          limit: USAGE_AGGREGATE_PAGE_SIZE,
+          search: debouncedApiKeyKeyword || undefined,
+        },
+        credentials: { page: credentialPage, limit: USAGE_AGGREGATE_PAGE_SIZE },
+      }),
+    [
+      activeTabState,
+      apiKeyPage,
+      credentialPage,
+      debouncedApiKeyKeyword,
+      drilldownPreview,
+      modelPage,
+      resolvedGranularity,
+    ]
   );
   const dataScopeKey = useMemo(
     () =>
@@ -261,14 +286,22 @@ export function useUsageAnalytics() {
         drilldownPreview,
         filters: analyticsFilters,
         granularity: resolvedGranularity,
+        modelPage,
+        apiKeyPage,
+        apiKeyKeyword: debouncedApiKeyKeyword,
+        credentialPage,
         searchQuery: debouncedSearchQuery,
       }),
     [
       activeTabState,
       analyticsFilters,
+      apiKeyPage,
       bounds,
+      credentialPage,
+      debouncedApiKeyKeyword,
       debouncedSearchQuery,
       drilldownPreview,
+      modelPage,
       resolvedGranularity,
     ]
   );
@@ -357,6 +390,9 @@ export function useUsageAnalytics() {
       resolvedGranularity,
     ]
   );
+  const modelPagination = analyticsData?.model_stats_pagination;
+  const apiKeyPagination = analyticsData?.api_key_stats_pagination;
+  const credentialPagination = analyticsData?.credential_stats_pagination;
   const heatmapDateData = heatmapDateAnalytics.dataStale ? null : heatmapDateAnalytics.data;
   const heatmapDateRows = useMemo(
     () => buildUsageHeatmap(heatmapDateData?.heatmap ?? [], apiKeyDisplayMap),
@@ -499,8 +535,7 @@ export function useUsageAnalytics() {
   const selectedCredentialTimelineAnalytics = useMonitoringAnalytics({
     fromMs:
       activeTabState === 'credentials' && selectedCredentialFilterID ? bounds?.fromMs : undefined,
-    toMs:
-      activeTabState === 'credentials' && selectedCredentialFilterID ? bounds?.toMs : undefined,
+    toMs: activeTabState === 'credentials' && selectedCredentialFilterID ? bounds?.toMs : undefined,
     nowMs,
     dataScopeKey: selectedCredentialTimelineDataScopeKey,
     searchQuery: debouncedSearchQuery,
@@ -513,10 +548,10 @@ export function useUsageAnalytics() {
     : selectedCredentialTimelineAnalytics.data;
   const credentialTrendLoading = Boolean(
     activeTabState === 'credentials' &&
-      selectedCredentialFilterID &&
-      (selectedCredentialTimelineAnalytics.loading ||
-        selectedCredentialTimelineAnalytics.dataStale ||
-        (!selectedCredentialTimelineAnalytics.data && !selectedCredentialTimelineAnalytics.error))
+    selectedCredentialFilterID &&
+    (selectedCredentialTimelineAnalytics.loading ||
+      selectedCredentialTimelineAnalytics.dataStale ||
+      (!selectedCredentialTimelineAnalytics.data && !selectedCredentialTimelineAnalytics.error))
   );
   const credentialTrendError =
     activeTabState === 'credentials' && selectedCredentialFilterID
@@ -591,6 +626,9 @@ export function useUsageAnalytics() {
       return next;
     });
     setSelectedBucketMs(null);
+    setModelPageState(1);
+    setApiKeyPageState(1);
+    setCredentialPageState(1);
     setSelectedHeatmapDateKey(USAGE_HEATMAP_ALL_DATES_KEY);
     setSelectedHeatmapCell(null);
   }, []);
@@ -599,6 +637,9 @@ export function useUsageAnalytics() {
     setFiltersState(USAGE_ANALYTICS_DEFAULT_FILTERS);
     writeUsageAnalyticsUiState({ filters: USAGE_ANALYTICS_DEFAULT_FILTERS });
     setSelectedBucketMs(null);
+    setModelPageState(1);
+    setApiKeyPageState(1);
+    setCredentialPageState(1);
     setSelectedHeatmapDateKey(USAGE_HEATMAP_ALL_DATES_KEY);
     setSelectedHeatmapCell(null);
   }, []);
@@ -613,6 +654,9 @@ export function useUsageAnalytics() {
       return next;
     });
     setSelectedBucketMs(null);
+    setModelPageState(1);
+    setApiKeyPageState(1);
+    setCredentialPageState(1);
     setSelectedHeatmapDateKey(USAGE_HEATMAP_ALL_DATES_KEY);
     setSelectedHeatmapCell(null);
   }, []);
@@ -628,6 +672,21 @@ export function useUsageAnalytics() {
 
   const selectHeatmapDate = useCallback((key: string) => {
     setSelectedHeatmapDateKey(key || USAGE_HEATMAP_ALL_DATES_KEY);
+  }, []);
+
+  const setModelPage = useCallback((page: number) => {
+    setSelectedModelId('');
+    setModelPageState(Math.max(1, page));
+  }, []);
+
+  const setApiKeyPage = useCallback((page: number) => {
+    setSelectedApiKeyHash('');
+    setApiKeyPageState(Math.max(1, page));
+  }, []);
+
+  const setCredentialPage = useCallback((page: number) => {
+    setSelectedCredentialId('');
+    setCredentialPageState(Math.max(1, page));
   }, []);
 
   const refresh = useCallback(() => {
@@ -676,8 +735,17 @@ export function useUsageAnalytics() {
     summaryDelta,
     timeline: adapted.timeline,
     modelRows: adapted.modelRows,
+    modelPagination,
+    modelPage,
+    setModelPage,
     apiKeyRows: adapted.apiKeyRows,
+    apiKeyPagination,
+    apiKeyPage,
+    setApiKeyPage,
     credentialRows: adapted.credentialRows,
+    credentialPagination,
+    credentialPage,
+    setCredentialPage,
     allCredentialRows: adapted.credentialRows,
     providerRows: adapted.providerRows,
     heatmap: adapted.heatmap,

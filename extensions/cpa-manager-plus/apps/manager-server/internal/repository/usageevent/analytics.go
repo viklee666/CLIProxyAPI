@@ -32,28 +32,33 @@ var (
 )
 
 type AnalyticsFilter struct {
-	FromMS           int64
-	ToMS             int64
-	SearchQuery      string
-	SearchAPIKeyHash string
-	Models           []string
-	Providers        []string
-	Accounts         []string
-	CredentialIDs    []string
-	AuthFiles        []string
-	AuthIndices      []string
-	APIKeyHashes     []string
-	SourceHashes     []string
-	ProjectIDs       []string
-	RequestTypes     []string
-	IncludeFailed    bool
-	FailedOnly       bool
-	MinLatencyMS     int64
-	CacheStatus      string
-	HeaderErrorKinds []string
-	HeaderErrorCodes []string
-	HeaderQuotaPlans []string
-	HeaderTraceIDs   []string
+	FromMS                  int64
+	ToMS                    int64
+	SearchQuery             string
+	SearchAPIKeyHash        string
+	Models                  []string
+	Providers               []string
+	Accounts                []string
+	CredentialIDs           []string
+	AuthFiles               []string
+	AuthIndices             []string
+	APIKeyHashes            []string
+	SourceHashes            []string
+	ProjectIDs              []string
+	RequestTypes            []string
+	IncludeFailed           bool
+	FailedOnly              bool
+	MinLatencyMS            int64
+	CacheStatus             string
+	HeaderErrorKinds        []string
+	HeaderErrorCodes        []string
+	HeaderQuotaPlans        []string
+	HeaderTraceIDs          []string
+	APIKeyAggregateSearch   string
+	modelAggregateKeys      []string
+	accountAggregateKeys    []string
+	credentialAggregateKeys []string
+	apiKeyAggregateKeys     []string
 }
 
 var analyticsSearchTextColumns = []string{
@@ -95,14 +100,15 @@ type LatencySummary struct {
 }
 
 type FilterOptionValues struct {
-	Providers        []string
-	AuthFiles        []string
-	ProjectIDs       []string
-	RequestTypes     []string
-	HeaderErrorKinds []string
-	HeaderErrorCodes []string
-	HeaderQuotaPlans []string
-	HeaderTraceIDs   []string
+	Providers             []string
+	AuthFiles             []string
+	ProjectIDs            []string
+	RequestTypes          []string
+	HeaderErrorKinds      []string
+	HeaderErrorCodes      []string
+	HeaderQuotaPlans      []string
+	HeaderTraceIDs        []string
+	APIKeyAggregateSearch string
 }
 
 type FilterSelectorValues struct {
@@ -437,6 +443,11 @@ from usage_events `+where, args...)
 }
 
 func (r *repository) ModelStatsWithFilter(ctx context.Context, filter AnalyticsFilter, limit int) ([]ModelStat, error) {
+	page, err := r.ModelStatsPageWithFilter(ctx, filter, limit, 0)
+	return page.Items, err
+}
+
+func (r *repository) modelStatsWithFilter(ctx context.Context, filter AnalyticsFilter) ([]ModelStat, error) {
 	where, args := analyticsWhere(filter)
 	query := `select
 	model,
@@ -459,41 +470,6 @@ func (r *repository) ModelStatsWithFilter(ctx context.Context, filter AnalyticsF
 from usage_events ` + where + `
 group by model, billing_model, coalesce(service_tier, '')
 order by calls desc`
-	if limit > 0 {
-		query = `with filtered as (
-	select * from usage_events ` + where + `
-),
-top_models as (
-	select model, count(*) as model_calls
-	from filtered
-	group by model
-	order by model_calls desc
-	limit ?
-)
-select
-	f.model,
-	coalesce(nullif(f.resolved_model, ''), f.model) as billing_model,
-	coalesce(f.service_tier, '') as service_tier,
-	count(*) as calls,
-	sum(case when f.failed = 0 then 1 else 0 end) as success,
-	coalesce(sum(f.input_tokens), 0),
-	coalesce(sum(f.output_tokens), 0),
-	coalesce(sum(f.reasoning_tokens), 0),
-	coalesce(sum(` + compatCachedFExpr + `), 0),
-	coalesce(sum(f.cache_read_tokens), 0),
-	coalesce(sum(f.cache_creation_tokens), 0),
-	coalesce(sum(` + longInputFExpr + `), 0),
-	coalesce(sum(` + longOutputFExpr + `), 0),
-	coalesce(sum(` + longCachedFExpr + `), 0),
-	coalesce(sum(` + longCacheReadFExpr + `), 0),
-	coalesce(sum(` + longCacheCreationFExpr + `), 0),
-	coalesce(sum(f.total_tokens), 0)
-from filtered f
-join top_models t on t.model = f.model
-group by f.model, billing_model, coalesce(f.service_tier, '')
-order by max(t.model_calls) desc, f.model, calls desc`
-		args = append(args, limit)
-	}
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -1136,8 +1112,13 @@ order by sum(case when failed = 1 then 1 else 0 end) desc, max(timestamp_ms) des
 }
 
 func (r *repository) AccountModelStatsWithFilter(ctx context.Context, filter AnalyticsFilter, limit int) ([]AccountModelStat, error) {
+	page, err := r.AccountModelStatsPageWithFilter(ctx, filter, limit, 0)
+	return page.Items, err
+}
+
+func (r *repository) accountModelStatsWithFilter(ctx context.Context, filter AnalyticsFilter) ([]AccountModelStat, error) {
 	where, args := analyticsWhere(filter)
-	query := `select
+	rows, err := r.db.QueryContext(ctx, `select
 	coalesce(account_snapshot, ''),
 	coalesce(auth_label_snapshot, ''),
 	coalesce(nullif(auth_provider_snapshot, ''), provider, ''),
@@ -1150,28 +1131,23 @@ func (r *repository) AccountModelStatsWithFilter(ctx context.Context, filter Ana
 	count(*),
 	sum(case when failed = 0 then 1 else 0 end),
 	sum(case when failed = 1 then 1 else 0 end),
-		coalesce(sum(` + normalizedInputExpr + `), 0),
+		coalesce(sum(`+normalizedInputExpr+`), 0),
 	coalesce(sum(output_tokens), 0),
-	coalesce(sum(` + compatCachedExpr + `), 0),
+	coalesce(sum(`+compatCachedExpr+`), 0),
 	coalesce(sum(cache_read_tokens), 0),
 	coalesce(sum(cache_creation_tokens), 0),
-	coalesce(sum(` + longInputExpr + `), 0),
-	coalesce(sum(` + longOutputExpr + `), 0),
-	coalesce(sum(` + longCachedExpr + `), 0),
-	coalesce(sum(` + longCacheReadExpr + `), 0),
-	coalesce(sum(` + longCacheCreationExpr + `), 0),
+	coalesce(sum(`+longInputExpr+`), 0),
+	coalesce(sum(`+longOutputExpr+`), 0),
+	coalesce(sum(`+longCachedExpr+`), 0),
+	coalesce(sum(`+longCacheReadExpr+`), 0),
+	coalesce(sum(`+longCacheCreationExpr+`), 0),
 	coalesce(sum(total_tokens), 0),
 	max(timestamp_ms),
 	avg(nullif(latency_ms, 0)),
 	count(nullif(latency_ms, 0))
-from usage_events ` + where + `
-group by account_snapshot, auth_label_snapshot, coalesce(nullif(auth_provider_snapshot, ''), provider, ''), auth_index, source_hash, model, billing_model, coalesce(service_tier, '')
-order by max(timestamp_ms) desc, count(*) desc`
-	if limit > 0 {
-		query += ` limit ?`
-		args = append(args, limit)
-	}
-	rows, err := r.db.QueryContext(ctx, query, args...)
+from usage_events `+where+`
+group by `+accountAggregateKeyExpr+`, account_snapshot, auth_label_snapshot, coalesce(nullif(auth_provider_snapshot, ''), provider, ''), auth_index, source_hash, model, billing_model, coalesce(service_tier, '')
+order by max(timestamp_ms) desc, count(*) desc`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1216,6 +1192,11 @@ order by max(timestamp_ms) desc, count(*) desc`
 }
 
 func (r *repository) CredentialModelStatsWithFilter(ctx context.Context, filter AnalyticsFilter) ([]CredentialModelStat, error) {
+	page, err := r.CredentialModelStatsPageWithFilter(ctx, filter, defaultAggregatePageSize, 0)
+	return page.Items, err
+}
+
+func (r *repository) credentialModelStatsWithFilter(ctx context.Context, filter AnalyticsFilter) ([]CredentialModelStat, error) {
 	where, args := analyticsWhere(filter)
 	rows, err := r.db.QueryContext(ctx, `select
 	`+credentialIDExpr+` as credential_id,
@@ -1690,8 +1671,13 @@ func mergeCredentialTimelineParts(parts [][]CredentialTimelinePoint) []Credentia
 }
 
 func (r *repository) APIKeyModelStatsWithFilter(ctx context.Context, filter AnalyticsFilter, limit int) ([]APIKeyModelStat, error) {
+	page, err := r.APIKeyModelStatsPageWithFilter(ctx, filter, limit, 0)
+	return page.Items, err
+}
+
+func (r *repository) apiKeyModelStatsWithFilter(ctx context.Context, filter AnalyticsFilter) ([]APIKeyModelStat, error) {
 	where, args := analyticsWhere(filter)
-	query := `select
+	rows, err := r.db.QueryContext(ctx, `select
 	coalesce(api_key_hash, ''),
 	coalesce(account_snapshot, ''),
 	coalesce(auth_label_snapshot, ''),
@@ -1705,28 +1691,23 @@ func (r *repository) APIKeyModelStatsWithFilter(ctx context.Context, filter Anal
 	count(*),
 	sum(case when failed = 0 then 1 else 0 end),
 	sum(case when failed = 1 then 1 else 0 end),
-		coalesce(sum(` + normalizedInputExpr + `), 0),
+		coalesce(sum(`+normalizedInputExpr+`), 0),
 	coalesce(sum(output_tokens), 0),
-	coalesce(sum(` + compatCachedExpr + `), 0),
+	coalesce(sum(`+compatCachedExpr+`), 0),
 	coalesce(sum(cache_read_tokens), 0),
 	coalesce(sum(cache_creation_tokens), 0),
-	coalesce(sum(` + longInputExpr + `), 0),
-	coalesce(sum(` + longOutputExpr + `), 0),
-	coalesce(sum(` + longCachedExpr + `), 0),
-	coalesce(sum(` + longCacheReadExpr + `), 0),
-	coalesce(sum(` + longCacheCreationExpr + `), 0),
+	coalesce(sum(`+longInputExpr+`), 0),
+	coalesce(sum(`+longOutputExpr+`), 0),
+	coalesce(sum(`+longCachedExpr+`), 0),
+	coalesce(sum(`+longCacheReadExpr+`), 0),
+	coalesce(sum(`+longCacheCreationExpr+`), 0),
 	coalesce(sum(total_tokens), 0),
 	max(timestamp_ms),
 	avg(nullif(latency_ms, 0)),
 	count(nullif(latency_ms, 0))
-from usage_events ` + where + `
-group by api_key_hash, account_snapshot, auth_label_snapshot, coalesce(nullif(auth_provider_snapshot, ''), provider, ''), auth_index, source_hash, model, billing_model, coalesce(service_tier, '')
-order by max(timestamp_ms) desc, count(*) desc`
-	if limit > 0 {
-		query += ` limit ?`
-		args = append(args, limit)
-	}
-	rows, err := r.db.QueryContext(ctx, query, args...)
+from usage_events `+where+`
+group by `+apiKeyAggregateKeyExpr+`, api_key_hash, account_snapshot, auth_label_snapshot, coalesce(nullif(auth_provider_snapshot, ''), provider, ''), auth_index, source_hash, model, billing_model, coalesce(service_tier, '')
+order by max(timestamp_ms) desc, count(*) desc`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -2271,6 +2252,14 @@ func analyticsWhere(filter AnalyticsFilter) (string, []any) {
 	addInCondition("header_error_code", filter.HeaderErrorCodes)
 	addInCondition("header_quota_plan_type", filter.HeaderQuotaPlans)
 	addInCondition("header_trace_id", filter.HeaderTraceIDs)
+	addAggregateKeysCondition("model", filter.modelAggregateKeys, &conditions, &args)
+	addAggregateKeysCondition(accountAggregateKeyExpr, filter.accountAggregateKeys, &conditions, &args)
+	addAggregateKeysCondition(credentialIDExpr, filter.credentialAggregateKeys, &conditions, &args)
+	addAggregateKeysCondition(apiKeyAggregateKeyExpr, filter.apiKeyAggregateKeys, &conditions, &args)
+	if search := strings.ToLower(strings.TrimSpace(filter.APIKeyAggregateSearch)); search != "" {
+		conditions = append(conditions, "lower("+apiKeyAggregateKeyExpr+") like ?")
+		args = append(args, "%"+search+"%")
+	}
 	if !filter.IncludeFailed {
 		conditions = append(conditions, "failed = 0")
 	}

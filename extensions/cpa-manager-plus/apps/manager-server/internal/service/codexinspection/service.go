@@ -32,6 +32,7 @@ const (
 	codexMaxMonthWindow = 31 * 24 * 60 * 60
 	authFilesPageSize   = 500
 	maxStoredBodyText   = 2048
+	MaxManualActionIDs  = 200
 )
 
 var (
@@ -40,6 +41,7 @@ var (
 	ErrRunNotFound             = errors.New("codex inspection run not found")
 	ErrRunNotCompleted         = errors.New("codex inspection run is not completed")
 	ErrActionIDsRequired       = errors.New("codex inspection action result ids are required")
+	ErrTooManyActionIDs        = errors.New("codex inspection action result ids must be less than or equal to 200")
 	ErrNoActionableResults     = errors.New("codex inspection has no actionable results")
 	ErrCooldownResetRequired   = errors.New("codex inspection cooldown requires a future reset time")
 	ErrAuthFileNotFound        = errors.New("codex inspection auth file was not found")
@@ -61,9 +63,33 @@ type RunRequest struct {
 }
 
 type RunDetail struct {
-	Run     model.CodexInspectionRun      `json:"run"`
-	Results []model.CodexInspectionResult `json:"results"`
-	Logs    []model.CodexInspectionLog    `json:"logs"`
+	Run               model.CodexInspectionRun      `json:"run"`
+	Results           []model.CodexInspectionResult `json:"results"`
+	Logs              []model.CodexInspectionLog    `json:"logs"`
+	ResultsPagination *PageMetadata                 `json:"results_pagination,omitempty"`
+	LogsPagination    *PageMetadata                 `json:"logs_pagination,omitempty"`
+}
+
+type PageMetadata struct {
+	Page       int   `json:"page"`
+	PageSize   int   `json:"page_size"`
+	Total      int64 `json:"total"`
+	TotalPages int   `json:"total_pages"`
+	HasMore    bool  `json:"has_more"`
+}
+
+type RunsPage struct {
+	Items []model.CodexInspectionRun `json:"items"`
+	PageMetadata
+}
+
+type RunDetailPageRequest struct {
+	IncludeResults  bool
+	IncludeLogs     bool
+	ResultsPage     int
+	ResultsPageSize int
+	LogsPage        int
+	LogsPageSize    int
 }
 
 type ExecuteActionsRequest struct {
@@ -316,6 +342,15 @@ func (s *Service) ListRuns(ctx context.Context, limit int) ([]model.CodexInspect
 	return s.store.ListCodexInspectionRuns(ctx, limit)
 }
 
+func (s *Service) ListRunsPage(ctx context.Context, page, pageSize int) (RunsPage, error) {
+	page, pageSize = normalizePage(page, pageSize)
+	result, err := s.store.ListCodexInspectionRunsPage(ctx, pageSize, (page-1)*pageSize)
+	if err != nil {
+		return RunsPage{}, err
+	}
+	return RunsPage{Items: result.Items, PageMetadata: buildPageMetadata(page, pageSize, result.Total)}, nil
+}
+
 func (s *Service) GetRun(ctx context.Context, id int64) (RunDetail, error) {
 	run, ok, err := s.store.GetCodexInspectionRun(ctx, id)
 	if err != nil {
@@ -335,7 +370,73 @@ func (s *Service) GetRun(ctx context.Context, id int64) (RunDetail, error) {
 	return RunDetail{Run: run, Results: results, Logs: logs}, nil
 }
 
+func (s *Service) GetRunPage(ctx context.Context, id int64, req RunDetailPageRequest) (RunDetail, error) {
+	run, ok, err := s.store.GetCodexInspectionRun(ctx, id)
+	if err != nil {
+		return RunDetail{}, err
+	}
+	if !ok {
+		return RunDetail{}, ErrRunNotFound
+	}
+	detail := RunDetail{
+		Run:     run,
+		Results: []model.CodexInspectionResult{},
+		Logs:    []model.CodexInspectionLog{},
+	}
+	if req.IncludeResults {
+		page, pageSize := normalizePage(req.ResultsPage, req.ResultsPageSize)
+		results, err := s.store.ListCodexInspectionResultsPage(ctx, id, pageSize, (page-1)*pageSize)
+		if err != nil {
+			return RunDetail{}, err
+		}
+		detail.Results = results.Items
+		metadata := buildPageMetadata(page, pageSize, results.Total)
+		detail.ResultsPagination = &metadata
+	}
+	if req.IncludeLogs {
+		page, pageSize := normalizePage(req.LogsPage, req.LogsPageSize)
+		logs, err := s.store.ListCodexInspectionLogsPage(ctx, id, pageSize, (page-1)*pageSize)
+		if err != nil {
+			return RunDetail{}, err
+		}
+		detail.Logs = logs.Items
+		metadata := buildPageMetadata(page, pageSize, logs.Total)
+		detail.LogsPagination = &metadata
+	}
+	return detail, nil
+}
+
+func normalizePage(page, pageSize int) (int, int) {
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = 100
+	}
+	if pageSize > 200 {
+		pageSize = 200
+	}
+	return page, pageSize
+}
+
+func buildPageMetadata(page, pageSize int, total int64) PageMetadata {
+	totalPages := 0
+	if total > 0 {
+		totalPages = int((total + int64(pageSize) - 1) / int64(pageSize))
+	}
+	return PageMetadata{
+		Page:       page,
+		PageSize:   pageSize,
+		Total:      total,
+		TotalPages: totalPages,
+		HasMore:    int64(page)*int64(pageSize) < total,
+	}
+}
+
 func (s *Service) ExecuteManualActions(ctx context.Context, runID int64, req ExecuteActionsRequest) (ExecuteActionsResult, error) {
+	if len(req.ResultIDs) > MaxManualActionIDs {
+		return ExecuteActionsResult{}, ErrTooManyActionIDs
+	}
 	if err := s.acquireRun(); err != nil {
 		return ExecuteActionsResult{}, err
 	}

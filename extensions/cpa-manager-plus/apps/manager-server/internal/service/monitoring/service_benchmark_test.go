@@ -329,7 +329,7 @@ func BenchmarkUsageAnalyticsHourlyCorePaths(b *testing.B) {
 			if _, err := db.AggregateWithFilter(ctx, filter); err != nil {
 				b.Fatalf("aggregate: %v", err)
 			}
-			if _, err := db.ModelStatsWithFilter(ctx, filter, 0); err != nil {
+			if _, err := db.ModelStatsWithFilter(ctx, filter, defaultAggregatePageLimit); err != nil {
 				b.Fatalf("model stats: %v", err)
 			}
 			if _, err := db.TimelineWithFilter(ctx, filter, "day", time.UTC); err != nil {

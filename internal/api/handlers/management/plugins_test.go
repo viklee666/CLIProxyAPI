@@ -172,6 +172,117 @@ func TestListPluginsIncludesScannedAndConfiguredPlugins(t *testing.T) {
 	}
 }
 
+func TestListPluginsFiltersPollingResponseByID(t *testing.T) {
+	t.Parallel()
+
+	disabled := false
+	h := &Handler{cfg: &config.Config{Plugins: config.PluginsConfig{Configs: map[string]config.PluginInstanceConfig{
+		"first":  {Enabled: &disabled},
+		"second": {Enabled: &disabled},
+	}}}}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v0/management/plugins?id=second", nil)
+
+	h.ListPlugins(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var body pluginListResponse
+	if errDecode := json.Unmarshal(rec.Body.Bytes(), &body); errDecode != nil {
+		t.Fatalf("decode response: %v", errDecode)
+	}
+	if len(body.Plugins) != 1 || body.Plugins[0].ID != "second" {
+		t.Fatalf("plugins = %#v", body.Plugins)
+	}
+	if body.Page != 1 || body.PageSize != defaultPluginCollectionPageSize || body.Total != 1 || body.TotalPages != 1 || body.HasMore {
+		t.Fatalf("pagination = page:%d page_size:%d total:%d total_pages:%d has_more:%v", body.Page, body.PageSize, body.Total, body.TotalPages, body.HasMore)
+	}
+}
+
+func TestListPluginsUsesStableBoundedPagination(t *testing.T) {
+	t.Parallel()
+
+	disabled := false
+	h := &Handler{cfg: &config.Config{Plugins: config.PluginsConfig{Configs: map[string]config.PluginInstanceConfig{
+		"charlie": {Enabled: &disabled},
+		"alpha":   {Enabled: &disabled},
+		"bravo":   {Enabled: &disabled},
+	}}}}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v0/management/plugins?page=2&page_size=1", nil)
+
+	h.ListPlugins(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var body pluginListResponse
+	if errDecode := json.Unmarshal(rec.Body.Bytes(), &body); errDecode != nil {
+		t.Fatalf("decode response: %v", errDecode)
+	}
+	if len(body.Plugins) != 1 || body.Plugins[0].ID != "bravo" {
+		t.Fatalf("plugins = %#v, want stable second entry bravo", body.Plugins)
+	}
+	if body.Page != 2 || body.PageSize != 1 || body.Total != 3 || body.TotalPages != 3 || !body.HasMore {
+		t.Fatalf("pagination = page:%d page_size:%d total:%d total_pages:%d has_more:%v", body.Page, body.PageSize, body.Total, body.TotalPages, body.HasMore)
+	}
+}
+
+func TestPluginCollectionEndpointsRejectInvalidPagination(t *testing.T) {
+	t.Parallel()
+
+	h := &Handler{cfg: &config.Config{}}
+	for _, testCase := range []struct {
+		name    string
+		target  string
+		handler func(*gin.Context)
+	}{
+		{name: "plugins page", target: "/v0/management/plugins?page=0", handler: h.ListPlugins},
+		{name: "plugins page size", target: "/v0/management/plugins?page_size=201", handler: h.ListPlugins},
+		{name: "routes page size", target: "/v0/management/plugins/routes?page_size=201", handler: h.ListPluginRoutes},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodGet, testCase.target, nil)
+
+			testCase.handler(c)
+
+			if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "invalid_pagination") {
+				t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestListPluginRoutesReturnsStableEmptyPagination(t *testing.T) {
+	t.Parallel()
+
+	h := &Handler{cfg: &config.Config{}}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v0/management/plugins/routes?page=3&page_size=7", nil)
+
+	h.ListPluginRoutes(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var body pluginRouteListResponse
+	if errDecode := json.Unmarshal(rec.Body.Bytes(), &body); errDecode != nil {
+		t.Fatalf("decode response: %v", errDecode)
+	}
+	if body.Routes == nil || len(body.Routes) != 0 {
+		t.Fatalf("routes = %#v, want non-nil empty list", body.Routes)
+	}
+	if body.Page != 3 || body.PageSize != 7 || body.Total != 0 || body.TotalPages != 0 || body.HasMore {
+		t.Fatalf("pagination = %#v", body)
+	}
+}
+
 func TestListPluginsUsesConfiguredStoreVersionWhenFilesCoexist(t *testing.T) {
 	t.Parallel()
 

@@ -3,6 +3,7 @@ package management
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -11,13 +12,12 @@ import (
 
 // Generic helpers for list[string]
 func (h *Handler) putStringList(c *gin.Context, set func([]string), after func()) {
-	data, err := c.GetRawData()
-	if err != nil {
-		c.JSON(400, gin.H{"error": "failed to read body"})
+	data, ok := readConfigCollectionBody(c)
+	if !ok {
 		return
 	}
 	var arr []string
-	if err = json.Unmarshal(data, &arr); err != nil {
+	if err := json.Unmarshal(data, &arr); err != nil {
 		var obj struct {
 			Items []string `json:"items"`
 		}
@@ -27,11 +27,16 @@ func (h *Handler) putStringList(c *gin.Context, set func([]string), after func()
 		}
 		arr = obj.Items
 	}
+	if !validateConfigCollectionSize(c, len(arr)) {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	set(arr)
 	if after != nil {
 		after()
 	}
-	h.persist(c)
+	h.persistLocked(c)
 }
 
 func (h *Handler) patchStringList(c *gin.Context, target *[]string, after func()) {
@@ -41,16 +46,17 @@ func (h *Handler) patchStringList(c *gin.Context, target *[]string, after func()
 		Index *int    `json:"index"`
 		Value *string `json:"value"`
 	}
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(400, gin.H{"error": "invalid body"})
+	if !bindConfigCollectionJSON(c, &body) {
 		return
 	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	if body.Index != nil && body.Value != nil && *body.Index >= 0 && *body.Index < len(*target) {
 		(*target)[*body.Index] = *body.Value
 		if after != nil {
 			after()
 		}
-		h.persist(c)
+		h.persistLocked(c)
 		return
 	}
 	if body.Old != nil && body.New != nil {
@@ -60,21 +66,27 @@ func (h *Handler) patchStringList(c *gin.Context, target *[]string, after func()
 				if after != nil {
 					after()
 				}
-				h.persist(c)
+				h.persistLocked(c)
 				return
 			}
+		}
+		if len(*target) >= maxConfigCollectionItems {
+			c.JSON(413, gin.H{"error": "too_many_items", "message": fmt.Sprintf("config collection must not contain more than %d items", maxConfigCollectionItems)})
+			return
 		}
 		*target = append(*target, *body.New)
 		if after != nil {
 			after()
 		}
-		h.persist(c)
+		h.persistLocked(c)
 		return
 	}
 	c.JSON(400, gin.H{"error": "missing fields"})
 }
 
 func (h *Handler) deleteFromStringList(c *gin.Context, target *[]string, after func()) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	if idxStr := c.Query("index"); idxStr != "" {
 		var idx int
 		_, err := fmt.Sscanf(idxStr, "%d", &idx)
@@ -83,7 +95,7 @@ func (h *Handler) deleteFromStringList(c *gin.Context, target *[]string, after f
 			if after != nil {
 				after()
 			}
-			h.persist(c)
+			h.persistLocked(c)
 			return
 		}
 	}
@@ -98,14 +110,64 @@ func (h *Handler) deleteFromStringList(c *gin.Context, target *[]string, after f
 		if after != nil {
 			after()
 		}
-		h.persist(c)
+		h.persistLocked(c)
 		return
 	}
 	c.JSON(400, gin.H{"error": "missing index or value"})
 }
 
 // api-keys
-func (h *Handler) GetAPIKeys(c *gin.Context) { c.JSON(200, gin.H{"api-keys": h.cfg.APIKeys}) }
+func (h *Handler) GetAPIKeys(c *gin.Context) {
+	h.mu.Lock()
+	keys := append([]string(nil), h.cfg.APIKeys...)
+	h.mu.Unlock()
+
+	if search := strings.ToLower(strings.TrimSpace(c.Query("search"))); search != "" {
+		filtered := make([]string, 0, len(keys))
+		for _, key := range keys {
+			if strings.Contains(strings.ToLower(key), search) {
+				filtered = append(filtered, key)
+			}
+		}
+		keys = filtered
+	}
+	writeConfigCollectionPage(c, "api-keys", keys)
+}
+
+func (h *Handler) PostAPIKey(c *gin.Context) {
+	var body struct {
+		Value  *string `json:"value"`
+		APIKey *string `json:"api-key"`
+	}
+	if !bindConfigCollectionJSON(c, &body) {
+		return
+	}
+	value := body.Value
+	if value == nil {
+		value = body.APIKey
+	}
+	if value == nil || strings.TrimSpace(*value) == "" {
+		c.JSON(400, gin.H{"error": "api-key is required"})
+		return
+	}
+	key := strings.TrimSpace(*value)
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, existing := range h.cfg.APIKeys {
+		if existing == key {
+			c.JSON(409, gin.H{"error": "item already exists"})
+			return
+		}
+	}
+	if len(h.cfg.APIKeys) >= maxConfigCollectionItems {
+		c.JSON(413, gin.H{"error": "too_many_items", "message": fmt.Sprintf("config collection must not contain more than %d items", maxConfigCollectionItems)})
+		return
+	}
+	h.cfg.APIKeys = append(h.cfg.APIKeys, key)
+	h.persistLocked(c)
+}
+
 func (h *Handler) PutAPIKeys(c *gin.Context) {
 	h.putStringList(c, func(v []string) {
 		h.cfg.APIKeys = append([]string(nil), v...)
@@ -120,16 +182,15 @@ func (h *Handler) DeleteAPIKeys(c *gin.Context) {
 
 // gemini-api-key: []GeminiKey
 func (h *Handler) GetGeminiKeys(c *gin.Context) {
-	c.JSON(200, gin.H{"gemini-api-key": h.geminiKeysWithAuthIndex()})
+	writeConfigCollectionPage(c, "gemini-api-key", h.geminiKeysWithAuthIndex())
 }
 func (h *Handler) PutGeminiKeys(c *gin.Context) {
-	data, err := c.GetRawData()
-	if err != nil {
-		c.JSON(400, gin.H{"error": "failed to read body"})
+	data, ok := readConfigCollectionBody(c)
+	if !ok {
 		return
 	}
 	var arr []config.GeminiKey
-	if err = json.Unmarshal(data, &arr); err != nil {
+	if err := json.Unmarshal(data, &arr); err != nil {
 		var obj struct {
 			Items []config.GeminiKey `json:"items"`
 		}
@@ -139,6 +200,9 @@ func (h *Handler) PutGeminiKeys(c *gin.Context) {
 		}
 		arr = obj.Items
 	}
+	if !validateConfigCollectionSize(c, len(arr)) {
+		return
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.cfg.GeminiKey = append([]config.GeminiKey(nil), arr...)
@@ -147,23 +211,35 @@ func (h *Handler) PutGeminiKeys(c *gin.Context) {
 }
 func (h *Handler) PatchGeminiKey(c *gin.Context) {
 	type geminiKeyPatch struct {
-		APIKey         *string            `json:"api-key"`
-		Prefix         *string            `json:"prefix"`
-		BaseURL        *string            `json:"base-url"`
-		ProxyURL       *string            `json:"proxy-url"`
-		Headers        *map[string]string `json:"headers"`
-		ExcludedModels *[]string          `json:"excluded-models"`
+		APIKey         *string               `json:"api-key"`
+		Priority       *int                  `json:"priority"`
+		Prefix         *string               `json:"prefix"`
+		BaseURL        *string               `json:"base-url"`
+		ProxyURL       *string               `json:"proxy-url"`
+		Models         *[]config.GeminiModel `json:"models"`
+		Headers        *map[string]string    `json:"headers"`
+		ExcludedModels *[]string             `json:"excluded-models"`
+		DisableCooling *bool                 `json:"disable-cooling"`
 	}
 	var body struct {
-		Index *int            `json:"index"`
-		Match *string         `json:"match"`
-		Value *geminiKeyPatch `json:"value"`
+		Index          *int            `json:"index"`
+		Match          *string         `json:"match"`
+		MatchBaseURL   *string         `json:"match-base-url"`
+		MatchAuthIndex *string         `json:"match-auth-index"`
+		Value          *geminiKeyPatch `json:"value"`
 	}
-	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
+	if !bindConfigCollectionJSON(c, &body) {
+		return
+	}
+	if body.Value == nil {
 		c.JSON(400, gin.H{"error": "invalid body"})
 		return
 	}
 
+	var liveIndexByID map[string]string
+	if body.MatchAuthIndex != nil {
+		liveIndexByID = h.liveAuthIndexByID()
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	targetIndex := -1
@@ -174,12 +250,15 @@ func (h *Handler) PatchGeminiKey(c *gin.Context) {
 		match := strings.TrimSpace(*body.Match)
 		if match != "" {
 			for i := range h.cfg.GeminiKey {
-				if h.cfg.GeminiKey[i].APIKey == match {
+				if h.cfg.GeminiKey[i].APIKey == match && (body.MatchBaseURL == nil || strings.TrimSpace(h.cfg.GeminiKey[i].BaseURL) == strings.TrimSpace(*body.MatchBaseURL)) {
 					targetIndex = i
 					break
 				}
 			}
 		}
+	}
+	if targetIndex == -1 && body.MatchAuthIndex != nil {
+		targetIndex = findAPIKeyConfigIndexByAuthIndex(h.cfg.GeminiKey, "gemini:apikey", *body.MatchAuthIndex, liveIndexByID)
 	}
 	if targetIndex == -1 {
 		c.JSON(404, gin.H{"error": "item not found"})
@@ -197,6 +276,9 @@ func (h *Handler) PatchGeminiKey(c *gin.Context) {
 		}
 		entry.APIKey = trimmed
 	}
+	if body.Value.Priority != nil {
+		entry.Priority = *body.Value.Priority
+	}
 	if body.Value.Prefix != nil {
 		entry.Prefix = strings.TrimSpace(*body.Value.Prefix)
 	}
@@ -206,11 +288,17 @@ func (h *Handler) PatchGeminiKey(c *gin.Context) {
 	if body.Value.ProxyURL != nil {
 		entry.ProxyURL = strings.TrimSpace(*body.Value.ProxyURL)
 	}
+	if body.Value.Models != nil {
+		entry.Models = append([]config.GeminiModel(nil), (*body.Value.Models)...)
+	}
 	if body.Value.Headers != nil {
 		entry.Headers = config.NormalizeHeaders(*body.Value.Headers)
 	}
 	if body.Value.ExcludedModels != nil {
 		entry.ExcludedModels = config.NormalizeExcludedModels(*body.Value.ExcludedModels)
+	}
+	if body.Value.DisableCooling != nil {
+		entry.DisableCooling = *body.Value.DisableCooling
 	}
 	h.cfg.GeminiKey[targetIndex] = entry
 	h.cfg.SanitizeGeminiKeys()
@@ -277,12 +365,11 @@ func (h *Handler) DeleteGeminiKey(c *gin.Context) {
 
 // interactions-api-key: []GeminiKey
 func (h *Handler) GetInteractionsKeys(c *gin.Context) {
-	c.JSON(200, gin.H{"interactions-api-key": h.interactionsKeysWithAuthIndex()})
+	writeConfigCollectionPage(c, "interactions-api-key", h.interactionsKeysWithAuthIndex())
 }
 func (h *Handler) PutInteractionsKeys(c *gin.Context) {
-	data, errRead := c.GetRawData()
-	if errRead != nil {
-		c.JSON(400, gin.H{"error": "failed to read body"})
+	data, ok := readConfigCollectionBody(c)
+	if !ok {
 		return
 	}
 	var arr []config.GeminiKey
@@ -298,6 +385,9 @@ func (h *Handler) PutInteractionsKeys(c *gin.Context) {
 		}
 		arr = obj.Items
 	}
+	if !validateConfigCollectionSize(c, len(arr)) {
+		return
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.cfg.InteractionsKey = append([]config.GeminiKey(nil), arr...)
@@ -306,24 +396,35 @@ func (h *Handler) PutInteractionsKeys(c *gin.Context) {
 }
 func (h *Handler) PatchInteractionsKey(c *gin.Context) {
 	type geminiKeyPatch struct {
-		APIKey         *string            `json:"api-key"`
-		Prefix         *string            `json:"prefix"`
-		BaseURL        *string            `json:"base-url"`
-		ProxyURL       *string            `json:"proxy-url"`
-		Headers        *map[string]string `json:"headers"`
-		ExcludedModels *[]string          `json:"excluded-models"`
+		APIKey         *string               `json:"api-key"`
+		Priority       *int                  `json:"priority"`
+		Prefix         *string               `json:"prefix"`
+		BaseURL        *string               `json:"base-url"`
+		ProxyURL       *string               `json:"proxy-url"`
+		Models         *[]config.GeminiModel `json:"models"`
+		Headers        *map[string]string    `json:"headers"`
+		ExcludedModels *[]string             `json:"excluded-models"`
+		DisableCooling *bool                 `json:"disable-cooling"`
 	}
 	var body struct {
-		Index *int            `json:"index"`
-		Match *string         `json:"match"`
-		Value *geminiKeyPatch `json:"value"`
+		Index          *int            `json:"index"`
+		Match          *string         `json:"match"`
+		MatchBaseURL   *string         `json:"match-base-url"`
+		MatchAuthIndex *string         `json:"match-auth-index"`
+		Value          *geminiKeyPatch `json:"value"`
 	}
-	errBind := c.ShouldBindJSON(&body)
-	if errBind != nil || body.Value == nil {
+	if !bindConfigCollectionJSON(c, &body) {
+		return
+	}
+	if body.Value == nil {
 		c.JSON(400, gin.H{"error": "invalid body"})
 		return
 	}
 
+	var liveIndexByID map[string]string
+	if body.MatchAuthIndex != nil {
+		liveIndexByID = h.liveAuthIndexByID()
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	targetIndex := -1
@@ -334,12 +435,15 @@ func (h *Handler) PatchInteractionsKey(c *gin.Context) {
 		match := strings.TrimSpace(*body.Match)
 		if match != "" {
 			for i := range h.cfg.InteractionsKey {
-				if h.cfg.InteractionsKey[i].APIKey == match {
+				if h.cfg.InteractionsKey[i].APIKey == match && (body.MatchBaseURL == nil || strings.TrimSpace(h.cfg.InteractionsKey[i].BaseURL) == strings.TrimSpace(*body.MatchBaseURL)) {
 					targetIndex = i
 					break
 				}
 			}
 		}
+	}
+	if targetIndex == -1 && body.MatchAuthIndex != nil {
+		targetIndex = findAPIKeyConfigIndexByAuthIndex(h.cfg.InteractionsKey, "gemini-interactions:apikey", *body.MatchAuthIndex, liveIndexByID)
 	}
 	if targetIndex == -1 {
 		c.JSON(404, gin.H{"error": "item not found"})
@@ -357,6 +461,9 @@ func (h *Handler) PatchInteractionsKey(c *gin.Context) {
 		}
 		entry.APIKey = trimmed
 	}
+	if body.Value.Priority != nil {
+		entry.Priority = *body.Value.Priority
+	}
 	if body.Value.Prefix != nil {
 		entry.Prefix = strings.TrimSpace(*body.Value.Prefix)
 	}
@@ -366,11 +473,17 @@ func (h *Handler) PatchInteractionsKey(c *gin.Context) {
 	if body.Value.ProxyURL != nil {
 		entry.ProxyURL = strings.TrimSpace(*body.Value.ProxyURL)
 	}
+	if body.Value.Models != nil {
+		entry.Models = append([]config.GeminiModel(nil), (*body.Value.Models)...)
+	}
 	if body.Value.Headers != nil {
 		entry.Headers = config.NormalizeHeaders(*body.Value.Headers)
 	}
 	if body.Value.ExcludedModels != nil {
 		entry.ExcludedModels = config.NormalizeExcludedModels(*body.Value.ExcludedModels)
+	}
+	if body.Value.DisableCooling != nil {
+		entry.DisableCooling = *body.Value.DisableCooling
 	}
 	h.cfg.InteractionsKey[targetIndex] = entry
 	h.cfg.SanitizeInteractionsKeys()
@@ -438,16 +551,15 @@ func (h *Handler) DeleteInteractionsKey(c *gin.Context) {
 
 // claude-api-key: []ClaudeKey
 func (h *Handler) GetClaudeKeys(c *gin.Context) {
-	c.JSON(200, gin.H{"claude-api-key": h.claudeKeysWithAuthIndex()})
+	writeConfigCollectionPage(c, "claude-api-key", h.claudeKeysWithAuthIndex())
 }
 func (h *Handler) PutClaudeKeys(c *gin.Context) {
-	data, err := c.GetRawData()
-	if err != nil {
-		c.JSON(400, gin.H{"error": "failed to read body"})
+	data, ok := readConfigCollectionBody(c)
+	if !ok {
 		return
 	}
 	var arr []config.ClaudeKey
-	if err = json.Unmarshal(data, &arr); err != nil {
+	if err := json.Unmarshal(data, &arr); err != nil {
 		var obj struct {
 			Items []config.ClaudeKey `json:"items"`
 		}
@@ -456,6 +568,9 @@ func (h *Handler) PutClaudeKeys(c *gin.Context) {
 			return
 		}
 		arr = obj.Items
+	}
+	if !validateConfigCollectionSize(c, len(arr)) {
+		return
 	}
 	for i := range arr {
 		normalizeClaudeKey(&arr[i])
@@ -469,6 +584,7 @@ func (h *Handler) PutClaudeKeys(c *gin.Context) {
 func (h *Handler) PatchClaudeKey(c *gin.Context) {
 	type claudeKeyPatch struct {
 		APIKey                  *string               `json:"api-key"`
+		Priority                *int                  `json:"priority"`
 		Prefix                  *string               `json:"prefix"`
 		BaseURL                 *string               `json:"base-url"`
 		ProxyURL                *string               `json:"proxy-url"`
@@ -476,17 +592,29 @@ func (h *Handler) PatchClaudeKey(c *gin.Context) {
 		Headers                 *map[string]string    `json:"headers"`
 		ExcludedModels          *[]string             `json:"excluded-models"`
 		RebuildMidSystemMessage *bool                 `json:"rebuild-mid-system-message"`
+		DisableCooling          *bool                 `json:"disable-cooling"`
+		Cloak                   json.RawMessage       `json:"cloak"`
+		ExperimentalCCHSigning  *bool                 `json:"experimental-cch-signing"`
 	}
 	var body struct {
-		Index *int            `json:"index"`
-		Match *string         `json:"match"`
-		Value *claudeKeyPatch `json:"value"`
+		Index          *int            `json:"index"`
+		Match          *string         `json:"match"`
+		MatchBaseURL   *string         `json:"match-base-url"`
+		MatchAuthIndex *string         `json:"match-auth-index"`
+		Value          *claudeKeyPatch `json:"value"`
 	}
-	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
+	if !bindConfigCollectionJSON(c, &body) {
+		return
+	}
+	if body.Value == nil {
 		c.JSON(400, gin.H{"error": "invalid body"})
 		return
 	}
 
+	var liveIndexByID map[string]string
+	if body.MatchAuthIndex != nil {
+		liveIndexByID = h.liveAuthIndexByID()
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	targetIndex := -1
@@ -496,11 +624,14 @@ func (h *Handler) PatchClaudeKey(c *gin.Context) {
 	if targetIndex == -1 && body.Match != nil {
 		match := strings.TrimSpace(*body.Match)
 		for i := range h.cfg.ClaudeKey {
-			if h.cfg.ClaudeKey[i].APIKey == match {
+			if h.cfg.ClaudeKey[i].APIKey == match && (body.MatchBaseURL == nil || strings.TrimSpace(h.cfg.ClaudeKey[i].BaseURL) == strings.TrimSpace(*body.MatchBaseURL)) {
 				targetIndex = i
 				break
 			}
 		}
+	}
+	if targetIndex == -1 && body.MatchAuthIndex != nil {
+		targetIndex = findAPIKeyConfigIndexByAuthIndex(h.cfg.ClaudeKey, "claude:apikey", *body.MatchAuthIndex, liveIndexByID)
 	}
 	if targetIndex == -1 {
 		c.JSON(404, gin.H{"error": "item not found"})
@@ -510,6 +641,9 @@ func (h *Handler) PatchClaudeKey(c *gin.Context) {
 	entry := h.cfg.ClaudeKey[targetIndex]
 	if body.Value.APIKey != nil {
 		entry.APIKey = strings.TrimSpace(*body.Value.APIKey)
+	}
+	if body.Value.Priority != nil {
+		entry.Priority = *body.Value.Priority
 	}
 	if body.Value.Prefix != nil {
 		entry.Prefix = strings.TrimSpace(*body.Value.Prefix)
@@ -531,6 +665,24 @@ func (h *Handler) PatchClaudeKey(c *gin.Context) {
 	}
 	if body.Value.RebuildMidSystemMessage != nil {
 		entry.RebuildMidSystemMessage = *body.Value.RebuildMidSystemMessage
+	}
+	if body.Value.DisableCooling != nil {
+		entry.DisableCooling = *body.Value.DisableCooling
+	}
+	if len(body.Value.Cloak) > 0 {
+		if string(body.Value.Cloak) == "null" {
+			entry.Cloak = nil
+		} else {
+			var cloak config.CloakConfig
+			if err := json.Unmarshal(body.Value.Cloak, &cloak); err != nil {
+				c.JSON(400, gin.H{"error": "invalid cloak"})
+				return
+			}
+			entry.Cloak = &cloak
+		}
+	}
+	if body.Value.ExperimentalCCHSigning != nil {
+		entry.ExperimentalCCHSigning = *body.Value.ExperimentalCCHSigning
 	}
 	normalizeClaudeKey(&entry)
 	h.cfg.ClaudeKey[targetIndex] = entry
@@ -593,16 +745,15 @@ func (h *Handler) DeleteClaudeKey(c *gin.Context) {
 
 // openai-compatibility: []OpenAICompatibility
 func (h *Handler) GetOpenAICompat(c *gin.Context) {
-	c.JSON(200, gin.H{"openai-compatibility": h.openAICompatibilityWithAuthIndex()})
+	writeConfigCollectionPage(c, "openai-compatibility", h.openAICompatibilityWithAuthIndex())
 }
 func (h *Handler) PutOpenAICompat(c *gin.Context) {
-	data, err := c.GetRawData()
-	if err != nil {
-		c.JSON(400, gin.H{"error": "failed to read body"})
+	data, ok := readConfigCollectionBody(c)
+	if !ok {
 		return
 	}
 	var arr []config.OpenAICompatibility
-	if err = json.Unmarshal(data, &arr); err != nil {
+	if err := json.Unmarshal(data, &arr); err != nil {
 		var obj struct {
 			Items []config.OpenAICompatibility `json:"items"`
 		}
@@ -611,6 +762,9 @@ func (h *Handler) PutOpenAICompat(c *gin.Context) {
 			return
 		}
 		arr = obj.Items
+	}
+	if !validateConfigCollectionSize(c, len(arr)) {
+		return
 	}
 	filtered := make([]config.OpenAICompatibility, 0, len(arr))
 	for i := range arr {
@@ -628,6 +782,7 @@ func (h *Handler) PutOpenAICompat(c *gin.Context) {
 func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 	type openAICompatPatch struct {
 		Name           *string                             `json:"name"`
+		Priority       *int                                `json:"priority"`
 		Prefix         *string                             `json:"prefix"`
 		Disabled       *bool                               `json:"disabled"`
 		DisableCooling *bool                               `json:"disable-cooling"`
@@ -641,7 +796,10 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 		Index *int               `json:"index"`
 		Value *openAICompatPatch `json:"value"`
 	}
-	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
+	if !bindConfigCollectionJSON(c, &body) {
+		return
+	}
+	if body.Value == nil {
 		c.JSON(400, gin.H{"error": "invalid body"})
 		return
 	}
@@ -669,6 +827,9 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 	entry := h.cfg.OpenAICompatibility[targetIndex]
 	if body.Value.Name != nil {
 		entry.Name = strings.TrimSpace(*body.Value.Name)
+	}
+	if body.Value.Priority != nil {
+		entry.Priority = *body.Value.Priority
 	}
 	if body.Value.Prefix != nil {
 		entry.Prefix = strings.TrimSpace(*body.Value.Prefix)
@@ -734,16 +895,15 @@ func (h *Handler) DeleteOpenAICompat(c *gin.Context) {
 
 // vertex-api-key: []VertexCompatKey
 func (h *Handler) GetVertexCompatKeys(c *gin.Context) {
-	c.JSON(200, gin.H{"vertex-api-key": h.vertexCompatKeysWithAuthIndex()})
+	writeConfigCollectionPage(c, "vertex-api-key", h.vertexCompatKeysWithAuthIndex())
 }
 func (h *Handler) PutVertexCompatKeys(c *gin.Context) {
-	data, err := c.GetRawData()
-	if err != nil {
-		c.JSON(400, gin.H{"error": "failed to read body"})
+	data, ok := readConfigCollectionBody(c)
+	if !ok {
 		return
 	}
 	var arr []config.VertexCompatKey
-	if err = json.Unmarshal(data, &arr); err != nil {
+	if err := json.Unmarshal(data, &arr); err != nil {
 		var obj struct {
 			Items []config.VertexCompatKey `json:"items"`
 		}
@@ -752,6 +912,9 @@ func (h *Handler) PutVertexCompatKeys(c *gin.Context) {
 			return
 		}
 		arr = obj.Items
+	}
+	if !validateConfigCollectionSize(c, len(arr)) {
+		return
 	}
 	for i := range arr {
 		normalizeVertexCompatKey(&arr[i])
@@ -769,6 +932,7 @@ func (h *Handler) PutVertexCompatKeys(c *gin.Context) {
 func (h *Handler) PatchVertexCompatKey(c *gin.Context) {
 	type vertexCompatPatch struct {
 		APIKey         *string                     `json:"api-key"`
+		Priority       *int                        `json:"priority"`
 		Prefix         *string                     `json:"prefix"`
 		BaseURL        *string                     `json:"base-url"`
 		ProxyURL       *string                     `json:"proxy-url"`
@@ -777,15 +941,24 @@ func (h *Handler) PatchVertexCompatKey(c *gin.Context) {
 		ExcludedModels *[]string                   `json:"excluded-models"`
 	}
 	var body struct {
-		Index *int               `json:"index"`
-		Match *string            `json:"match"`
-		Value *vertexCompatPatch `json:"value"`
+		Index          *int               `json:"index"`
+		Match          *string            `json:"match"`
+		MatchBaseURL   *string            `json:"match-base-url"`
+		MatchAuthIndex *string            `json:"match-auth-index"`
+		Value          *vertexCompatPatch `json:"value"`
 	}
-	if errBindJSON := c.ShouldBindJSON(&body); errBindJSON != nil || body.Value == nil {
+	if !bindConfigCollectionJSON(c, &body) {
+		return
+	}
+	if body.Value == nil {
 		c.JSON(400, gin.H{"error": "invalid body"})
 		return
 	}
 
+	var liveIndexByID map[string]string
+	if body.MatchAuthIndex != nil {
+		liveIndexByID = h.liveAuthIndexByID()
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	targetIndex := -1
@@ -796,12 +969,15 @@ func (h *Handler) PatchVertexCompatKey(c *gin.Context) {
 		match := strings.TrimSpace(*body.Match)
 		if match != "" {
 			for i := range h.cfg.VertexCompatAPIKey {
-				if h.cfg.VertexCompatAPIKey[i].APIKey == match {
+				if h.cfg.VertexCompatAPIKey[i].APIKey == match && (body.MatchBaseURL == nil || strings.TrimSpace(h.cfg.VertexCompatAPIKey[i].BaseURL) == strings.TrimSpace(*body.MatchBaseURL)) {
 					targetIndex = i
 					break
 				}
 			}
 		}
+	}
+	if targetIndex == -1 && body.MatchAuthIndex != nil {
+		targetIndex = findVertexConfigIndexByAuthIndex(h.cfg.VertexCompatAPIKey, *body.MatchAuthIndex, liveIndexByID)
 	}
 	if targetIndex == -1 {
 		c.JSON(404, gin.H{"error": "item not found"})
@@ -818,6 +994,9 @@ func (h *Handler) PatchVertexCompatKey(c *gin.Context) {
 			return
 		}
 		entry.APIKey = trimmed
+	}
+	if body.Value.Priority != nil {
+		entry.Priority = *body.Value.Priority
 	}
 	if body.Value.Prefix != nil {
 		entry.Prefix = strings.TrimSpace(*body.Value.Prefix)
@@ -905,17 +1084,56 @@ func (h *Handler) DeleteVertexCompatKey(c *gin.Context) {
 
 // oauth-excluded-models: map[string][]string
 func (h *Handler) GetOAuthExcludedModels(c *gin.Context) {
-	c.JSON(200, gin.H{"oauth-excluded-models": config.NormalizeOAuthExcludedModels(h.cfg.OAuthExcludedModels)})
+	h.mu.Lock()
+	entries := config.NormalizeOAuthExcludedModels(h.cfg.OAuthExcludedModels)
+	h.mu.Unlock()
+
+	providerFilter := strings.ToLower(strings.TrimSpace(c.Query("provider")))
+	search := strings.ToLower(strings.TrimSpace(c.Query("search")))
+	providers := make([]string, 0, len(entries))
+	for provider := range entries {
+		if providerFilter != "" && provider != providerFilter {
+			continue
+		}
+		providers = append(providers, provider)
+	}
+	sort.Strings(providers)
+
+	type excludedModel struct {
+		provider string
+		model    string
+	}
+	flat := make([]excludedModel, 0)
+	for _, provider := range providers {
+		for _, model := range entries[provider] {
+			if search != "" && !strings.Contains(strings.ToLower(provider), search) && !strings.Contains(strings.ToLower(model), search) {
+				continue
+			}
+			flat = append(flat, excludedModel{provider: provider, model: model})
+		}
+	}
+
+	page, err := parseConfigCollectionPage(c, len(flat))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "invalid_pagination", "message": err.Error()})
+		return
+	}
+	paged := make(map[string][]string)
+	for _, item := range flat[page.start:page.end] {
+		paged[item.provider] = append(paged[item.provider], item.model)
+	}
+	response := configCollectionPageMetadata(page)
+	response["oauth-excluded-models"] = paged
+	c.JSON(200, response)
 }
 
 func (h *Handler) PutOAuthExcludedModels(c *gin.Context) {
-	data, err := c.GetRawData()
-	if err != nil {
-		c.JSON(400, gin.H{"error": "failed to read body"})
+	data, ok := readConfigCollectionBody(c)
+	if !ok {
 		return
 	}
 	var entries map[string][]string
-	if err = json.Unmarshal(data, &entries); err != nil {
+	if err := json.Unmarshal(data, &entries); err != nil {
 		var wrapper struct {
 			Items map[string][]string `json:"items"`
 		}
@@ -925,8 +1143,18 @@ func (h *Handler) PutOAuthExcludedModels(c *gin.Context) {
 		}
 		entries = wrapper.Items
 	}
-	h.cfg.OAuthExcludedModels = config.NormalizeOAuthExcludedModels(entries)
-	h.persist(c)
+	normalized := config.NormalizeOAuthExcludedModels(entries)
+	itemCount := 0
+	for _, models := range normalized {
+		itemCount += len(models)
+	}
+	if !validateConfigCollectionSize(c, itemCount) {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.cfg.OAuthExcludedModels = normalized
+	h.persistLocked(c)
 }
 
 func (h *Handler) PatchOAuthExcludedModels(c *gin.Context) {
@@ -934,7 +1162,10 @@ func (h *Handler) PatchOAuthExcludedModels(c *gin.Context) {
 		Provider *string  `json:"provider"`
 		Models   []string `json:"models"`
 	}
-	if err := c.ShouldBindJSON(&body); err != nil || body.Provider == nil {
+	if !bindConfigCollectionJSON(c, &body) {
+		return
+	}
+	if body.Provider == nil {
 		c.JSON(400, gin.H{"error": "invalid body"})
 		return
 	}
@@ -944,6 +1175,11 @@ func (h *Handler) PatchOAuthExcludedModels(c *gin.Context) {
 		return
 	}
 	normalized := config.NormalizeExcludedModels(body.Models)
+	if !validateConfigCollectionSize(c, len(normalized)) {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	if len(normalized) == 0 {
 		if h.cfg.OAuthExcludedModels == nil {
 			c.JSON(404, gin.H{"error": "provider not found"})
@@ -957,14 +1193,14 @@ func (h *Handler) PatchOAuthExcludedModels(c *gin.Context) {
 		if len(h.cfg.OAuthExcludedModels) == 0 {
 			h.cfg.OAuthExcludedModels = nil
 		}
-		h.persist(c)
+		h.persistLocked(c)
 		return
 	}
 	if h.cfg.OAuthExcludedModels == nil {
 		h.cfg.OAuthExcludedModels = make(map[string][]string)
 	}
 	h.cfg.OAuthExcludedModels[provider] = normalized
-	h.persist(c)
+	h.persistLocked(c)
 }
 
 func (h *Handler) DeleteOAuthExcludedModels(c *gin.Context) {
@@ -973,6 +1209,8 @@ func (h *Handler) DeleteOAuthExcludedModels(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "missing provider"})
 		return
 	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	if h.cfg.OAuthExcludedModels == nil {
 		c.JSON(404, gin.H{"error": "provider not found"})
 		return
@@ -985,22 +1223,64 @@ func (h *Handler) DeleteOAuthExcludedModels(c *gin.Context) {
 	if len(h.cfg.OAuthExcludedModels) == 0 {
 		h.cfg.OAuthExcludedModels = nil
 	}
-	h.persist(c)
+	h.persistLocked(c)
 }
 
 // oauth-model-alias: map[string][]OAuthModelAlias
 func (h *Handler) GetOAuthModelAlias(c *gin.Context) {
-	c.JSON(200, gin.H{"oauth-model-alias": sanitizedOAuthModelAlias(h.cfg.OAuthModelAlias)})
+	h.mu.Lock()
+	entries := sanitizedOAuthModelAlias(h.cfg.OAuthModelAlias)
+	h.mu.Unlock()
+
+	channelFilter := strings.ToLower(strings.TrimSpace(c.Query("channel")))
+	if channelFilter == "" {
+		channelFilter = strings.ToLower(strings.TrimSpace(c.Query("provider")))
+	}
+	search := strings.ToLower(strings.TrimSpace(c.Query("search")))
+	channels := make([]string, 0, len(entries))
+	for channel := range entries {
+		if channelFilter != "" && channel != channelFilter {
+			continue
+		}
+		channels = append(channels, channel)
+	}
+	sort.Strings(channels)
+
+	type modelAlias struct {
+		channel string
+		alias   config.OAuthModelAlias
+	}
+	flat := make([]modelAlias, 0)
+	for _, channel := range channels {
+		for _, alias := range entries[channel] {
+			if search != "" && !strings.Contains(strings.ToLower(channel), search) && !strings.Contains(strings.ToLower(alias.Name), search) && !strings.Contains(strings.ToLower(alias.Alias), search) {
+				continue
+			}
+			flat = append(flat, modelAlias{channel: channel, alias: alias})
+		}
+	}
+
+	page, err := parseConfigCollectionPage(c, len(flat))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "invalid_pagination", "message": err.Error()})
+		return
+	}
+	paged := make(map[string][]config.OAuthModelAlias)
+	for _, item := range flat[page.start:page.end] {
+		paged[item.channel] = append(paged[item.channel], item.alias)
+	}
+	response := configCollectionPageMetadata(page)
+	response["oauth-model-alias"] = paged
+	c.JSON(200, response)
 }
 
 func (h *Handler) PutOAuthModelAlias(c *gin.Context) {
-	data, err := c.GetRawData()
-	if err != nil {
-		c.JSON(400, gin.H{"error": "failed to read body"})
+	data, ok := readConfigCollectionBody(c)
+	if !ok {
 		return
 	}
 	var entries map[string][]config.OAuthModelAlias
-	if err = json.Unmarshal(data, &entries); err != nil {
+	if err := json.Unmarshal(data, &entries); err != nil {
 		var wrapper struct {
 			Items map[string][]config.OAuthModelAlias `json:"items"`
 		}
@@ -1010,8 +1290,18 @@ func (h *Handler) PutOAuthModelAlias(c *gin.Context) {
 		}
 		entries = wrapper.Items
 	}
-	h.cfg.OAuthModelAlias = sanitizedOAuthModelAlias(entries)
-	h.persist(c)
+	normalized := sanitizedOAuthModelAlias(entries)
+	itemCount := 0
+	for _, aliases := range normalized {
+		itemCount += len(aliases)
+	}
+	if !validateConfigCollectionSize(c, itemCount) {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.cfg.OAuthModelAlias = normalized
+	h.persistLocked(c)
 }
 
 func (h *Handler) PatchOAuthModelAlias(c *gin.Context) {
@@ -1020,8 +1310,7 @@ func (h *Handler) PatchOAuthModelAlias(c *gin.Context) {
 		Channel  *string                  `json:"channel"`
 		Aliases  []config.OAuthModelAlias `json:"aliases"`
 	}
-	if errBindJSON := c.ShouldBindJSON(&body); errBindJSON != nil {
-		c.JSON(400, gin.H{"error": "invalid body"})
+	if !bindConfigCollectionJSON(c, &body) {
 		return
 	}
 	channelRaw := ""
@@ -1038,6 +1327,11 @@ func (h *Handler) PatchOAuthModelAlias(c *gin.Context) {
 
 	normalizedMap := sanitizedOAuthModelAlias(map[string][]config.OAuthModelAlias{channel: body.Aliases})
 	normalized := normalizedMap[channel]
+	if !validateConfigCollectionSize(c, len(normalized)) {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	if len(normalized) == 0 {
 		if h.cfg.OAuthModelAlias == nil {
 			c.JSON(404, gin.H{"error": "channel not found"})
@@ -1051,14 +1345,14 @@ func (h *Handler) PatchOAuthModelAlias(c *gin.Context) {
 		if len(h.cfg.OAuthModelAlias) == 0 {
 			h.cfg.OAuthModelAlias = nil
 		}
-		h.persist(c)
+		h.persistLocked(c)
 		return
 	}
 	if h.cfg.OAuthModelAlias == nil {
 		h.cfg.OAuthModelAlias = make(map[string][]config.OAuthModelAlias)
 	}
 	h.cfg.OAuthModelAlias[channel] = normalized
-	h.persist(c)
+	h.persistLocked(c)
 }
 
 func (h *Handler) DeleteOAuthModelAlias(c *gin.Context) {
@@ -1070,6 +1364,8 @@ func (h *Handler) DeleteOAuthModelAlias(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "missing channel"})
 		return
 	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	if h.cfg.OAuthModelAlias == nil {
 		c.JSON(404, gin.H{"error": "channel not found"})
 		return
@@ -1082,21 +1378,20 @@ func (h *Handler) DeleteOAuthModelAlias(c *gin.Context) {
 	if len(h.cfg.OAuthModelAlias) == 0 {
 		h.cfg.OAuthModelAlias = nil
 	}
-	h.persist(c)
+	h.persistLocked(c)
 }
 
 // codex-api-key: []CodexKey
 func (h *Handler) GetCodexKeys(c *gin.Context) {
-	c.JSON(200, gin.H{"codex-api-key": h.codexKeysWithAuthIndex()})
+	writeConfigCollectionPage(c, "codex-api-key", h.codexKeysWithAuthIndex())
 }
 func (h *Handler) PutCodexKeys(c *gin.Context) {
-	data, err := c.GetRawData()
-	if err != nil {
-		c.JSON(400, gin.H{"error": "failed to read body"})
+	data, ok := readConfigCollectionBody(c)
+	if !ok {
 		return
 	}
 	var arr []config.CodexKey
-	if err = json.Unmarshal(data, &arr); err != nil {
+	if err := json.Unmarshal(data, &arr); err != nil {
 		var obj struct {
 			Items []config.CodexKey `json:"items"`
 		}
@@ -1105,6 +1400,9 @@ func (h *Handler) PutCodexKeys(c *gin.Context) {
 			return
 		}
 		arr = obj.Items
+	}
+	if !validateConfigCollectionSize(c, len(arr)) {
+		return
 	}
 	// Filter out codex entries with empty base-url (treat as removed)
 	filtered := make([]config.CodexKey, 0, len(arr))
@@ -1125,23 +1423,35 @@ func (h *Handler) PutCodexKeys(c *gin.Context) {
 func (h *Handler) PatchCodexKey(c *gin.Context) {
 	type codexKeyPatch struct {
 		APIKey         *string              `json:"api-key"`
+		Priority       *int                 `json:"priority"`
 		Prefix         *string              `json:"prefix"`
 		BaseURL        *string              `json:"base-url"`
+		Websockets     *bool                `json:"websockets"`
 		ProxyURL       *string              `json:"proxy-url"`
 		Models         *[]config.CodexModel `json:"models"`
 		Headers        *map[string]string   `json:"headers"`
 		ExcludedModels *[]string            `json:"excluded-models"`
+		DisableCooling *bool                `json:"disable-cooling"`
 	}
 	var body struct {
-		Index *int           `json:"index"`
-		Match *string        `json:"match"`
-		Value *codexKeyPatch `json:"value"`
+		Index          *int           `json:"index"`
+		Match          *string        `json:"match"`
+		MatchBaseURL   *string        `json:"match-base-url"`
+		MatchAuthIndex *string        `json:"match-auth-index"`
+		Value          *codexKeyPatch `json:"value"`
 	}
-	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
+	if !bindConfigCollectionJSON(c, &body) {
+		return
+	}
+	if body.Value == nil {
 		c.JSON(400, gin.H{"error": "invalid body"})
 		return
 	}
 
+	var liveIndexByID map[string]string
+	if body.MatchAuthIndex != nil {
+		liveIndexByID = h.liveAuthIndexByID()
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	targetIndex := -1
@@ -1151,11 +1461,14 @@ func (h *Handler) PatchCodexKey(c *gin.Context) {
 	if targetIndex == -1 && body.Match != nil {
 		match := strings.TrimSpace(*body.Match)
 		for i := range h.cfg.CodexKey {
-			if h.cfg.CodexKey[i].APIKey == match {
+			if h.cfg.CodexKey[i].APIKey == match && (body.MatchBaseURL == nil || strings.TrimSpace(h.cfg.CodexKey[i].BaseURL) == strings.TrimSpace(*body.MatchBaseURL)) {
 				targetIndex = i
 				break
 			}
 		}
+	}
+	if targetIndex == -1 && body.MatchAuthIndex != nil {
+		targetIndex = findAPIKeyConfigIndexByAuthIndex(h.cfg.CodexKey, "codex:apikey", *body.MatchAuthIndex, liveIndexByID)
 	}
 	if targetIndex == -1 {
 		c.JSON(404, gin.H{"error": "item not found"})
@@ -1165,6 +1478,9 @@ func (h *Handler) PatchCodexKey(c *gin.Context) {
 	entry := h.cfg.CodexKey[targetIndex]
 	if body.Value.APIKey != nil {
 		entry.APIKey = strings.TrimSpace(*body.Value.APIKey)
+	}
+	if body.Value.Priority != nil {
+		entry.Priority = *body.Value.Priority
 	}
 	if body.Value.Prefix != nil {
 		entry.Prefix = strings.TrimSpace(*body.Value.Prefix)
@@ -1179,6 +1495,9 @@ func (h *Handler) PatchCodexKey(c *gin.Context) {
 		}
 		entry.BaseURL = trimmed
 	}
+	if body.Value.Websockets != nil {
+		entry.Websockets = *body.Value.Websockets
+	}
 	if body.Value.ProxyURL != nil {
 		entry.ProxyURL = strings.TrimSpace(*body.Value.ProxyURL)
 	}
@@ -1190,6 +1509,9 @@ func (h *Handler) PatchCodexKey(c *gin.Context) {
 	}
 	if body.Value.ExcludedModels != nil {
 		entry.ExcludedModels = config.NormalizeExcludedModels(*body.Value.ExcludedModels)
+	}
+	if body.Value.DisableCooling != nil {
+		entry.DisableCooling = *body.Value.DisableCooling
 	}
 	normalizeCodexKey(&entry)
 	h.cfg.CodexKey[targetIndex] = entry
@@ -1252,13 +1574,12 @@ func (h *Handler) DeleteCodexKey(c *gin.Context) {
 
 // xai-api-key: []XAIKey
 func (h *Handler) GetXAIKeys(c *gin.Context) {
-	c.JSON(200, gin.H{"xai-api-key": h.xaiKeysWithAuthIndex()})
+	writeConfigCollectionPage(c, "xai-api-key", h.xaiKeysWithAuthIndex())
 }
 
 func (h *Handler) PutXAIKeys(c *gin.Context) {
-	data, errRead := c.GetRawData()
-	if errRead != nil {
-		c.JSON(400, gin.H{"error": "failed to read body"})
+	data, ok := readConfigCollectionBody(c)
+	if !ok {
 		return
 	}
 	var arr []config.XAIKey
@@ -1271,6 +1592,9 @@ func (h *Handler) PutXAIKeys(c *gin.Context) {
 			return
 		}
 		arr = obj.Items
+	}
+	if !validateConfigCollectionSize(c, len(arr)) {
+		return
 	}
 	filtered := make([]config.XAIKey, 0, len(arr))
 	for i := range arr {
@@ -1302,15 +1626,24 @@ func (h *Handler) PatchXAIKey(c *gin.Context) {
 		DisableCooling *bool              `json:"disable-cooling"`
 	}
 	var body struct {
-		Index *int         `json:"index"`
-		Match *string      `json:"match"`
-		Value *xaiKeyPatch `json:"value"`
+		Index          *int         `json:"index"`
+		Match          *string      `json:"match"`
+		MatchBaseURL   *string      `json:"match-base-url"`
+		MatchAuthIndex *string      `json:"match-auth-index"`
+		Value          *xaiKeyPatch `json:"value"`
 	}
-	if errBind := c.ShouldBindJSON(&body); errBind != nil || body.Value == nil {
+	if !bindConfigCollectionJSON(c, &body) {
+		return
+	}
+	if body.Value == nil {
 		c.JSON(400, gin.H{"error": "invalid body"})
 		return
 	}
 
+	var liveIndexByID map[string]string
+	if body.MatchAuthIndex != nil {
+		liveIndexByID = h.liveAuthIndexByID()
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	targetIndex := -1
@@ -1320,11 +1653,14 @@ func (h *Handler) PatchXAIKey(c *gin.Context) {
 	if targetIndex == -1 && body.Match != nil {
 		match := strings.TrimSpace(*body.Match)
 		for i := range h.cfg.XAIKey {
-			if h.cfg.XAIKey[i].APIKey == match {
+			if h.cfg.XAIKey[i].APIKey == match && (body.MatchBaseURL == nil || strings.TrimSpace(h.cfg.XAIKey[i].BaseURL) == strings.TrimSpace(*body.MatchBaseURL)) {
 				targetIndex = i
 				break
 			}
 		}
+	}
+	if targetIndex == -1 && body.MatchAuthIndex != nil {
+		targetIndex = findAPIKeyConfigIndexByAuthIndex(h.cfg.XAIKey, "xai:apikey", *body.MatchAuthIndex, liveIndexByID)
 	}
 	if targetIndex == -1 {
 		c.JSON(404, gin.H{"error": "item not found"})

@@ -1,15 +1,38 @@
 package modelprice
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
+
+func TestModelPriceCollectionLimits(t *testing.T) {
+	models := make([]string, MaxSyncModels+1)
+	if _, err := (&Service{}).Sync(context.Background(), SyncRequest{Models: models}); err == nil {
+		t.Fatal("Sync accepted too many models")
+	}
+
+	prices := make(map[string]store.ModelPrice, MaxReplaceItems+1)
+	for i := 0; i <= MaxReplaceItems; i++ {
+		prices[strconv.Itoa(i)] = store.ModelPrice{}
+	}
+	if _, err := (&Service{}).Replace(context.Background(), prices); err == nil {
+		t.Fatal("Replace accepted too many prices")
+	}
+
+	var target map[string]any
+	err := decodeSyncSourceJSON(bytes.NewReader(bytes.Repeat([]byte("x"), maxSyncSourceResponseBytes+1)), &target)
+	if err == nil || err.Error() != "model price sync response is too large" {
+		t.Fatalf("oversized response error = %v", err)
+	}
+}
 
 func TestUsageSummaryUsesConfiguredRecentLimit(t *testing.T) {
 	cfg := testutil.NewConfig(t)

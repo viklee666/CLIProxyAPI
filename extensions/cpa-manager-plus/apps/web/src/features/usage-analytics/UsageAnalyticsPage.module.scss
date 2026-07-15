@@ -585,6 +585,22 @@
   }
 }
 
+.aggregatePagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--usage-border);
+  color: var(--usage-muted);
+  font-size: 12px;
+
+  > div {
+    display: flex;
+    gap: 8px;
+  }
+}
+
 .metricChips {
   display: flex;
   gap: 8px;
@@ -2585,6 +2601,10 @@
 }
 
 @media (max-width: 760px) {
+  .aggregatePagination {
+    align-items: flex-start;
+    flex-direction: column;
+  }
   .controlBar {
     grid-template-columns: 1fr;
   }

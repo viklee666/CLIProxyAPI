@@ -63,6 +63,7 @@ var (
 	callbackForwardersMu  sync.Mutex
 	callbackForwarders    = make(map[int]*callbackForwarder)
 	errAuthFileMustBeJSON = errors.New("auth file must be .json")
+	errAuthFileTooLarge   = errors.New("auth file too large")
 	errAuthFileNotFound   = errors.New("auth file not found")
 	errPluginVirtualAuth  = errors.New("plugin virtual auth cannot be modified directly; edit or delete the source auth file")
 	newCodexOAuthService  = func(cfg *config.Config) codexOAuthService { return codex.NewCodexAuth(cfg) }
@@ -321,27 +322,7 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 		c.JSON(500, gin.H{"error": "handler not initialized"})
 		return
 	}
-	if hasAuthFileQuery(c) {
-		h.listAuthFilesQuery(c)
-		return
-	}
-	if h.authManager == nil {
-		h.listAuthFilesFromDisk(c)
-		return
-	}
-	auths := h.authManager.List()
-	files := make([]gin.H, 0, len(auths))
-	for _, auth := range auths {
-		if entry := h.buildAuthFileEntry(auth); entry != nil {
-			files = append(files, entry)
-		}
-	}
-	sort.Slice(files, func(i, j int) bool {
-		nameI, _ := files[i]["name"].(string)
-		nameJ, _ := files[j]["name"].(string)
-		return strings.ToLower(nameI) < strings.ToLower(nameJ)
-	})
-	c.JSON(200, gin.H{"files": files})
+	h.listAuthFilesQuery(c)
 }
 
 // GetAuthFileModels returns the models supported by a specific auth file
@@ -355,9 +336,10 @@ func (h *Handler) GetAuthFileModels(c *gin.Context) {
 	// Try to find auth ID via authManager
 	var authID string
 	if h.authManager != nil {
-		auths := h.authManager.List()
-		for _, auth := range auths {
-			if auth.FileName == name || auth.ID == name {
+		candidates, _ := h.cachedAuthFileCandidatesFromManager(time.Now())
+		for i := range candidates {
+			auth := candidates[i].auth
+			if auth != nil && (auth.FileName == name || auth.ID == name) {
 				authID = auth.ID
 				break
 			}
@@ -373,7 +355,14 @@ func (h *Handler) GetAuthFileModels(c *gin.Context) {
 	models := reg.GetModelsForClient(authID)
 
 	result := make([]gin.H, 0, len(models))
+	search := strings.ToLower(strings.TrimSpace(c.Query("search")))
 	for _, m := range models {
+		if search != "" {
+			haystack := strings.ToLower(strings.Join([]string{m.ID, m.DisplayName, m.Type, m.OwnedBy}, "\n"))
+			if !strings.Contains(haystack, search) {
+				continue
+			}
+		}
 		entry := gin.H{
 			"id": m.ID,
 		}
@@ -389,7 +378,7 @@ func (h *Handler) GetAuthFileModels(c *gin.Context) {
 		result = append(result, entry)
 	}
 
-	c.JSON(200, gin.H{"models": result})
+	writeConfigCollectionPage(c, "models", result)
 }
 
 // List auth files from disk when the auth manager is unavailable.
@@ -723,7 +712,7 @@ func (h *Handler) DownloadAuthFile(c *gin.Context) {
 		return
 	}
 	full := filepath.Join(h.cfg.AuthDir, name)
-	data, err := os.ReadFile(full)
+	info, err := os.Stat(full)
 	if err != nil {
 		if os.IsNotExist(err) {
 			c.JSON(404, gin.H{"error": "file not found"})
@@ -732,8 +721,23 @@ func (h *Handler) DownloadAuthFile(c *gin.Context) {
 		}
 		return
 	}
-	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", name))
-	c.Data(200, "application/json", data)
+	if info.IsDir() {
+		c.JSON(http.StatusNotFound, gin.H{"error": "file not found"})
+		return
+	}
+	if info.Size() > maxAuthFileBytes {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": fmt.Sprintf("auth file exceeds %d bytes", maxAuthFileBytes)})
+		return
+	}
+	file, errOpen := os.Open(full)
+	if errOpen != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to open file: %v", errOpen)})
+		return
+	}
+	defer file.Close()
+	c.DataFromReader(http.StatusOK, info.Size(), "application/json", file, map[string]string{
+		"Content-Disposition": fmt.Sprintf("attachment; filename=\"%s\"", name),
+	})
 }
 
 // Upload auth file: multipart or raw JSON with ?name=
@@ -743,9 +747,14 @@ func (h *Handler) UploadAuthFile(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
+	limitManagementRequestBody(c, maxAuthFileUploadRequestBytes)
 
 	fileHeaders, errMultipart := h.multipartAuthFileHeaders(c)
 	if errMultipart != nil {
+		if isManagementRequestTooLarge(errMultipart) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "auth file upload is too large"})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid multipart form: %v", errMultipart)})
 		return
 	}
@@ -753,6 +762,10 @@ func (h *Handler) UploadAuthFile(c *gin.Context) {
 		if _, errUpload := h.storeUploadedAuthFile(ctx, fileHeaders[0]); errUpload != nil {
 			if errors.Is(errUpload, errAuthFileMustBeJSON) {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "file must be .json"})
+				return
+			}
+			if errors.Is(errUpload, errAuthFileTooLarge) {
+				c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": errUpload.Error()})
 				return
 			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": errUpload.Error()})
@@ -807,7 +820,15 @@ func (h *Handler) UploadAuthFile(c *gin.Context) {
 	}
 	data, err := io.ReadAll(c.Request.Body)
 	if err != nil {
+		if isManagementRequestTooLarge(err) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "auth file upload is too large"})
+			return
+		}
 		c.JSON(400, gin.H{"error": "failed to read body"})
+		return
+	}
+	if int64(len(data)) > maxAuthFileBytes {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": fmt.Sprintf("auth file exceeds %d bytes", maxAuthFileBytes)})
 		return
 	}
 	if err = h.writeAuthFile(ctx, filepath.Base(name), data); err != nil {
@@ -931,15 +952,21 @@ func (h *Handler) storeUploadedAuthFile(ctx context.Context, file *multipart.Fil
 	if !strings.HasSuffix(strings.ToLower(name), ".json") {
 		return "", errAuthFileMustBeJSON
 	}
+	if file.Size > maxAuthFileBytes {
+		return "", fmt.Errorf("%w: maximum is %d bytes", errAuthFileTooLarge, maxAuthFileBytes)
+	}
 	src, err := file.Open()
 	if err != nil {
 		return "", fmt.Errorf("failed to open uploaded file: %w", err)
 	}
 	defer src.Close()
 
-	data, err := io.ReadAll(src)
+	data, err := io.ReadAll(io.LimitReader(src, maxAuthFileBytes+1))
 	if err != nil {
 		return "", fmt.Errorf("failed to read uploaded file: %w", err)
+	}
+	if int64(len(data)) > maxAuthFileBytes {
+		return "", fmt.Errorf("%w: maximum is %d bytes", errAuthFileTooLarge, maxAuthFileBytes)
 	}
 	if err := h.writeAuthFile(ctx, name, data); err != nil {
 		return "", err
@@ -1232,9 +1259,15 @@ func (h *Handler) upsertAuthRecord(ctx context.Context, auth *coreauth.Auth) err
 	if existing, ok := h.authManager.GetByID(auth.ID); ok {
 		auth.CreatedAt = existing.CreatedAt
 		_, err := h.authManager.Update(ctx, auth)
+		if err == nil {
+			h.invalidateAuthFileCandidateCatalog()
+		}
 		return err
 	}
 	_, err := h.authManager.Register(ctx, auth)
+	if err == nil {
+		h.invalidateAuthFileCandidateCatalog()
+	}
 	return err
 }
 
@@ -1267,88 +1300,12 @@ func (h *Handler) PatchAuthFileStatus(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-
-	// Find auth by name or ID. When auth_index is supplied, require an exact
-	// match so a multi-account source file does not toggle the wrong credential.
-	var targetAuth *coreauth.Auth
-	if auth, ok := h.authManager.GetByID(name); ok && (authIndex == "" || auth.Index == authIndex) {
-		targetAuth = auth
-	} else {
-		auths := h.authManager.List()
-		for _, auth := range auths {
-			if auth.FileName == name && (authIndex == "" || auth.Index == authIndex) {
-				targetAuth = auth
-				break
-			}
-		}
-	}
-
-	if targetAuth == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "auth file not found"})
+	result, status, errPatch := h.patchAuthFileStatusTarget(ctx, name, authIndex, *req.Disabled)
+	if errPatch != nil {
+		c.JSON(status, gin.H{"error": errPatch.Error()})
 		return
 	}
-	if coreauth.IsPluginVirtualAuth(targetAuth) {
-		// Allow status changes only when targeting the source auth file name, matching delete semantics.
-		// Expanded virtual project auths still cannot be modified independently.
-		if !isPluginVirtualSourceDelete(name, targetAuth) {
-			c.JSON(http.StatusConflict, gin.H{"error": errPluginVirtualAuth.Error()})
-			return
-		}
-		if errPatch := h.patchPluginVirtualSourceStatus(ctx, targetAuth, *req.Disabled); errPatch != nil {
-			status := http.StatusInternalServerError
-			if errors.Is(errPatch, errAuthFileNotFound) || os.IsNotExist(errPatch) {
-				status = http.StatusNotFound
-			}
-			c.JSON(status, gin.H{"error": errPatch.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"status": "ok", "disabled": *req.Disabled})
-		return
-	}
-
-	if coreauth.IsConfigAPIKeyAuth(targetAuth) {
-		h.mu.Lock()
-		handled, errToggle := toggleConfigAPIKeyExcludedAll(h.cfg, targetAuth, *req.Disabled)
-		if errToggle != nil {
-			h.mu.Unlock()
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update config api key: %v", errToggle)})
-			return
-		}
-		if !handled {
-			h.mu.Unlock()
-			c.JSON(http.StatusNotFound, gin.H{"error": "config api key entry not found"})
-			return
-		}
-		cfgSnapshot, okSnapshot := h.saveConfigAndSnapshotLocked(c)
-		h.mu.Unlock()
-		if !okSnapshot {
-			return
-		}
-		h.reloadConfigAfterManagementSave(ctx, cfgSnapshot)
-		if h.tokenStore != nil {
-			_ = h.tokenStore.Delete(ctx, targetAuth.ID)
-		}
-		c.JSON(http.StatusOK, gin.H{
-			"status":           "ok",
-			"disabled":         *req.Disabled,
-			"via":              "config:excluded-models",
-			"excluded_pattern": configAPIKeyDisablePattern,
-		})
-		return
-	}
-
-	applyAuthDisabledState(targetAuth, *req.Disabled)
-	if _, err := h.authManager.Update(ctx, targetAuth); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update auth: %v", err)})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"status":     "ok",
-		"name":       name,
-		"auth_index": targetAuth.Index,
-		"disabled":   *req.Disabled,
-	})
+	c.JSON(http.StatusOK, result)
 }
 
 // patchPluginVirtualSourceStatus toggles disabled on a plugin multi-auth source file and all
@@ -1467,77 +1424,23 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 		return
 	}
 	delete(req, "name")
+	authIndex := ""
+	if authIndexRaw, okAuthIndex := req["auth_index"]; okAuthIndex {
+		if errAuthIndex := json.Unmarshal(authIndexRaw, &authIndex); errAuthIndex != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "auth_index must be a string"})
+			return
+		}
+		authIndex = strings.TrimSpace(authIndex)
+		delete(req, "auth_index")
+	}
 
 	ctx := c.Request.Context()
-
-	// Find auth by name or ID
-	var targetAuth *coreauth.Auth
-	if auth, ok := h.authManager.GetByID(name); ok {
-		targetAuth = auth
-	} else {
-		auths := h.authManager.List()
-		for _, auth := range auths {
-			if auth.FileName == name {
-				targetAuth = auth
-				break
-			}
-		}
-	}
-
-	if targetAuth == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "auth file not found"})
+	result, status, errPatch := h.patchAuthFileFieldsTarget(ctx, name, authIndex, req)
+	if errPatch != nil {
+		c.JSON(status, gin.H{"error": errPatch.Error()})
 		return
 	}
-	if coreauth.IsPluginVirtualAuth(targetAuth) {
-		c.JSON(http.StatusConflict, gin.H{"error": errPluginVirtualAuth.Error()})
-		return
-	}
-
-	changed := false
-	touchedRoots := make(map[string]struct{}, len(req))
-	for key, rawValue := range req {
-		fieldPath := strings.TrimSpace(key)
-		if fieldPath == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "field name is required"})
-			return
-		}
-		value, errDecode := decodeAuthFileFieldValue(rawValue)
-		if errDecode != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid field %s", fieldPath)})
-			return
-		}
-		if targetAuth.Metadata == nil {
-			targetAuth.Metadata = make(map[string]any)
-		}
-
-		if fieldPath == "headers" {
-			applyAuthFileHeadersPatch(targetAuth, value)
-		} else if errSet := setAuthFileMetadataValue(targetAuth.Metadata, fieldPath, value); errSet != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": errSet.Error()})
-			return
-		}
-		if root := rootAuthFileField(fieldPath); root != "" {
-			touchedRoots[root] = struct{}{}
-		}
-		changed = true
-	}
-	if changed {
-		syncAuthFileMetadataFields(targetAuth, touchedRoots)
-	}
-
-	if !changed {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "no fields to update"})
-		return
-	}
-
-	targetAuth.UpdatedAt = time.Now()
-
-	if _, err := h.authManager.Update(ctx, targetAuth); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update auth: %v", err)})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	c.JSON(http.StatusOK, result)
 }
 
 func decodeAuthFileFieldValue(raw json.RawMessage) (any, error) {
@@ -1812,6 +1715,7 @@ func (h *Handler) removeAuth(ctx context.Context, id string) {
 	}
 	if _, ok := h.authManager.GetByID(id); ok {
 		h.authManager.Remove(ctx, id)
+		h.invalidateAuthFileCandidateCatalog()
 		return
 	}
 	authID := h.authIDForPath(id)
@@ -1819,6 +1723,7 @@ func (h *Handler) removeAuth(ctx context.Context, id string) {
 		return
 	}
 	h.authManager.Remove(ctx, authID)
+	h.invalidateAuthFileCandidateCatalog()
 }
 
 func (h *Handler) removeAuthsForPath(ctx context.Context, path string, fallbackID string) {

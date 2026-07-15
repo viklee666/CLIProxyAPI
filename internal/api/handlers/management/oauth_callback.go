@@ -2,12 +2,20 @@ package management
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	log "github.com/sirupsen/logrus"
+)
+
+const (
+	maxOAuthCallbackBodyBytes   = 64 * 1024
+	maxOAuthRedirectURLLength   = 16 * 1024
+	maxOAuthAuthorizationLength = 16 * 1024
+	maxOAuthErrorLength         = 4 * 1024
 )
 
 type oauthCallbackRequest struct {
@@ -25,7 +33,15 @@ func (h *Handler) PostOAuthCallback(c *gin.Context) {
 	}
 
 	var req oauthCallbackRequest
+	limitManagementRequestBody(c, maxOAuthCallbackBodyBytes)
 	if errBindJSON := c.ShouldBindJSON(&req); errBindJSON != nil {
+		if isManagementRequestTooLarge(errBindJSON) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{
+				"status": "error",
+				"error":  fmt.Sprintf("request body must not exceed %d bytes", maxOAuthCallbackBodyBytes),
+			})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "invalid body"})
 		return
 	}
@@ -45,6 +61,10 @@ func (h *Handler) GetOAuthCallback(c *gin.Context) {
 func (h *Handler) handleOAuthCallback(c *gin.Context, req oauthCallbackRequest) {
 	if h == nil || h.cfg == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "error": "handler not initialized"})
+		return
+	}
+	if message := validateOAuthCallbackRequest(req); message != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": message})
 		return
 	}
 
@@ -135,6 +155,19 @@ func (h *Handler) handleOAuthCallback(c *gin.Context, req oauthCallbackRequest) 
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+func validateOAuthCallbackRequest(req oauthCallbackRequest) string {
+	if len(req.RedirectURL) > maxOAuthRedirectURLLength {
+		return "redirect_url is too long"
+	}
+	if len(req.Code) > maxOAuthAuthorizationLength {
+		return "code is too long"
+	}
+	if len(req.Error) > maxOAuthErrorLength {
+		return "error is too long"
+	}
+	return ""
 }
 
 func firstNonEmpty(values ...string) string {

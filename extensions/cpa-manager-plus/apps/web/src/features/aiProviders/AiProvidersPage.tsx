@@ -33,7 +33,12 @@ import { Select } from '@/components/ui/Select';
 import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
 import { providersApi } from '@/services/api';
 import { useAuthStore, useConfigStore, useNotificationStore, useThemeStore } from '@/stores';
-import type { CloakConfig, GeminiKeyConfig, OpenAIProviderConfig, ProviderKeyConfig } from '@/types';
+import type {
+  CloakConfig,
+  GeminiKeyConfig,
+  OpenAIProviderConfig,
+  ProviderKeyConfig,
+} from '@/types';
 import styles from './AiProvidersPage.module.scss';
 
 const PROVIDER_TABLE_DEFAULT_PAGE_SIZE = 10;
@@ -52,7 +57,6 @@ export function AiProvidersPage() {
   const connectionStatus = useAuthStore((state) => state.connectionStatus);
 
   const config = useConfigStore((state) => state.config);
-  const fetchConfig = useConfigStore((state) => state.fetchConfig);
   const updateConfigValue = useConfigStore((state) => state.updateConfigValue);
   const clearCache = useConfigStore((state) => state.clearCache);
   const isCacheValid = useConfigStore((state) => state.isCacheValid);
@@ -119,42 +123,34 @@ export function AiProvidersPage() {
     }
     setError('');
     try {
-      const [configResult, vertexResult, openaiResult] = await Promise.allSettled([
-        fetchConfig(),
+      const [gemini, interactions, codex, claude, vertex, openai] = await Promise.all([
+        providersApi.getGeminiKeys(),
+        providersApi.getInteractionsKeys(),
+        providersApi.getCodexConfigs(),
+        providersApi.getClaudeConfigs(),
         providersApi.getVertexConfigs(),
         providersApi.getOpenAIProviders(),
       ]);
 
-      if (configResult.status !== 'fulfilled') {
-        throw configResult.reason;
-      }
-
-      const data = configResult.value;
-      setGeminiKeys(data?.geminiApiKeys || []);
-      setInteractionsKeys(data?.interactionsApiKeys || []);
-      setCodexConfigs(data?.codexApiKeys || []);
-      setClaudeConfigs(data?.claudeApiKeys || []);
-      setVertexConfigs(data?.vertexApiKeys || []);
-      setOpenaiProviders(data?.openaiCompatibility || []);
-
-      if (vertexResult.status === 'fulfilled') {
-        setVertexConfigs(vertexResult.value || []);
-        updateConfigValue('vertex-api-key', vertexResult.value || []);
-        clearCache('vertex-api-key');
-      }
-
-      if (openaiResult.status === 'fulfilled') {
-        setOpenaiProviders(openaiResult.value || []);
-        updateConfigValue('openai-compatibility', openaiResult.value || []);
-        clearCache('openai-compatibility');
-      }
+      setGeminiKeys(gemini);
+      setInteractionsKeys(interactions);
+      setCodexConfigs(codex);
+      setClaudeConfigs(claude);
+      setVertexConfigs(vertex);
+      setOpenaiProviders(openai);
+      updateConfigValue('gemini-api-key', gemini);
+      updateConfigValue('interactions-api-key', interactions);
+      updateConfigValue('codex-api-key', codex);
+      updateConfigValue('claude-api-key', claude);
+      updateConfigValue('vertex-api-key', vertex);
+      updateConfigValue('openai-compatibility', openai);
     } catch (err: unknown) {
       const message = getErrorMessage(err) || t('notification.refresh_failed');
       setError(message);
     } finally {
       setLoading(false);
     }
-  }, [clearCache, fetchConfig, isCacheValid, t, updateConfigValue]);
+  }, [isCacheValid, t, updateConfigValue]);
 
   useEffect(() => {
     if (hasMounted.current) return;
@@ -295,8 +291,7 @@ export function AiProvidersPage() {
     [detailRowKey, rows]
   );
 
-  const filtersActive =
-    kindFilter !== 'all' || searchText.trim() !== '' || selectedModels.size > 0;
+  const filtersActive = kindFilter !== 'all' || searchText.trim() !== '' || selectedModels.size > 0;
 
   const clearFilters = () => {
     setKindFilter('all');
@@ -446,14 +441,7 @@ export function AiProvidersPage() {
       }
     };
 
-    applyLocalState(
-      nextGemini,
-      nextInteractions,
-      nextCodex,
-      nextClaude,
-      nextVertex,
-      nextOpenai
-    );
+    applyLocalState(nextGemini, nextInteractions, nextCodex, nextClaude, nextVertex, nextOpenai);
 
     try {
       const mutations: Array<() => Promise<unknown>> = [];
@@ -519,9 +507,7 @@ export function AiProvidersPage() {
   };
 
   const setHealthCheckProviderEnabled = async (providerKey: string, enabled: boolean) => {
-    await applyProviderEnabledActions(
-      new Map([[providerKey, enabled ? 'enable' : 'disable']])
-    );
+    await applyProviderEnabledActions(new Map([[providerKey, enabled ? 'enable' : 'disable']]));
   };
 
   // 启停（key-based providers 走 excludedModels 规则）
@@ -585,11 +571,7 @@ export function AiProvidersPage() {
     }
 
     const source =
-      provider === 'codex'
-        ? codexConfigs
-        : provider === 'claude'
-          ? claudeConfigs
-          : vertexConfigs;
+      provider === 'codex' ? codexConfigs : provider === 'claude' ? claudeConfigs : vertexConfigs;
     const current = source[index];
     if (!current) return;
 
@@ -1027,11 +1009,7 @@ export function AiProvidersPage() {
     }
 
     const source =
-      row.kind === 'codex'
-        ? codexConfigs
-        : row.kind === 'claude'
-          ? claudeConfigs
-          : vertexConfigs;
+      row.kind === 'codex' ? codexConfigs : row.kind === 'claude' ? claudeConfigs : vertexConfigs;
     const current = source[row.originalIndex];
     if (!current || current.priority === nextPriority) return;
 
@@ -1296,11 +1274,7 @@ export function AiProvidersPage() {
       <EmptyState
         title={t('ai_providers.kind_empty_title', { name: PROVIDER_KIND_LABELS[kindFilter] })}
         action={
-          <Button
-            size="sm"
-            onClick={() => handleAdd(kindFilter)}
-            disabled={actionsDisabled}
-          >
+          <Button size="sm" onClick={() => handleAdd(kindFilter)} disabled={actionsDisabled}>
             {t('ai_providers.add_kind_button', { name: PROVIDER_KIND_LABELS[kindFilter] })}
           </Button>
         }
@@ -1365,52 +1339,52 @@ export function AiProvidersPage() {
             {visibleRows.length > 0 &&
               (visibleRows.length > PROVIDER_TABLE_DEFAULT_PAGE_SIZE ||
                 pageSize !== PROVIDER_TABLE_DEFAULT_PAGE_SIZE) && (
-              <div className={styles.paginationBar}>
-                <div className={styles.paginationInfo}>
-                  {t('monitoring.pagination_info', {
-                    current: currentPage,
-                    total: totalPages,
-                    start: pageStartItem,
-                    end: pageEndItem,
-                    count: visibleRows.length,
-                  })}
-                </div>
-                <div className={styles.paginationControls}>
-                  <div className={styles.pageSizeField}>
-                    <span>{t('monitoring.page_size_label')}</span>
-                    <Select
-                      value={String(pageSize)}
-                      options={PROVIDER_TABLE_PAGE_SIZE_OPTIONS.map((size) => ({
-                        value: String(size),
-                        label: t('monitoring.page_size_option', { count: size }),
-                      }))}
-                      onChange={handlePageSizeChange}
-                      disabled={loading}
-                      fullWidth={false}
-                      ariaLabel={t('monitoring.page_size_label')}
-                      className={styles.pageSizeSelect}
-                      triggerClassName={styles.pageSizeSelectTrigger}
-                    />
+                <div className={styles.paginationBar}>
+                  <div className={styles.paginationInfo}>
+                    {t('monitoring.pagination_info', {
+                      current: currentPage,
+                      total: totalPages,
+                      start: pageStartItem,
+                      end: pageEndItem,
+                      count: visibleRows.length,
+                    })}
                   </div>
-                  <Button
-                    variant="secondary"
-                    size="xs"
-                    onClick={() => setPage(Math.max(1, currentPage - 1))}
-                    disabled={loading || currentPage <= 1}
-                  >
-                    {t('monitoring.pagination_prev')}
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    size="xs"
-                    onClick={() => setPage(Math.min(totalPages, currentPage + 1))}
-                    disabled={loading || currentPage >= totalPages}
-                  >
-                    {t('monitoring.pagination_next')}
-                  </Button>
+                  <div className={styles.paginationControls}>
+                    <div className={styles.pageSizeField}>
+                      <span>{t('monitoring.page_size_label')}</span>
+                      <Select
+                        value={String(pageSize)}
+                        options={PROVIDER_TABLE_PAGE_SIZE_OPTIONS.map((size) => ({
+                          value: String(size),
+                          label: t('monitoring.page_size_option', { count: size }),
+                        }))}
+                        onChange={handlePageSizeChange}
+                        disabled={loading}
+                        fullWidth={false}
+                        ariaLabel={t('monitoring.page_size_label')}
+                        className={styles.pageSizeSelect}
+                        triggerClassName={styles.pageSizeSelectTrigger}
+                      />
+                    </div>
+                    <Button
+                      variant="secondary"
+                      size="xs"
+                      onClick={() => setPage(Math.max(1, currentPage - 1))}
+                      disabled={loading || currentPage <= 1}
+                    >
+                      {t('monitoring.pagination_prev')}
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="xs"
+                      onClick={() => setPage(Math.min(totalPages, currentPage + 1))}
+                      disabled={loading || currentPage >= totalPages}
+                    >
+                      {t('monitoring.pagination_next')}
+                    </Button>
+                  </div>
                 </div>
-              </div>
-            )}
+              )}
           </Card>
         </div>
       </div>

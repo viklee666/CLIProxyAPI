@@ -59,8 +59,12 @@ type Handler struct {
 	configReloadHook        func(context.Context, *config.Config)
 	pluginStoreRegistryURL  string
 	pluginStoreHTTPClient   pluginstore.HTTPDoer
+	pluginRegistryCacheMu   sync.Mutex
+	pluginRegistryCache     map[string]pluginRegistryCacheEntry
 	pluginReleaseCacheMu    sync.Mutex
 	pluginReleaseCache      map[string]pluginReleaseCacheEntry
+	authFileCatalogMu       sync.Mutex
+	authFileCatalog         authFileCandidateCatalog
 	clientAccess            *clientaccess.Service
 }
 
@@ -140,6 +144,7 @@ func (h *Handler) SetAuthManager(manager *coreauth.Manager) {
 	h.mu.Lock()
 	h.authManager = manager
 	h.mu.Unlock()
+	h.invalidateAuthFileCandidateCatalog()
 }
 
 func (h *Handler) SetClientAccessService(service *clientaccess.Service) {

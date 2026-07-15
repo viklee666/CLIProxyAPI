@@ -34,16 +34,25 @@ type ManagerExternalUsageServiceConfig = model.ManagerExternalUsageServiceConfig
 type CodexInspectionRun = model.CodexInspectionRun
 type CodexInspectionResult = model.CodexInspectionResult
 type CodexInspectionLog = model.CodexInspectionLog
+type CodexInspectionRunsPage = codexinspection.RunsPage
+type CodexInspectionResultsPage = codexinspection.ResultsPage
+type CodexInspectionLogsPage = codexinspection.LogsPage
 type InsertResult = model.InsertResult
 type ModelPrice = model.ModelPrice
 type ModelPriceSyncResult = model.ModelPriceSyncResult
+type ModelPriceListQuery = modelprice.ListQuery
+type ModelPriceListPage = modelprice.ListPage
 type ModelUsageStat = model.ModelUsageStat
 type ModelUsageSummary = model.ModelUsageSummary
 type APIKeyAlias = model.APIKeyAlias
+type APIKeyAliasListQuery = apikeyalias.ListQuery
+type APIKeyAliasListPage = apikeyalias.ListPage
 type QuotaCooldown = model.QuotaCooldown
 type QuotaCooldownUpsert = model.QuotaCooldownUpsert
 type AccountActionCandidate = model.AccountActionCandidate
 type AccountActionCandidateUpsert = model.AccountActionCandidateUpsert
+type AccountActionCandidateListQuery = accountaction.ListQuery
+type AccountActionCandidateListPage = accountaction.ListPage
 type AutomationSettings = model.AutomationSettings
 
 var DefaultCodexInspectionConfig = model.DefaultCodexInspectionConfig
@@ -67,10 +76,16 @@ type AccountModelStat = usageevent.AccountModelStat
 type CredentialModelStat = usageevent.CredentialModelStat
 type CredentialTimelinePoint = usageevent.CredentialTimelinePoint
 type APIKeyModelStat = usageevent.APIKeyModelStat
+type ModelStatsPage = usageevent.ModelStatsPage
+type AccountModelStatsPage = usageevent.AccountModelStatsPage
+type CredentialModelStatsPage = usageevent.CredentialModelStatsPage
+type APIKeyModelStatsPage = usageevent.APIKeyModelStatsPage
 type TaskBucket = usageevent.TaskBucket
 type EventPageItem = usageevent.EventPageItem
 type EventsPage = usageevent.EventsPage
 type HeaderSnapshot = usageevent.HeaderSnapshot
+type RecentUsagePageQuery = usageevent.RecentPageQuery
+type RecentUsagePage = usageevent.RecentPage
 type UsageRollupCheckpoint = usagerollup.Checkpoint
 type UsageRollupCatchUpResult = usagerollup.CatchUpResult
 type AccountHistoryRollupRow = usagerollup.AccountHistoryRow
@@ -168,6 +183,10 @@ func (s *Store) LoadModelPrices(ctx context.Context) (map[string]ModelPrice, err
 	return s.ModelPrices.LoadAll(ctx)
 }
 
+func (s *Store) ListModelPricesPage(ctx context.Context, query ModelPriceListQuery) (ModelPriceListPage, error) {
+	return s.ModelPrices.ListPage(ctx, query)
+}
+
 func (s *Store) SaveModelPrices(ctx context.Context, prices map[string]ModelPrice) error {
 	return s.ModelPrices.ReplaceAll(ctx, prices)
 }
@@ -182,6 +201,10 @@ func (s *Store) ModelUsageSummary(ctx context.Context, limit int) (ModelUsageSum
 
 func (s *Store) LoadAPIKeyAliases(ctx context.Context) ([]APIKeyAlias, error) {
 	return s.APIKeyAliases.LoadAll(ctx)
+}
+
+func (s *Store) ListAPIKeyAliasesPage(ctx context.Context, query APIKeyAliasListQuery) (APIKeyAliasListPage, error) {
+	return s.APIKeyAliases.ListPage(ctx, query)
 }
 
 func (s *Store) UpsertAPIKeyAliases(ctx context.Context, aliases []APIKeyAlias) error {
@@ -202,6 +225,10 @@ func (s *Store) UpsertAccountActionCandidate(ctx context.Context, input AccountA
 
 func (s *Store) ListAccountActionCandidates(ctx context.Context, status string, limit int) ([]AccountActionCandidate, error) {
 	return s.AccountActions.List(ctx, status, limit)
+}
+
+func (s *Store) ListAccountActionCandidatesPage(ctx context.Context, query AccountActionCandidateListQuery) (AccountActionCandidateListPage, error) {
+	return s.AccountActions.ListPage(ctx, query)
 }
 
 func (s *Store) CountAccountActionCandidates(ctx context.Context, status string) (int64, error) {
@@ -244,6 +271,10 @@ func (s *Store) ListCodexInspectionRuns(ctx context.Context, limit int) ([]Codex
 	return s.CodexInspections.ListRuns(ctx, limit)
 }
 
+func (s *Store) ListCodexInspectionRunsPage(ctx context.Context, limit, offset int) (CodexInspectionRunsPage, error) {
+	return s.CodexInspections.ListRunsPage(ctx, limit, offset)
+}
+
 func (s *Store) GetCodexInspectionRun(ctx context.Context, id int64) (CodexInspectionRun, bool, error) {
 	return s.CodexInspections.GetRun(ctx, id)
 }
@@ -256,8 +287,16 @@ func (s *Store) ListCodexInspectionResults(ctx context.Context, runID int64) ([]
 	return s.CodexInspections.ListResults(ctx, runID)
 }
 
+func (s *Store) ListCodexInspectionResultsPage(ctx context.Context, runID int64, limit, offset int) (CodexInspectionResultsPage, error) {
+	return s.CodexInspections.ListResultsPage(ctx, runID, limit, offset)
+}
+
 func (s *Store) ListCodexInspectionLogs(ctx context.Context, runID int64) ([]CodexInspectionLog, error) {
 	return s.CodexInspections.ListLogs(ctx, runID)
+}
+
+func (s *Store) ListCodexInspectionLogsPage(ctx context.Context, runID int64, limit, offset int) (CodexInspectionLogsPage, error) {
+	return s.CodexInspections.ListLogsPage(ctx, runID, limit, offset)
 }
 
 func (s *Store) InsertEvents(ctx context.Context, events []usage.Event) (InsertResult, error) {
@@ -332,6 +371,10 @@ func (s *Store) RecentEvents(ctx context.Context, limit int) ([]usage.Event, err
 	return s.UsageEvents.ListRecent(ctx, limit)
 }
 
+func (s *Store) RecentUsagePage(ctx context.Context, query RecentUsagePageQuery) (RecentUsagePage, error) {
+	return s.UsageEvents.ListRecentPage(ctx, query)
+}
+
 func (s *Store) BackfillUsageResponseMetadata(ctx context.Context, batchLimit int) (int, error) {
 	return s.UsageEvents.BackfillResponseMetadata(ctx, batchLimit)
 }
@@ -400,6 +443,10 @@ func (s *Store) ModelStatsWithFilter(ctx context.Context, filter AnalyticsFilter
 	return s.UsageEvents.ModelStatsWithFilter(ctx, filter, limit)
 }
 
+func (s *Store) ModelStatsPageWithFilter(ctx context.Context, filter AnalyticsFilter, limit int, offset int) (ModelStatsPage, error) {
+	return s.UsageEvents.ModelStatsPageWithFilter(ctx, filter, limit, offset)
+}
+
 func (s *Store) TimelineWithFilter(ctx context.Context, filter AnalyticsFilter, granularity string, location *time.Location) ([]TimelinePoint, error) {
 	return s.UsageEvents.TimelineWithFilter(ctx, filter, granularity, location)
 }
@@ -440,8 +487,16 @@ func (s *Store) AccountModelStatsWithFilter(ctx context.Context, filter Analytic
 	return s.UsageEvents.AccountModelStatsWithFilter(ctx, filter, limit)
 }
 
+func (s *Store) AccountModelStatsPageWithFilter(ctx context.Context, filter AnalyticsFilter, limit int, offset int) (AccountModelStatsPage, error) {
+	return s.UsageEvents.AccountModelStatsPageWithFilter(ctx, filter, limit, offset)
+}
+
 func (s *Store) CredentialModelStatsWithFilter(ctx context.Context, filter AnalyticsFilter) ([]CredentialModelStat, error) {
 	return s.UsageEvents.CredentialModelStatsWithFilter(ctx, filter)
+}
+
+func (s *Store) CredentialModelStatsPageWithFilter(ctx context.Context, filter AnalyticsFilter, limit int, offset int) (CredentialModelStatsPage, error) {
+	return s.UsageEvents.CredentialModelStatsPageWithFilter(ctx, filter, limit, offset)
 }
 
 func (s *Store) CredentialTimelineWithFilter(ctx context.Context, filter AnalyticsFilter, granularity string, location *time.Location) ([]CredentialTimelinePoint, error) {
@@ -450,6 +505,10 @@ func (s *Store) CredentialTimelineWithFilter(ctx context.Context, filter Analyti
 
 func (s *Store) APIKeyModelStatsWithFilter(ctx context.Context, filter AnalyticsFilter, limit int) ([]APIKeyModelStat, error) {
 	return s.UsageEvents.APIKeyModelStatsWithFilter(ctx, filter, limit)
+}
+
+func (s *Store) APIKeyModelStatsPageWithFilter(ctx context.Context, filter AnalyticsFilter, limit int, offset int) (APIKeyModelStatsPage, error) {
+	return s.UsageEvents.APIKeyModelStatsPageWithFilter(ctx, filter, limit, offset)
 }
 
 func (s *Store) TaskBucketsWithFilter(ctx context.Context, filter AnalyticsFilter) ([]TaskBucket, error) {

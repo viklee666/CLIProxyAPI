@@ -12,8 +12,20 @@ import (
 
 type Repository interface {
 	LoadAll(ctx context.Context) ([]model.APIKeyAlias, error)
+	ListPage(ctx context.Context, query ListQuery) (ListPage, error)
 	UpsertMany(ctx context.Context, aliases []model.APIKeyAlias, activeHashes []string, allowOrphanCleanup bool) error
 	Delete(ctx context.Context, apiKeyHash string) error
+}
+
+type ListQuery struct {
+	Search string
+	Limit  int
+	Offset int
+}
+
+type ListPage struct {
+	Items []model.APIKeyAlias
+	Total int64
 }
 
 type repository struct {
@@ -42,6 +54,52 @@ func (r *repository) LoadAll(ctx context.Context) ([]model.APIKeyAlias, error) {
 		aliases = append(aliases, alias)
 	}
 	return aliases, rows.Err()
+}
+
+func (r *repository) ListPage(ctx context.Context, query ListQuery) (ListPage, error) {
+	limit := query.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	offset := query.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	search := strings.TrimSpace(query.Search)
+	pattern := "%" + escapeLikePattern(search) + "%"
+	where := ""
+	args := []any{}
+	if search != "" {
+		where = ` where alias like ? escape '\' collate nocase or api_key_hash like ? escape '\' collate nocase`
+		args = append(args, pattern, pattern)
+	}
+
+	var total int64
+	if err := r.db.QueryRowContext(ctx, `select count(*) from api_key_aliases`+where, args...).Scan(&total); err != nil {
+		return ListPage{}, err
+	}
+	pageArgs := append(append([]any{}, args...), limit, offset)
+	rows, err := r.db.QueryContext(ctx, `select api_key_hash, alias, updated_at_ms
+		from api_key_aliases`+where+`
+		order by alias collate nocase, api_key_hash
+		limit ? offset ?`, pageArgs...)
+	if err != nil {
+		return ListPage{}, err
+	}
+	defer rows.Close()
+
+	items := make([]model.APIKeyAlias, 0, limit)
+	for rows.Next() {
+		var alias model.APIKeyAlias
+		if err := rows.Scan(&alias.APIKeyHash, &alias.Alias, &alias.UpdatedAtMS); err != nil {
+			return ListPage{}, err
+		}
+		items = append(items, alias)
+	}
+	if err := rows.Err(); err != nil {
+		return ListPage{}, err
+	}
+	return ListPage{Items: items, Total: total}, nil
 }
 
 func (r *repository) UpsertMany(ctx context.Context, aliases []model.APIKeyAlias, activeHashes []string, allowOrphanCleanup bool) error {
@@ -185,6 +243,13 @@ func normalizeAPIKeyAlias(alias model.APIKeyAlias, now int64) (model.APIKeyAlias
 
 func normalizeAPIKeyAliasUniqueKey(alias string) string {
 	return strings.ToLower(strings.TrimSpace(alias))
+}
+
+func escapeLikePattern(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `%`, `\%`)
+	value = strings.ReplaceAll(value, `_`, `\_`)
+	return value
 }
 
 func validAPIKeyHash(value string) bool {

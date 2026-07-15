@@ -3,6 +3,7 @@ package management
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -179,27 +180,113 @@ func TestGetLogsTailLimitDoesNotScanOlderFilesForLineCount(t *testing.T) {
 	}
 }
 
-func TestGetLogsNoLimitKeepsFullScanBehavior(t *testing.T) {
+func TestGetLogsNoLimitUsesBoundedTail(t *testing.T) {
 	dir := t.TempDir()
-	writeMainLog(t, dir, "complete\npartial")
+	lines := make([]string, 0, defaultLogLineLimit+1)
+	for i := 0; i < defaultLogLineLimit+1; i++ {
+		lines = append(lines, fmt.Sprintf("line-%04d", i))
+	}
+	writeMainLog(t, dir, strings.Join(lines, "\n")+"\n")
 
 	resp := performGetLogs(t, newLogsTestHandler(dir, true), "/v0/management/logs")
-	wantLines := []string{"complete", "partial"}
+	wantLines := lines[1:]
 	if !reflect.DeepEqual(resp.Lines, wantLines) {
-		t.Fatalf("lines = %#v, want %#v", resp.Lines, wantLines)
+		t.Fatalf("returned %d lines, want bounded tail of %d", len(resp.Lines), len(wantLines))
 	}
-	if resp.LineCount != 2 {
-		t.Fatalf("line-count = %d, want full scan count 2", resp.LineCount)
+	if resp.LineCount != defaultLogLineLimit {
+		t.Fatalf("line-count = %d, want %d", resp.LineCount, defaultLogLineLimit)
 	}
 	if resp.NextCursor == "" {
 		t.Fatal("next-cursor is empty")
 	}
-	cursor, errCursor := decodeLogCursor(resp.NextCursor)
-	if errCursor != nil {
-		t.Fatalf("decode next-cursor: %v", errCursor)
+}
+
+func TestGetLogsRejectsLimitAboveMaximum(t *testing.T) {
+	dir := t.TempDir()
+	writeMainLog(t, dir, "line\n")
+	status, body := performGetLogsRaw(t, newLogsTestHandler(dir, true), "/v0/management/logs?limit=10001")
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d body=%s", status, http.StatusBadRequest, body)
 	}
-	if cursor.Offset != int64(len("complete\n")) {
-		t.Fatalf("cursor offset = %d, want complete-line boundary", cursor.Offset)
+	if !strings.Contains(body, "must not exceed") {
+		t.Fatalf("body = %s, want limit error", body)
+	}
+}
+
+func TestGetRequestErrorLogsPaginatesAndSupportsCount(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < 5; i++ {
+		name := fmt.Sprintf("error-v1-responses-2026-07-15T00000%d-request-%d.log", i, i)
+		path := filepath.Join(dir, name)
+		if errWrite := os.WriteFile(path, []byte(strings.Repeat("x", i+1)), 0o644); errWrite != nil {
+			t.Fatalf("write error log: %v", errWrite)
+		}
+		modified := time.Unix(int64(100+i), 0)
+		if errTimes := os.Chtimes(path, modified, modified); errTimes != nil {
+			t.Fatalf("set error log time: %v", errTimes)
+		}
+	}
+	h := newLogsTestHandler(dir, true)
+
+	recorder := httptest.NewRecorder()
+	ginContext, _ := gin.CreateTestContext(recorder)
+	ginContext.Request = httptest.NewRequest(http.MethodGet, "/v0/management/request-error-logs?page=2&page_size=2", nil)
+	h.GetRequestErrorLogs(ginContext)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var page struct {
+		Files      []requestErrorLog `json:"files"`
+		Total      int               `json:"total"`
+		Page       int               `json:"page"`
+		PageSize   int               `json:"page_size"`
+		TotalPages int               `json:"total_pages"`
+		HasMore    bool              `json:"has_more"`
+	}
+	if errDecode := json.Unmarshal(recorder.Body.Bytes(), &page); errDecode != nil {
+		t.Fatalf("decode page: %v", errDecode)
+	}
+	if page.Total != 5 || page.Page != 2 || page.PageSize != 2 || page.TotalPages != 3 || !page.HasMore {
+		t.Fatalf("page metadata = %+v", page)
+	}
+	if len(page.Files) != 2 || !strings.Contains(page.Files[0].Name, "request-2") || !strings.Contains(page.Files[1].Name, "request-1") {
+		t.Fatalf("page files = %+v", page.Files)
+	}
+
+	recorder = httptest.NewRecorder()
+	ginContext, _ = gin.CreateTestContext(recorder)
+	ginContext.Request = httptest.NewRequest(http.MethodGet, "/v0/management/request-error-logs?view=count", nil)
+	h.GetRequestErrorLogs(ginContext)
+	var count struct {
+		Files []requestErrorLog `json:"files"`
+		Total int               `json:"total"`
+	}
+	if errDecode := json.Unmarshal(recorder.Body.Bytes(), &count); errDecode != nil {
+		t.Fatalf("decode count: %v", errDecode)
+	}
+	if count.Total != 5 || len(count.Files) != 0 {
+		t.Fatalf("count response = %+v", count)
+	}
+}
+
+func TestGetRequestLogByIDUsesCatalog(t *testing.T) {
+	dir := t.TempDir()
+	name := "v1-responses-2026-07-15T000000-request-with-dashes.log"
+	if errWrite := os.WriteFile(filepath.Join(dir, name), []byte("request log"), 0o644); errWrite != nil {
+		t.Fatalf("write request log: %v", errWrite)
+	}
+	h := newLogsTestHandler(dir, true)
+
+	recorder := httptest.NewRecorder()
+	ginContext, _ := gin.CreateTestContext(recorder)
+	ginContext.Params = gin.Params{{Key: "id", Value: "request-with-dashes"}}
+	ginContext.Request = httptest.NewRequest(http.MethodGet, "/v0/management/request-log-by-id/request-with-dashes", nil)
+	h.GetRequestLogByID(ginContext)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	if recorder.Body.String() != "request log" {
+		t.Fatalf("body = %q", recorder.Body.String())
 	}
 }
 

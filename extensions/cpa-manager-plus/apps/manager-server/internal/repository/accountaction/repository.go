@@ -14,11 +14,24 @@ import (
 type Repository interface {
 	Upsert(ctx context.Context, input model.AccountActionCandidateUpsert) (model.AccountActionCandidate, error)
 	List(ctx context.Context, status string, limit int) ([]model.AccountActionCandidate, error)
+	ListPage(ctx context.Context, query ListQuery) (ListPage, error)
 	Count(ctx context.Context, status string) (int64, error)
 	Get(ctx context.Context, id int64) (model.AccountActionCandidate, bool, error)
 	UpdateStatus(ctx context.Context, id int64, status string) (model.AccountActionCandidate, error)
 	UpdatePendingStatus(ctx context.Context, id int64, status string) (model.AccountActionCandidate, error)
 	RecordFailure(ctx context.Context, id int64, reason string) error
+}
+
+type ListQuery struct {
+	Status   string
+	Search   string
+	Page     int
+	PageSize int
+}
+
+type ListPage struct {
+	Items []model.AccountActionCandidate
+	Total int64
 }
 
 type repository struct {
@@ -117,32 +130,74 @@ func (r *repository) Upsert(ctx context.Context, input model.AccountActionCandid
 }
 
 func (r *repository) List(ctx context.Context, status string, limit int) ([]model.AccountActionCandidate, error) {
-	if limit <= 0 || limit > 500 {
-		limit = 100
+	page, err := r.ListPage(ctx, ListQuery{Status: status, Page: 1, PageSize: limit})
+	return page.Items, err
+}
+
+func (r *repository) ListPage(ctx context.Context, input ListQuery) (ListPage, error) {
+	if input.Page <= 0 {
+		input.Page = 1
 	}
-	status = strings.TrimSpace(status)
-	query := selectCandidates
-	args := []any{}
-	if status != "" {
-		query += ` where status = ?`
-		args = append(args, status)
+	if input.PageSize <= 0 {
+		input.PageSize = 50
 	}
-	query += ` order by case status when 'pending' then 0 else 1 end, last_seen_at_ms desc, id desc limit ?`
-	args = append(args, limit)
-	rows, err := r.db.QueryContext(ctx, query, args...)
+	if input.PageSize > 200 {
+		input.PageSize = 200
+	}
+	where, args := candidateListWhere(input.Status, input.Search)
+	var total int64
+	if err := r.db.QueryRowContext(ctx, `select count(*) from account_action_candidates`+where, args...).Scan(&total); err != nil {
+		return ListPage{}, err
+	}
+	offset := (input.Page - 1) * input.PageSize
+	query := selectCandidates + where + ` order by case status when 'pending' then 0 else 1 end, last_seen_at_ms desc, id desc limit ? offset ?`
+	queryArgs := append(append([]any{}, args...), input.PageSize, offset)
+	rows, err := r.db.QueryContext(ctx, query, queryArgs...)
 	if err != nil {
-		return nil, err
+		return ListPage{}, err
 	}
 	defer rows.Close()
 	items := make([]model.AccountActionCandidate, 0)
 	for rows.Next() {
 		item, err := scanCandidate(rows)
 		if err != nil {
-			return nil, err
+			return ListPage{}, err
 		}
 		items = append(items, item)
 	}
-	return items, rows.Err()
+	if err := rows.Err(); err != nil {
+		return ListPage{}, err
+	}
+	return ListPage{Items: items, Total: total}, nil
+}
+
+func candidateListWhere(status string, search string) (string, []any) {
+	conditions := make([]string, 0, 2)
+	args := make([]any, 0, 2)
+	status = strings.TrimSpace(status)
+	if status != "" && status != "all" {
+		conditions = append(conditions, "status = ?")
+		args = append(args, status)
+	}
+	search = strings.ToLower(strings.TrimSpace(search))
+	if search != "" {
+		like := "%" + search + "%"
+		columns := []string{
+			"action_type", "status", "provider", "auth_file_name", "auth_index",
+			"account_snapshot", "account_id_snapshot", "auth_label", "reason",
+			"evidence_json", "last_error",
+		}
+		searchConditions := make([]string, 0, len(columns))
+		for _, column := range columns {
+			searchConditions = append(searchConditions, "lower(coalesce("+column+", '')) like ?")
+			args = append(args, like)
+		}
+		conditions = append(conditions, "("+strings.Join(searchConditions, " or ")+")")
+	}
+	if len(conditions) == 0 {
+		return "", args
+	}
+	return " where " + strings.Join(conditions, " and "), args
 }
 
 func (r *repository) Count(ctx context.Context, status string) (int64, error) {

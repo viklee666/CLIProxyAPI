@@ -3,9 +3,11 @@ package management
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"html"
 	"io"
 	"net/http"
@@ -16,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -77,6 +80,76 @@ func TestListPluginStoreMergesInstalledStatus(t *testing.T) {
 	}
 	if entry.Path == "" {
 		t.Fatal("path is empty")
+	}
+}
+
+func TestListPluginStoreFiltersPollingResponseAndCachesRegistry(t *testing.T) {
+	t.Parallel()
+
+	const registryURL = "https://registry.example/registry.json"
+	httpClient := &countingPluginStoreHTTPClient{responses: fakePluginStoreHTTPClient{
+		registryURL: []byte(`{
+			"schema_version": 1,
+			"plugins": [
+				{"id":"first-provider","name":"First","description":"First provider","author":"tester","version":"1.0.0","repository":"https://github.com/tester/first-provider"},
+				{"id":"second-provider","name":"Second","description":"Second provider","author":"tester","version":"1.0.0","repository":"https://github.com/tester/second-provider"}
+			]
+		}`),
+	}}
+	h := &Handler{
+		cfg:                    &config.Config{Plugins: config.PluginsConfig{Dir: t.TempDir()}},
+		pluginStoreRegistryURL: registryURL,
+		pluginStoreHTTPClient:  httpClient,
+	}
+
+	for call := 0; call < 2; call++ {
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodGet, "/v0/management/plugin-store?id=second-provider", nil)
+		h.ListPluginStore(c)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+		}
+		var body pluginStoreListResponse
+		if errDecode := json.Unmarshal(rec.Body.Bytes(), &body); errDecode != nil {
+			t.Fatalf("decode response: %v", errDecode)
+		}
+		if len(body.Plugins) != 1 || body.Plugins[0].ID != "second-provider" {
+			t.Fatalf("plugins = %#v", body.Plugins)
+		}
+		if body.Page != 1 || body.PageSize != defaultPluginCollectionPageSize || body.Total != 1 || body.TotalPages != 1 || body.HasMore {
+			t.Fatalf("pagination = page:%d page_size:%d total:%d total_pages:%d has_more:%v", body.Page, body.PageSize, body.Total, body.TotalPages, body.HasMore)
+		}
+	}
+	if calls := httpClient.count(registryURL); calls != 1 {
+		t.Fatalf("registry fetched %d times, want 1", calls)
+	}
+}
+
+func TestFetchSourcedPluginsUsesBoundedWorkers(t *testing.T) {
+	client := &concurrencyTrackingPluginStoreHTTPClient{
+		body: []byte(`{"schema_version":1,"plugins":[{"id":"sample","name":"Sample","description":"Sample","author":"tester","version":"1.0.0","repository":"https://github.com/tester/sample"}]}`),
+	}
+	h := &Handler{pluginStoreHTTPClient: client}
+	sources := make([]pluginstore.Source, 12)
+	for i := range sources {
+		sources[i] = pluginstore.Source{ID: fmt.Sprintf("source-%d", i), Name: fmt.Sprintf("Source %d", i), URL: fmt.Sprintf("https://registry-%d.example/registry.json", i)}
+	}
+
+	plugins, sourceErrors := h.fetchSourcedPlugins(context.Background(), "", nil, sources)
+
+	if len(sourceErrors) != 0 || len(plugins) != len(sources) {
+		t.Fatalf("plugins=%d errors=%#v", len(plugins), sourceErrors)
+	}
+	client.mu.Lock()
+	maxConcurrent := client.maxConcurrent
+	calls := client.calls
+	client.mu.Unlock()
+	if calls != len(sources) {
+		t.Fatalf("calls=%d, want %d", calls, len(sources))
+	}
+	if maxConcurrent < 2 || maxConcurrent > pluginRegistryWorkerLimit {
+		t.Fatalf("max concurrent=%d, want 2..%d", maxConcurrent, pluginRegistryWorkerLimit)
 	}
 }
 
@@ -300,6 +373,82 @@ func TestListPluginStoreShowsLatestReleaseVersionAndCaches(t *testing.T) {
 	releaseCalls := httpClient.count("https://api.github.com/repos/author-name/cliproxy-sample-provider-plugin/releases/latest")
 	if releaseCalls != 1 {
 		t.Fatalf("latest release fetched %d times, want 1 (cached)", releaseCalls)
+	}
+}
+
+func TestListPluginStorePaginatesBeforeReleaseEnrichment(t *testing.T) {
+	t.Parallel()
+
+	const registryURL = "https://registry.example/registry.json"
+	const alphaReleaseURL = "https://api.github.com/repos/tester/alpha/releases/latest"
+	const bravoReleaseURL = "https://api.github.com/repos/tester/bravo/releases/latest"
+	const charlieReleaseURL = "https://api.github.com/repos/tester/charlie/releases/latest"
+	httpClient := &countingPluginStoreHTTPClient{responses: fakePluginStoreHTTPClient{
+		registryURL: []byte(`{
+			"schema_version": 1,
+			"plugins": [
+				{"id":"charlie","name":"Charlie","description":"Charlie","author":"tester","version":"1.0.0","repository":"https://github.com/tester/charlie"},
+				{"id":"alpha","name":"Alpha","description":"Alpha","author":"tester","version":"1.0.0","repository":"https://github.com/tester/alpha"},
+				{"id":"bravo","name":"Bravo","description":"Bravo","author":"tester","version":"1.0.0","repository":"https://github.com/tester/bravo"}
+			]
+		}`),
+		alphaReleaseURL:   []byte(`{"tag_name":"v1.1.0","assets":[]}`),
+		bravoReleaseURL:   []byte(`{"tag_name":"v1.2.0","assets":[]}`),
+		charlieReleaseURL: []byte(`{"tag_name":"v1.3.0","assets":[]}`),
+	}}
+	h := &Handler{
+		cfg:                    &config.Config{Plugins: config.PluginsConfig{Dir: t.TempDir()}},
+		pluginStoreRegistryURL: registryURL,
+		pluginStoreHTTPClient:  httpClient,
+	}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v0/management/plugin-store?page=2&page_size=1", nil)
+
+	h.ListPluginStore(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var body pluginStoreListResponse
+	if errDecode := json.Unmarshal(rec.Body.Bytes(), &body); errDecode != nil {
+		t.Fatalf("decode response: %v", errDecode)
+	}
+	if len(body.Plugins) != 1 || body.Plugins[0].ID != "bravo" || body.Plugins[0].Version != "1.2.0" {
+		t.Fatalf("plugins = %#v, want only enriched bravo", body.Plugins)
+	}
+	if body.Page != 2 || body.PageSize != 1 || body.Total != 3 || body.TotalPages != 3 || !body.HasMore {
+		t.Fatalf("pagination = page:%d page_size:%d total:%d total_pages:%d has_more:%v", body.Page, body.PageSize, body.Total, body.TotalPages, body.HasMore)
+	}
+	if calls := httpClient.count(bravoReleaseURL); calls != 1 {
+		t.Fatalf("bravo release fetched %d times, want 1", calls)
+	}
+	if calls := httpClient.count(alphaReleaseURL); calls != 0 {
+		t.Fatalf("off-page alpha release fetched %d times, want 0", calls)
+	}
+	if calls := httpClient.count(charlieReleaseURL); calls != 0 {
+		t.Fatalf("off-page charlie release fetched %d times, want 0", calls)
+	}
+}
+
+func TestListPluginStoreRejectsInvalidPagination(t *testing.T) {
+	t.Parallel()
+
+	h := &Handler{
+		cfg:                    &config.Config{Plugins: config.PluginsConfig{Dir: t.TempDir()}},
+		pluginStoreRegistryURL: "https://registry.example/registry.json",
+		pluginStoreHTTPClient: fakePluginStoreHTTPClient{
+			"https://registry.example/registry.json": registryJSON(t),
+		},
+	}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v0/management/plugin-store?page_size=201", nil)
+
+	h.ListPluginStore(c)
+
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "invalid_pagination") {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -1159,6 +1308,34 @@ func (c fakePluginStoreHTTPClient) Do(req *http.Request) (*http.Response, error)
 	return &http.Response{
 		StatusCode: http.StatusOK,
 		Body:       io.NopCloser(bytes.NewReader(body)),
+		Header:     make(http.Header),
+		Request:    req,
+	}, nil
+}
+
+type concurrencyTrackingPluginStoreHTTPClient struct {
+	mu            sync.Mutex
+	body          []byte
+	current       int
+	maxConcurrent int
+	calls         int
+}
+
+func (c *concurrencyTrackingPluginStoreHTTPClient) Do(req *http.Request) (*http.Response, error) {
+	c.mu.Lock()
+	c.current++
+	c.calls++
+	if c.current > c.maxConcurrent {
+		c.maxConcurrent = c.current
+	}
+	c.mu.Unlock()
+	time.Sleep(15 * time.Millisecond)
+	c.mu.Lock()
+	c.current--
+	c.mu.Unlock()
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(bytes.NewReader(c.body)),
 		Header:     make(http.Header),
 		Request:    req,
 	}, nil

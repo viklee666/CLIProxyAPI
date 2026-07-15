@@ -82,18 +82,47 @@ func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
 		response.MethodNotAllowed(w)
 		return
 	}
-	limit := 100
-	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
-		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
-			limit = parsed
-		}
+	query := r.URL.Query()
+	page, err := parsePositiveQueryInt(query.Get("page"), 1)
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, errors.New("page must be a positive integer"))
+		return
 	}
-	result, err := h.App.AccountActionService.List(r.Context(), r.URL.Query().Get("status"), limit)
+	pageSizeRaw := query.Get("page_size")
+	if strings.TrimSpace(pageSizeRaw) == "" {
+		pageSizeRaw = query.Get("limit")
+	}
+	pageSize, err := parsePositiveQueryInt(pageSizeRaw, 50)
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, errors.New("page_size must be a positive integer"))
+		return
+	}
+	if pageSize > 200 {
+		pageSize = 200
+	}
+	result, err := h.App.AccountActionService.ListPage(r.Context(), accountactionsvc.ListRequest{
+		Status:   query.Get("status"),
+		Search:   query.Get("search"),
+		Page:     page,
+		PageSize: pageSize,
+	})
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, err)
 		return
 	}
 	response.JSON(w, http.StatusOK, result)
+}
+
+func parsePositiveQueryInt(raw string, fallback int) (int, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return fallback, nil
+	}
+	value, err := strconv.Atoi(trimmed)
+	if err != nil || value <= 0 {
+		return 0, errors.New("query value must be a positive integer")
+	}
+	return value, nil
 }
 
 func (h *Handler) writeCandidateResult(w http.ResponseWriter, item any, err error) {

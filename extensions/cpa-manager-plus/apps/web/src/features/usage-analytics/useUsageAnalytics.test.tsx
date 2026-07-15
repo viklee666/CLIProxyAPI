@@ -167,13 +167,15 @@ describe('useUsageAnalytics request orchestration', () => {
       summary_comparison: true,
       timeline: true,
       model_stats: true,
+      model_stats_page: { page: 1, limit: 8 },
       channel_share: true,
       api_key_stats: true,
+      api_key_stats_page: { page: 1, limit: 8 },
       anomaly_points: true,
       granularity: 'hour',
     });
     expect(JSON.parse(overview?.dataScopeKey ?? '{}')).toMatchObject({ activeTab: 'overview' });
-    expect(selectors?.include).toEqual({ filter_options: true, filter_selectors: true });
+    expect(selectors?.include).toEqual({ filter_selectors: true });
     expect(JSON.parse(selectors?.dataScopeKey ?? '{}')).not.toHaveProperty('activeTab');
     expect(latestResult?.filterOptions).toMatchObject({
       models: ['gpt-a'],
@@ -224,6 +226,7 @@ describe('useUsageAnalytics request orchestration', () => {
       summary: true,
       summary_profile: 'compact',
       credential_stats: true,
+      credential_stats_page: { page: 1, limit: 25 },
       granularity: 'hour',
     });
 

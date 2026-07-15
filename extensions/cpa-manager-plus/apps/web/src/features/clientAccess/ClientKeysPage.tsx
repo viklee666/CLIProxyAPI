@@ -77,7 +77,6 @@ function QuotaLine({ label, used, limit, reserved = 0, reset }: QuotaLineProps) 
     </div>
   );
 }
-
 export function ClientKeysPage() {
   const { t } = useTranslation();
   const showNotification = useNotificationStore((state) => state.showNotification);
@@ -102,11 +101,11 @@ export function ClientKeysPage() {
     try {
       const [keyResponse, groupResponse] = await Promise.all([
         clientAccessApi.listKeys(page, pageSize, search),
-        clientAccessApi.listGroups(1, 200),
+        clientAccessApi.listAllGroups(),
       ]);
       setItems(keyResponse.items ?? []);
       setTotal(keyResponse.total ?? 0);
-      setGroups(groupResponse.items ?? []);
+      setGroups(groupResponse);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : String(loadError));
     } finally {

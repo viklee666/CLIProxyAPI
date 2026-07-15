@@ -1,6 +1,7 @@
 package management
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,22 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 )
+
+func TestPostOAuthCallbackRejectsOversizedBody(t *testing.T) {
+	h := NewHandlerWithoutConfigFilePath(&config.Config{}, nil)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	payload := append([]byte(`{"code":"`), bytes.Repeat([]byte("x"), maxOAuthCallbackBodyBytes+1)...)
+	payload = append(payload, []byte(`"}`)...)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v0/management/oauth-callback", bytes.NewReader(payload))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	h.PostOAuthCallback(ctx)
+
+	if recorder.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusRequestEntityTooLarge, recorder.Body.String())
+	}
+}
 
 func TestPostOAuthCallbackCreatesMissingAuthDir(t *testing.T) {
 

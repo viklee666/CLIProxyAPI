@@ -48,18 +48,30 @@ export async function waitForPluginState(
   intervalMs = PLUGIN_STATE_INTERVAL_MS
 ): Promise<PluginStateWaitResult> {
   const deadline = Date.now() + timeoutMs;
-  let latest = await pluginsApi.list();
+  let interval = intervalMs;
+  let latest = await pluginsApi.list({ id });
 
   for (;;) {
     const plugin = latest.plugins.find((item) => item.id === id) ?? null;
     if (plugin && predicate(plugin, latest)) {
-      return { response: latest, plugin, timedOut: false };
+      const response = await pluginsApi.list();
+      return {
+        response,
+        plugin: response.plugins.find((item) => item.id === id) ?? plugin,
+        timedOut: false,
+      };
     }
     if (Date.now() >= deadline) {
-      return { response: latest, plugin, timedOut: true };
+      const response = await pluginsApi.list();
+      return {
+        response,
+        plugin: response.plugins.find((item) => item.id === id) ?? plugin,
+        timedOut: true,
+      };
     }
-    await wait(Math.min(intervalMs, Math.max(0, deadline - Date.now())));
-    latest = await pluginsApi.list();
+    await wait(Math.min(interval, Math.max(0, deadline - Date.now())));
+    interval = Math.min(2_000, Math.max(intervalMs, Math.round(interval * 1.5)));
+    latest = await pluginsApi.list({ id });
   }
 }
 
@@ -71,19 +83,37 @@ export async function waitForPluginStoreState(
   intervalMs = PLUGIN_STATE_INTERVAL_MS
 ): Promise<PluginStoreStateWaitResult> {
   const deadline = Date.now() + timeoutMs;
-  let latest = await pluginStoreApi.list();
+  let interval = intervalMs;
+  let latest = await pluginStoreApi.list({ id, sourceId });
 
   for (;;) {
     const plugin =
       latest.plugins.find((item) => item.id === id && (!sourceId || item.sourceId === sourceId)) ??
       null;
     if (plugin && predicate(plugin, latest)) {
-      return { response: latest, plugin, timedOut: false };
+      const response = await pluginStoreApi.list();
+      return {
+        response,
+        plugin:
+          response.plugins.find(
+            (item) => item.id === id && (!sourceId || item.sourceId === sourceId)
+          ) ?? plugin,
+        timedOut: false,
+      };
     }
     if (Date.now() >= deadline) {
-      return { response: latest, plugin, timedOut: true };
+      const response = await pluginStoreApi.list();
+      return {
+        response,
+        plugin:
+          response.plugins.find(
+            (item) => item.id === id && (!sourceId || item.sourceId === sourceId)
+          ) ?? plugin,
+        timedOut: true,
+      };
     }
-    await wait(Math.min(intervalMs, Math.max(0, deadline - Date.now())));
-    latest = await pluginStoreApi.list();
+    await wait(Math.min(interval, Math.max(0, deadline - Date.now())));
+    interval = Math.min(2_000, Math.max(intervalMs, Math.round(interval * 1.5)));
+    latest = await pluginStoreApi.list({ id, sourceId });
   }
 }

@@ -68,6 +68,22 @@ export type CredentialBinding = {
   created_at: string;
 };
 
+export type CredentialBindingSelection = {
+  mode: 'query';
+  all: boolean;
+  providers: string[];
+  plan_types: string[];
+  excluded_auth_indices: string[];
+};
+
+export type CredentialBindingBulkResult = {
+  matched: number;
+  updated: number;
+  unchanged: number;
+  excluded: number;
+  dry_run?: boolean;
+};
+
 export type ClientGroupInput = {
   name: string;
   description: string;
@@ -101,12 +117,77 @@ const listQuery = (page: number, pageSize: number, search: string) => ({
   params: { page, page_size: pageSize, search: search.trim() || undefined },
 });
 
+const listAllGroups = async (search = ''): Promise<ClientGroup[]> => {
+  const result: ClientGroup[] = [];
+  const seen = new Set<number>();
+  let page = 1;
+  while (true) {
+    const response = await apiClient.get<ClientAccessPage<ClientGroup>>(
+      '/client-access/groups',
+      listQuery(page, 200, search)
+    );
+    for (const item of response.items ?? []) {
+      if (seen.has(item.id)) continue;
+      seen.add(item.id);
+      result.push(item);
+    }
+    const pageSize = Math.max(1, response.page_size || 200);
+    if (
+      (response.items ?? []).length === 0 ||
+      page * pageSize >= (response.total ?? result.length)
+    ) {
+      break;
+    }
+    page += 1;
+  }
+  return result;
+};
+
+const listAllCredentialBindings = async (
+  authIndices: string[],
+  groupIDs: number[] = []
+): Promise<CredentialBinding[]> => {
+  if (authIndices.length === 0 && groupIDs.length === 0) return [];
+  const result: CredentialBinding[] = [];
+  const seen = new Set<string>();
+  let page = 1;
+  while (true) {
+    const response = await apiClient.get<ClientAccessPage<CredentialBinding>>(
+      '/client-access/credential-bindings',
+      {
+        params: {
+          page,
+          page_size: 500,
+          auth_indices: authIndices.length > 0 ? authIndices.join(',') : undefined,
+          group_ids: groupIDs.length > 0 ? groupIDs.join(',') : undefined,
+        },
+      }
+    );
+    for (const item of response.items ?? []) {
+      const key = `${item.auth_index}\u0000${item.group_id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push(item);
+    }
+    const pageSize = Math.max(1, response.page_size || 200);
+    if (
+      (response.items ?? []).length === 0 ||
+      page * pageSize >= (response.total ?? result.length)
+    ) {
+      break;
+    }
+    page += 1;
+  }
+  return result;
+};
+
 export const clientAccessApi = {
   listGroups: (page = 1, pageSize = 50, search = '') =>
     apiClient.get<ClientAccessPage<ClientGroup>>(
       '/client-access/groups',
       listQuery(page, pageSize, search)
     ),
+  listAllGroups,
   createGroup: (input: ClientGroupInput) =>
     apiClient.post<ClientGroup>('/client-access/groups', input),
   updateGroup: (id: number, input: Partial<ClientGroupInput>) =>
@@ -131,16 +212,14 @@ export const clientAccessApi = {
     authIndices: string[] = [],
     groupIDs: number[] = []
   ) =>
-    apiClient.get<ClientAccessPage<CredentialBinding>>(
-      '/client-access/credential-bindings',
-      {
-        params: {
-          ...listQuery(page, pageSize, search).params,
-          auth_indices: authIndices.length > 0 ? authIndices.join(',') : undefined,
-          group_ids: groupIDs.length > 0 ? groupIDs.join(',') : undefined,
-        },
-      }
-    ),
+    apiClient.get<ClientAccessPage<CredentialBinding>>('/client-access/credential-bindings', {
+      params: {
+        ...listQuery(page, pageSize, search).params,
+        auth_indices: authIndices.length > 0 ? authIndices.join(',') : undefined,
+        group_ids: groupIDs.length > 0 ? groupIDs.join(',') : undefined,
+      },
+    }),
+  listAllCredentialBindings,
   replaceCredentialBindings: (
     authIndices: string[],
     groups: Array<{ group_id: number; priority: number }>
@@ -148,5 +227,15 @@ export const clientAccessApi = {
     apiClient.put<{ updated: number }>('/client-access/credential-bindings', {
       auth_indices: authIndices,
       groups,
+    }),
+  bulkReplaceCredentialBindings: (
+    selection: CredentialBindingSelection,
+    groups: Array<{ group_id: number; priority: number }>,
+    dryRun = false
+  ) =>
+    apiClient.post<CredentialBindingBulkResult>('/client-access/credential-bindings/bulk', {
+      selection,
+      groups,
+      dry_run: dryRun,
     }),
 };

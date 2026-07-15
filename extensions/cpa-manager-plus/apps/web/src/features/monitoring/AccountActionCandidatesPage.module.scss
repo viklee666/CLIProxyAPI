@@ -39,8 +39,16 @@
   inset: 0;
   pointer-events: none;
   background:
-    linear-gradient(135deg, color-mix(in srgb, var(--action-danger) 12%, transparent), transparent 34%),
-    repeating-linear-gradient(90deg, transparent 0 18px, color-mix(in srgb, var(--action-line) 42%, transparent) 18px 19px);
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--action-danger) 12%, transparent),
+      transparent 34%
+    ),
+    repeating-linear-gradient(
+      90deg,
+      transparent 0 18px,
+      color-mix(in srgb, var(--action-line) 42%, transparent) 18px 19px
+    );
   opacity: 0.55;
 }
 
@@ -312,6 +320,22 @@
   text-align: center;
 }
 
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-top: 1px solid var(--action-line);
+  color: var(--action-muted);
+  font-size: 12px;
+
+  > div {
+    display: flex;
+    gap: 8px;
+  }
+}
+
 .errorState {
   color: var(--action-danger);
 }
@@ -332,6 +356,10 @@
 }
 
 @media (max-width: 900px) {
+  .pagination {
+    align-items: flex-start;
+    flex-direction: column;
+  }
   .hero,
   .toolbar {
     grid-template-columns: 1fr;

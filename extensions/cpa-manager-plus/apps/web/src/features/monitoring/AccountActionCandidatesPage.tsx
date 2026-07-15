@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/Button';
@@ -20,6 +20,17 @@ type StatusFilter = 'pending' | 'all' | 'ignored' | 'resolved' | 'deleted';
 type CandidateAction = 'ignore' | 'resolve' | 'enable' | 'delete';
 
 const STATUS_FILTERS: StatusFilter[] = ['pending', 'all', 'ignored', 'resolved', 'deleted'];
+const CANDIDATE_PAGE_SIZE = 25;
+const SEARCH_DEBOUNCE_MS = 350;
+
+function useDebouncedValue(value: string, delayMs: number) {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delayMs);
+    return () => clearTimeout(timer);
+  }, [delayMs, value]);
+  return debounced;
+}
 
 const formatMs = (value?: number) => {
   if (!value) return '-';
@@ -62,12 +73,15 @@ export function AccountActionCandidatesPage() {
   const featureAvailability = usePanelFeatureAvailability();
   const [items, setItems] = useState<AccountActionCandidate[]>([]);
   const [pendingCount, setPendingCount] = useState(0);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
   const [filter, setFilter] = useState<StatusFilter>('pending');
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [actingId, setActingId] = useState<number | null>(null);
   const [evidenceCandidate, setEvidenceCandidate] = useState<AccountActionCandidate | null>(null);
+  const debouncedSearch = useDebouncedValue(search.trim(), SEARCH_DEBOUNCE_MS);
 
   const managerBase = featureAvailability.managerServiceBase;
 
@@ -79,11 +93,19 @@ export function AccountActionCandidatesPage() {
       const response = await usageServiceApi.listAccountActionCandidates(
         managerBase,
         managementKey,
-        filter === 'all' ? '' : filter,
-        200
+        {
+          status: filter === 'all' ? '' : filter,
+          search: debouncedSearch,
+          page,
+          pageSize: CANDIDATE_PAGE_SIZE,
+        }
       );
       setItems(response.items);
       setPendingCount(response.pendingCount);
+      setTotal(response.total);
+      if (response.items.length === 0 && response.total > 0 && page > 1) {
+        setPage((current) => Math.max(1, current - 1));
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err || 'request failed');
       setError(message);
@@ -94,43 +116,15 @@ export function AccountActionCandidatesPage() {
     } finally {
       setLoading(false);
     }
-  }, [filter, managementKey, managerBase, showNotification, t]);
+  }, [debouncedSearch, filter, managementKey, managerBase, page, showNotification, t]);
 
   useEffect(() => {
     if (featureAvailability.checking) return;
     void loadCandidates();
   }, [featureAvailability.checking, loadCandidates]);
 
-  const statusCounts = useMemo(() => {
-    const counts: Record<string, number> = { pending: pendingCount };
-    for (const item of items) counts[item.status] = (counts[item.status] || 0) + 1;
-    return counts;
-  }, [items, pendingCount]);
-
-  const visibleItems = useMemo(() => {
-    const term = search.trim().toLowerCase();
-    if (!term) return items;
-    return items.filter((item) => {
-      const header = getHeaderEvidence(item);
-      return [
-        item.accountSnapshot,
-        item.authLabel,
-        item.accountIdSnapshot,
-        item.provider,
-        item.authFileName,
-        item.authIndex,
-        item.actionType,
-        item.reason,
-        item.status,
-        item.lastError,
-        header.errorKind,
-        header.errorCode,
-        header.traceId,
-      ]
-        .filter(Boolean)
-        .some((value) => String(value).toLowerCase().includes(term));
-    });
-  }, [items, search]);
+  const visibleItems = items;
+  const totalPages = Math.max(1, Math.ceil(total / CANDIDATE_PAGE_SIZE));
 
   const runAction = useCallback(
     async (candidate: AccountActionCandidate, action: CandidateAction) => {
@@ -139,15 +133,27 @@ export function AccountActionCandidatesPage() {
       try {
         switch (action) {
           case 'ignore':
-            await usageServiceApi.ignoreAccountActionCandidate(managerBase, managementKey, candidate.id);
+            await usageServiceApi.ignoreAccountActionCandidate(
+              managerBase,
+              managementKey,
+              candidate.id
+            );
             showNotification(t('account_actions.ignore_success'), 'success');
             break;
           case 'resolve':
-            await usageServiceApi.resolveAccountActionCandidate(managerBase, managementKey, candidate.id);
+            await usageServiceApi.resolveAccountActionCandidate(
+              managerBase,
+              managementKey,
+              candidate.id
+            );
             showNotification(t('account_actions.resolve_success'), 'success');
             break;
           case 'enable':
-            await usageServiceApi.enableAccountActionCandidate(managerBase, managementKey, candidate.id);
+            await usageServiceApi.enableAccountActionCandidate(
+              managerBase,
+              managementKey,
+              candidate.id
+            );
             showNotification(t('account_actions.enable_success'), 'success');
             break;
           case 'delete':
@@ -227,7 +233,7 @@ export function AccountActionCandidatesPage() {
             <span className={styles.statLabel}>{t('account_actions.pending_count')}</span>
           </div>
           <div className={styles.statCard}>
-            <span className={styles.statValue}>{visibleItems.length}</span>
+            <span className={styles.statValue}>{total}</span>
             <span className={styles.statLabel}>{t('account_actions.visible_count')}</span>
           </div>
         </div>
@@ -242,16 +248,22 @@ export function AccountActionCandidatesPage() {
               className={[styles.filterButton, filter === key ? styles.filterButtonActive : '']
                 .filter(Boolean)
                 .join(' ')}
-              onClick={() => setFilter(key)}
+              onClick={() => {
+                setFilter(key);
+                setPage(1);
+              }}
             >
               {t(`account_actions.filter_${key}`)}
-              {key !== 'all' && typeof statusCounts[key] === 'number' ? ` · ${statusCounts[key]}` : ''}
+              {key === 'pending' ? ` · ${pendingCount}` : ''}
             </button>
           ))}
         </div>
         <Input
           value={search}
-          onChange={(event) => setSearch(event.target.value)}
+          onChange={(event) => {
+            setSearch(event.target.value);
+            setPage(1);
+          }}
           placeholder={t('account_actions.search_placeholder', {
             defaultValue: 'Search account, file, error or trace',
           })}
@@ -304,7 +316,9 @@ export function AccountActionCandidatesPage() {
                         <div className={styles.accountCell}>
                           <strong>{candidate.accountSnapshot || candidate.authLabel || '-'}</strong>
                           <span>{candidate.provider || '-'}</span>
-                          {candidate.accountIdSnapshot ? <small>{candidate.accountIdSnapshot}</small> : null}
+                          {candidate.accountIdSnapshot ? (
+                            <small>{candidate.accountIdSnapshot}</small>
+                          ) : null}
                         </div>
                       </td>
                       <td>
@@ -338,7 +352,11 @@ export function AccountActionCandidatesPage() {
                             </small>
                           ) : null}
                           {header.traceId ? <small>{`Trace: ${header.traceId}`}</small> : null}
-                          <small>{t('account_actions.last_updated', { time: formatMs(candidate.updatedAtMs) })}</small>
+                          <small>
+                            {t('account_actions.last_updated', {
+                              time: formatMs(candidate.updatedAtMs),
+                            })}
+                          </small>
                         </div>
                       </td>
                       <td>
@@ -423,6 +441,29 @@ export function AccountActionCandidatesPage() {
             </table>
           </div>
         )}
+        <div className={styles.pagination}>
+          <span>
+            {page} / {totalPages} · {t('common.total')}: {total}
+          </span>
+          <div>
+            <Button
+              variant="secondary"
+              size="xs"
+              disabled={page <= 1 || loading}
+              onClick={() => setPage((current) => Math.max(1, current - 1))}
+            >
+              {t('common.previous')}
+            </Button>
+            <Button
+              variant="secondary"
+              size="xs"
+              disabled={page >= totalPages || loading}
+              onClick={() => setPage((current) => current + 1)}
+            >
+              {t('common.next')}
+            </Button>
+          </div>
+        </div>
       </section>
 
       <Modal

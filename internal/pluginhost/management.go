@@ -3,9 +3,11 @@ package pluginhost
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/htmlsanitize"
@@ -17,6 +19,8 @@ const (
 	managementBasePath      = "/v0/management"
 	resourcePluginBasePath  = "/v0/resource/plugins"
 	legacyPluginRoutePrefix = "/plugins"
+	maxManagementBodyBytes  = 4 * 1024 * 1024
+	maxManagementReplyBytes = 16 * 1024 * 1024
 )
 
 type managementRouteRecord struct {
@@ -31,6 +35,45 @@ type resourceRouteRecord struct {
 	path     string
 	version  string
 	route    pluginapi.ResourceRoute
+}
+
+// ManagementRouteInfo is a read-only snapshot of one active plugin-owned
+// management route. It intentionally excludes handler pointers and local file
+// paths so it is safe to expose through the authenticated management API.
+type ManagementRouteInfo struct {
+	PluginID string `json:"plugin_id"`
+	Method   string `json:"method"`
+	Path     string `json:"path"`
+	Version  string `json:"version,omitempty"`
+}
+
+// ManagementRouteInventory returns a stable, sorted snapshot of all active
+// dynamic management routes registered by plugins.
+func (h *Host) ManagementRouteInventory() []ManagementRouteInfo {
+	if h == nil {
+		return nil
+	}
+	h.mu.Lock()
+	routes := make([]ManagementRouteInfo, 0, len(h.managementRoutes))
+	for _, record := range h.managementRoutes {
+		routes = append(routes, ManagementRouteInfo{
+			PluginID: record.pluginID,
+			Method:   record.route.Method,
+			Path:     record.route.Path,
+			Version:  record.version,
+		})
+	}
+	h.mu.Unlock()
+	sort.Slice(routes, func(i, j int) bool {
+		if routes[i].Path != routes[j].Path {
+			return routes[i].Path < routes[j].Path
+		}
+		if routes[i].Method != routes[j].Method {
+			return routes[i].Method < routes[j].Method
+		}
+		return routes[i].PluginID < routes[j].PluginID
+	})
+	return routes
 }
 
 // RegisterManagementRoutes rebuilds the plugin-owned Management API and resource route tables.
@@ -241,12 +284,18 @@ func (h *Host) ServeManagementHTTP(w http.ResponseWriter, r *http.Request) bool 
 	var body []byte
 	if r.Body != nil {
 		var errRead error
-		body, errRead = io.ReadAll(r.Body)
+		limitedBody := http.MaxBytesReader(w, r.Body, maxManagementBodyBytes)
+		body, errRead = io.ReadAll(limitedBody)
 		if errRead != nil {
+			var maxBytesErr *http.MaxBytesError
+			if errors.As(errRead, &maxBytesErr) {
+				http.Error(w, "plugin management request body too large", http.StatusRequestEntityTooLarge)
+				return true
+			}
 			http.Error(w, "failed to read plugin management request body", http.StatusBadRequest)
 			return true
 		}
-		if errClose := r.Body.Close(); errClose != nil {
+		if errClose := limitedBody.Close(); errClose != nil {
 			log.Warnf("pluginhost: failed to close plugin management request body: %v", errClose)
 		}
 	}
@@ -264,7 +313,15 @@ func (h *Host) ServeManagementHTTP(w http.ResponseWriter, r *http.Request) bool 
 		http.Error(w, "plugin management handler failed", http.StatusBadGateway)
 		return true
 	}
+	if len(resp.Body) > maxManagementReplyBytes {
+		http.Error(w, "plugin management response body too large", http.StatusBadGateway)
+		return true
+	}
 	resp.Body = escapeManagementResponseBody(resp)
+	if len(resp.Body) > maxManagementReplyBytes {
+		http.Error(w, "plugin management response body too large", http.StatusBadGateway)
+		return true
+	}
 
 	for keyHeader, values := range resp.Headers {
 		for _, value := range values {

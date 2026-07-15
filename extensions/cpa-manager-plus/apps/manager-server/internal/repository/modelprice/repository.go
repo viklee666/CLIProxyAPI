@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
@@ -13,8 +14,20 @@ import (
 
 type Repository interface {
 	LoadAll(ctx context.Context) (map[string]model.ModelPrice, error)
+	ListPage(ctx context.Context, query ListQuery) (ListPage, error)
 	ReplaceAll(ctx context.Context, prices map[string]model.ModelPrice) error
 	UpsertSynced(ctx context.Context, prices map[string]model.ModelPrice) (model.ModelPriceSyncResult, error)
+}
+
+type ListQuery struct {
+	Search string
+	Limit  int
+	Offset int
+}
+
+type ListPage struct {
+	Prices map[string]model.ModelPrice
+	Total  int64
 }
 
 type repository struct {
@@ -76,6 +89,92 @@ func (r *repository) LoadAll(ctx context.Context) (map[string]model.ModelPrice, 
 		prices[modelID] = price
 	}
 	return prices, rows.Err()
+}
+
+func (r *repository) ListPage(ctx context.Context, query ListQuery) (ListPage, error) {
+	limit := query.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	offset := query.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	search := strings.TrimSpace(query.Search)
+	pattern := "%" + escapeModelPriceLike(search) + "%"
+	where := ""
+	args := []any{}
+	if search != "" {
+		where = ` where model like ? escape '\' collate nocase
+			or source like ? escape '\' collate nocase
+			or source_model_id like ? escape '\' collate nocase`
+		args = append(args, pattern, pattern, pattern)
+	}
+	var total int64
+	if err := r.db.QueryRowContext(ctx, `select count(*) from model_prices`+where, args...).Scan(&total); err != nil {
+		return ListPage{}, err
+	}
+	pageArgs := append(append([]any{}, args...), limit, offset)
+	rows, err := r.db.QueryContext(ctx, `select
+		model, prompt_per_1m, completion_per_1m, cache_per_1m, cache_read_per_1m, cache_creation_per_1m,
+		prompt_configured, completion_configured, cache_read_configured, cache_creation_configured, source, source_model_id, raw_json,
+		updated_at_ms, synced_at_ms
+		from model_prices`+where+` order by model limit ? offset ?`, pageArgs...)
+	if err != nil {
+		return ListPage{}, err
+	}
+	defer rows.Close()
+	prices, err := scanModelPriceRows(rows, limit)
+	if err != nil {
+		return ListPage{}, err
+	}
+	return ListPage{Prices: prices, Total: total}, nil
+}
+
+func scanModelPriceRows(rows *sql.Rows, capacity int) (map[string]model.ModelPrice, error) {
+	prices := make(map[string]model.ModelPrice, capacity)
+	for rows.Next() {
+		var modelID string
+		var price model.ModelPrice
+		var source, sourceModelID, rawJSON sql.NullString
+		var syncedAt sql.NullInt64
+		var promptConfigured, completionConfigured, cacheReadConfigured, cacheCreationConfigured int
+		if err := rows.Scan(
+			&modelID,
+			&price.Prompt,
+			&price.Completion,
+			&price.Cache,
+			&price.CacheRead,
+			&price.CacheCreation,
+			&promptConfigured,
+			&completionConfigured,
+			&cacheReadConfigured,
+			&cacheCreationConfigured,
+			&source,
+			&sourceModelID,
+			&rawJSON,
+			&price.UpdatedAtMS,
+			&syncedAt,
+		); err != nil {
+			return nil, err
+		}
+		price.Source = source.String
+		price.PromptConfigured = promptConfigured != 0
+		price.CompletionConfigured = completionConfigured != 0
+		price.CacheReadConfigured = cacheReadConfigured != 0
+		price.CacheCreationConfigured = cacheCreationConfigured != 0
+		price.SourceModelID = sourceModelID.String
+		price.RawJSON = rawJSON.String
+		if syncedAt.Valid {
+			value := syncedAt.Int64
+			price.SyncedAtMS = &value
+		}
+		prices[modelID] = price
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return prices, nil
 }
 
 func (r *repository) ReplaceAll(ctx context.Context, prices map[string]model.ModelPrice) error {
@@ -240,4 +339,11 @@ func nullInt(value *int64) any {
 		return nil
 	}
 	return *value
+}
+
+func escapeModelPriceLike(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `%`, `\%`)
+	value = strings.ReplaceAll(value, `_`, `\_`)
+	return value
 }

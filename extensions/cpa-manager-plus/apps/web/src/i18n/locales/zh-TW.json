@@ -3025,6 +3025,7 @@
     "model_caller_distribution": "呼叫方客戶端 Key 分佈",
     "rank_show_all": "顯示全部（{{count}}）",
     "rank_collapse": "收起",
+    "server_page_truncated": "伺服器分頁，僅顯示目前頁",
     "cost_share_title": "成本占比",
     "model_compare_title": "模型趨勢對比",
     "api_key_compare_title": "客戶端 Key 趨勢",

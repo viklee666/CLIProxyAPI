@@ -1,7 +1,6 @@
 package setup
 
 import (
-	"encoding/json"
 	"net/http"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/app"
@@ -23,8 +22,7 @@ func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req setupsvc.Request
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.Error(w, http.StatusBadRequest, err)
+	if !response.DecodeJSON(w, r, &req, response.JSONDecodeOptions{}) {
 		return
 	}
 	result, err := h.App.SetupService.Setup(r.Context(), req, r.Header.Get("Authorization"))

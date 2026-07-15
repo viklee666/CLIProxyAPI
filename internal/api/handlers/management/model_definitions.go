@@ -25,9 +25,35 @@ func (h *Handler) GetStaticModelDefinitions(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "unknown channel", "channel": channel})
 		return
 	}
+	if search := strings.ToLower(strings.TrimSpace(c.Query("search"))); search != "" {
+		filtered := make([]*registry.ModelInfo, 0, len(models))
+		for _, model := range models {
+			if model == nil {
+				continue
+			}
+			haystack := strings.ToLower(strings.Join([]string{
+				model.ID,
+				model.DisplayName,
+				model.Name,
+				model.Type,
+				model.OwnedBy,
+			}, "\n"))
+			if strings.Contains(haystack, search) {
+				filtered = append(filtered, model)
+			}
+		}
+		models = filtered
+	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"channel": strings.ToLower(strings.TrimSpace(channel)),
-		"models":  models,
-	})
+	page, err := parseConfigCollectionPage(c, len(models))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_pagination", "message": err.Error()})
+		return
+	}
+	paged := make([]*registry.ModelInfo, page.end-page.start)
+	copy(paged, models[page.start:page.end])
+	response := configCollectionPageMetadata(page)
+	response["channel"] = strings.ToLower(strings.TrimSpace(channel))
+	response["models"] = paged
+	c.JSON(http.StatusOK, response)
 }

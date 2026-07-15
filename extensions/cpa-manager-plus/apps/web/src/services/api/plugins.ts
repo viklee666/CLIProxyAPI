@@ -23,6 +23,16 @@ const asString = (value: unknown): string => {
 
 const asBoolean = (value: unknown): boolean => value === true;
 
+const nonNegativeInteger = (value: unknown): number | null => {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+};
+
+const positiveInteger = (value: unknown): number | null => {
+  const parsed = nonNegativeInteger(value);
+  return parsed !== null && parsed > 0 ? parsed : null;
+};
+
 const hasOwn = (source: Record<string, unknown>, key: string): boolean =>
   Object.prototype.hasOwnProperty.call(source, key);
 
@@ -96,6 +106,25 @@ const normalizeMenus = (value: unknown): PluginMenu[] =>
     ? value.map((item) => normalizeMenu(item)).filter((menu): menu is PluginMenu => Boolean(menu))
     : [];
 
+const normalizePluginPagination = (source: Record<string, unknown>, itemCount: number) => {
+  const page = positiveInteger(source.page) ?? 1;
+  const pageSize =
+    positiveInteger(source.page_size ?? source.pageSize) ?? (itemCount > 0 ? itemCount : 0);
+  const total = nonNegativeInteger(source.total) ?? itemCount;
+  const totalPages =
+    nonNegativeInteger(source.total_pages ?? source.totalPages) ??
+    (total === 0 ? 0 : pageSize > 0 ? Math.ceil(total / pageSize) : 1);
+  const rawHasMore = source.has_more ?? source.hasMore;
+
+  return {
+    page,
+    pageSize,
+    total,
+    totalPages,
+    hasMore: rawHasMore === true || (rawHasMore === undefined && page < totalPages),
+  };
+};
+
 const normalizePluginEntry = (value: unknown): PluginListEntry | null => {
   if (!isRecord(value)) return null;
   const id = asString(value.id).trim();
@@ -138,6 +167,7 @@ export const normalizePluginList = (value: unknown): PluginListResponse => {
     pluginsEnabled: asBoolean(source.plugins_enabled ?? source.pluginsEnabled),
     pluginsDir: asString(source.plugins_dir ?? source.pluginsDir).trim() || 'plugins',
     plugins,
+    ...normalizePluginPagination(source, plugins.length),
   };
 };
 
@@ -259,6 +289,7 @@ export const normalizePluginStoreList = (value: unknown): PluginStoreResponse =>
     sources: normalizeStoreSources(source.sources),
     sourceErrors: normalizeStoreSourceErrors(source.source_errors ?? source.sourceErrors),
     plugins,
+    ...normalizePluginPagination(source, plugins.length),
   };
 };
 
@@ -283,10 +314,101 @@ export interface PluginStoreInstallOptions {
   version?: string;
 }
 
+export interface PluginListOptions {
+  id?: string;
+}
+
+export interface PluginStoreListOptions {
+  id?: string;
+  sourceId?: string;
+}
+
+const PLUGIN_COLLECTION_REQUEST_PAGE_SIZE = 200;
+
+const pluginCollectionParams = (
+  base: Record<string, string>,
+  page: number,
+  pageSize: number
+) => ({
+  ...base,
+  page,
+  page_size: pageSize,
+});
+
+const mergePluginStoreSources = (
+  current: PluginStoreSource[],
+  incoming: PluginStoreSource[]
+): PluginStoreSource[] => {
+  const merged = [...current];
+  const seen = new Set(current.map((source) => `${source.id}\u0000${source.url}`));
+  for (const source of incoming) {
+    const key = `${source.id}\u0000${source.url}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(source);
+  }
+  return merged;
+};
+
+const mergePluginStoreSourceErrors = (
+  current: PluginStoreSourceError[],
+  incoming: PluginStoreSourceError[]
+): PluginStoreSourceError[] => {
+  const merged = [...current];
+  const seen = new Set(
+    current.map(
+      (sourceError) =>
+        `${sourceError.sourceId}\u0000${sourceError.sourceUrl}\u0000${sourceError.message}`
+    )
+  );
+  for (const sourceError of incoming) {
+    const key = `${sourceError.sourceId}\u0000${sourceError.sourceUrl}\u0000${sourceError.message}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(sourceError);
+  }
+  return merged;
+};
+
 export const pluginsApi = {
-  async list(): Promise<PluginListResponse> {
-    const data = await apiClient.get('/plugins');
-    return normalizePluginList(data);
+  async list(options: PluginListOptions = {}): Promise<PluginListResponse> {
+    const id = options.id?.trim();
+    const baseParams: Record<string, string> = {};
+    if (id) baseParams.id = id;
+    let requestedPage = 1;
+    let pageSize = PLUGIN_COLLECTION_REQUEST_PAGE_SIZE;
+    let current = normalizePluginList(
+      await apiClient.get('/plugins', {
+        params: pluginCollectionParams(baseParams, requestedPage, pageSize),
+      })
+    );
+    const first = current;
+    const plugins = [...current.plugins];
+
+    while (current.hasMore === true) {
+      const totalPages = current.totalPages ?? first.totalPages ?? 0;
+      const total = current.total ?? first.total ?? 0;
+      if ((totalPages > 0 && requestedPage >= totalPages) || (total > 0 && plugins.length >= total)) {
+        break;
+      }
+      requestedPage += 1;
+      pageSize = positiveInteger(current.pageSize) ?? pageSize;
+      current = normalizePluginList(
+        await apiClient.get('/plugins', {
+          params: pluginCollectionParams(baseParams, requestedPage, pageSize),
+        })
+      );
+      plugins.push(...current.plugins);
+      if (current.plugins.length === 0 && current.hasMore === true) break;
+    }
+
+    return {
+      ...first,
+      plugins,
+      page: 1,
+      total: Math.max(first.total ?? 0, plugins.length),
+      hasMore: false,
+    };
   },
 
   updateEnabled: (id: string, enabled: boolean) =>
@@ -310,9 +432,52 @@ export const pluginsApi = {
 };
 
 export const pluginStoreApi = {
-  async list(): Promise<PluginStoreResponse> {
-    const data = await apiClient.get('/plugin-store');
-    return normalizePluginStoreList(data);
+  async list(options: PluginStoreListOptions = {}): Promise<PluginStoreResponse> {
+    const id = options.id?.trim();
+    const source = options.sourceId?.trim();
+    const baseParams: Record<string, string> = {};
+    if (id) baseParams.id = id;
+    if (source) baseParams.source = source;
+    let requestedPage = 1;
+    let pageSize = PLUGIN_COLLECTION_REQUEST_PAGE_SIZE;
+    let current = normalizePluginStoreList(
+      await apiClient.get('/plugin-store', {
+        params: pluginCollectionParams(baseParams, requestedPage, pageSize),
+      })
+    );
+    const first = current;
+    const plugins = [...current.plugins];
+    let sources = [...current.sources];
+    let sourceErrors = [...current.sourceErrors];
+
+    while (current.hasMore === true) {
+      const totalPages = current.totalPages ?? first.totalPages ?? 0;
+      const total = current.total ?? first.total ?? 0;
+      if ((totalPages > 0 && requestedPage >= totalPages) || (total > 0 && plugins.length >= total)) {
+        break;
+      }
+      requestedPage += 1;
+      pageSize = positiveInteger(current.pageSize) ?? pageSize;
+      current = normalizePluginStoreList(
+        await apiClient.get('/plugin-store', {
+          params: pluginCollectionParams(baseParams, requestedPage, pageSize),
+        })
+      );
+      plugins.push(...current.plugins);
+      sources = mergePluginStoreSources(sources, current.sources);
+      sourceErrors = mergePluginStoreSourceErrors(sourceErrors, current.sourceErrors);
+      if (current.plugins.length === 0 && current.hasMore === true) break;
+    }
+
+    return {
+      ...first,
+      plugins,
+      sources,
+      sourceErrors,
+      page: 1,
+      total: Math.max(first.total ?? 0, plugins.length),
+      hasMore: false,
+    };
   },
 
   async install(

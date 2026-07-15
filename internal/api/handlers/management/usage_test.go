@@ -66,6 +66,28 @@ func TestGetUsageQueueInvalidCountDoesNotPop(t *testing.T) {
 	})
 }
 
+func TestGetUsageQueueOversizedCountDoesNotPop(t *testing.T) {
+	withManagementUsageQueue(t, func() {
+		redisqueue.Enqueue([]byte(`{"id":1}`))
+
+		rec := httptest.NewRecorder()
+		ginCtx, _ := gin.CreateTestContext(rec)
+		ginCtx.Request = httptest.NewRequest(http.MethodGet, "/v0/management/usage-queue?count=1001", nil)
+
+		h := &Handler{}
+		h.GetUsageQueue(ginCtx)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+		}
+
+		remaining := redisqueue.PopOldest(10)
+		if len(remaining) != 1 || string(remaining[0]) != `{"id":1}` {
+			t.Fatalf("remaining queue = %q, want original item", remaining)
+		}
+	})
+}
+
 func withManagementUsageQueue(t *testing.T, fn func()) {
 	t.Helper()
 

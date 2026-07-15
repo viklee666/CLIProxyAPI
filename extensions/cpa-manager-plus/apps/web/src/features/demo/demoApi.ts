@@ -165,9 +165,26 @@ export async function handleDemoApiRequest<T = unknown>(
   if (pathname === '/api-key-usage') {
     return {
       items: [
-        { apiKeyHash: 'hash_openai_primary', count: 4200, success: 4168, failed: 32 },
-        { apiKeyHash: 'hash_codex_team', count: 5200, success: 5120, failed: 80 },
+        {
+          provider: 'openai',
+          composite_key: 'https://api.openai.com/v1|sk-demo-openai',
+          success: 4168,
+          failed: 32,
+          recent_requests: [],
+        },
+        {
+          provider: 'codex',
+          composite_key: '|sk-demo-codex',
+          success: 5120,
+          failed: 80,
+          recent_requests: [],
+        },
       ],
+      total: 2,
+      page: 1,
+      page_size: 200,
+      total_pages: 1,
+      has_more: false,
     } as T;
   }
 

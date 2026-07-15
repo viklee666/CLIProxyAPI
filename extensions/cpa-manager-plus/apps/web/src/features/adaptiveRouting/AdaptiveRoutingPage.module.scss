@@ -95,6 +95,20 @@
   overflow-x: auto;
 }
 
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 12px;
+  color: var(--text-secondary);
+  font-size: 13px;
+
+  @include mobile {
+    justify-content: space-between;
+  }
+}
+
 .table {
   width: 100%;
   min-width: 1050px;

@@ -70,6 +70,7 @@ func Migrate(db *sql.DB) error {
 			created_at_ms integer not null
 		)`,
 		`create index if not exists idx_usage_events_timestamp on usage_events(timestamp_ms)`,
+		`create index if not exists idx_usage_events_recent on usage_events(timestamp_ms desc, id desc)`,
 		`create index if not exists idx_usage_events_request_id on usage_events(request_id)`,
 		`create index if not exists idx_usage_events_model on usage_events(model)`,
 		`create index if not exists idx_usage_events_auth_index on usage_events(auth_index)`,
@@ -253,6 +254,7 @@ func Migrate(db *sql.DB) error {
 			unique(run_id, account_key)
 		)`,
 		`create index if not exists idx_codex_inspection_results_run on codex_inspection_results(run_id)`,
+		`create index if not exists idx_codex_inspection_results_page on codex_inspection_results(run_id, file_name, display_account, id)`,
 		`create table if not exists codex_inspection_logs (
 			id integer primary key autoincrement,
 			run_id integer not null,
@@ -281,6 +283,9 @@ func Migrate(db *sql.DB) error {
 			updated_at_ms integer not null
 		)`,
 		`create index if not exists idx_quota_cooldowns_due on quota_cooldowns(status, recover_at_ms)`,
+		`create index if not exists idx_quota_cooldowns_active_provider on quota_cooldowns(status, lower(provider), recover_at_ms, id)`,
+		`create index if not exists idx_quota_cooldowns_active_auth_index on quota_cooldowns(status, lower(auth_index), recover_at_ms, id)`,
+		`create index if not exists idx_quota_cooldowns_active_auth_file on quota_cooldowns(status, lower(auth_file_name), recover_at_ms, id)`,
 		`create unique index if not exists idx_quota_cooldowns_active_owner on quota_cooldowns(auth_file_name, owner) where status = 'active'`,
 	}
 	for _, statement := range statements {

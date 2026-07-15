@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useInterval } from '@/hooks/useInterval';
-import { apiKeyUsageApi } from '@/services/api';
+import { apiKeyUsageApi, type ApiKeyUsageItem } from '@/services/api';
 import {
   normalizeRecentRequestUsageEntry,
-  type ApiKeyUsageResponse,
   type RecentRequestUsageEntry,
 } from '@/utils/recentRequests';
 
@@ -23,25 +22,22 @@ let inFlightRequest: Promise<ProviderRecentRequests> | null = null;
 
 const normalizeProviderKey = (value: unknown): string => String(value ?? '').trim().toLowerCase();
 
-const normalizeApiKeyUsageResponse = (payload: ApiKeyUsageResponse): ProviderRecentRequests => {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+const normalizeApiKeyUsageItems = (items: ApiKeyUsageItem[]): ProviderRecentRequests => {
+  if (!Array.isArray(items)) {
     return EMPTY_USAGE_BY_PROVIDER;
   }
 
   const usageByProvider: ProviderRecentRequests = new Map();
-
-  Object.entries(payload).forEach(([provider, entries]) => {
-    const providerKey = normalizeProviderKey(provider);
-    if (!providerKey || !entries || typeof entries !== 'object' || Array.isArray(entries)) {
-      return;
+  items.forEach((item) => {
+    const providerKey = normalizeProviderKey(item.provider);
+    const compositeKey = String(item.composite_key ?? '').trim();
+    if (!providerKey || !compositeKey) return;
+    let usageByCompositeKey = usageByProvider.get(providerKey);
+    if (!usageByCompositeKey) {
+      usageByCompositeKey = new Map<string, RecentRequestUsageEntry>();
+      usageByProvider.set(providerKey, usageByCompositeKey);
     }
-
-    const usageByCompositeKey = new Map<string, RecentRequestUsageEntry>();
-    Object.entries(entries).forEach(([compositeKey, entry]) => {
-      usageByCompositeKey.set(compositeKey, normalizeRecentRequestUsageEntry(entry));
-    });
-
-    usageByProvider.set(providerKey, usageByCompositeKey);
+    usageByCompositeKey.set(compositeKey, normalizeRecentRequestUsageEntry(item));
   });
 
   return usageByProvider;
@@ -50,9 +46,9 @@ const normalizeApiKeyUsageResponse = (payload: ApiKeyUsageResponse): ProviderRec
 const fetchProviderRecentRequests = async (): Promise<ProviderRecentRequests> => {
   if (!inFlightRequest) {
     inFlightRequest = apiKeyUsageApi
-      .getUsage()
-      .then((payload) => {
-        const normalized = normalizeApiKeyUsageResponse(payload);
+      .getAllUsage()
+      .then((items) => {
+        const normalized = normalizeApiKeyUsageItems(items);
         cachedUsageByProvider = normalized;
         cachedAt = Date.now();
         return normalized;

@@ -2,10 +2,7 @@ import { memo, useCallback, useEffect, useId, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
-import {
-  usageServiceApi,
-  type ApiKeyAlias,
-} from '@/services/api/usageService';
+import { usageServiceApi, type ApiKeyAlias } from '@/services/api/usageService';
 import { useAuthStore, useNotificationStore } from '@/stores';
 import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
 import { copyToClipboard } from '@/utils/clipboard';
@@ -284,7 +281,31 @@ export const ApiKeysCardEditor = memo(function ApiKeysCardEditor({
       allowOrphanAliasCleanup
     );
     setAliasesAvailable(true);
-    setApiKeyAliases(Array.isArray(response.items) ? response.items : []);
+    const savedItems = Array.isArray(response.items) ? response.items : [];
+    setApiKeyAliases((previous) => {
+      const savedHashes = new Set(
+        savedItems
+          .map((item) =>
+            String(item.apiKeyHash || '')
+              .trim()
+              .toLowerCase()
+          )
+          .filter(Boolean)
+      );
+      const savedAliases = new Set(
+        savedItems.map((item) => normalizeAliasKey(String(item.alias || ''))).filter(Boolean)
+      );
+      return [
+        ...previous.filter((item) => {
+          const hash = String(item.apiKeyHash || '')
+            .trim()
+            .toLowerCase();
+          const aliasKey = normalizeAliasKey(String(item.alias || ''));
+          return !savedHashes.has(hash) && !savedAliases.has(aliasKey);
+        }),
+        ...savedItems,
+      ];
+    });
   };
 
   const deleteAliasForHash = async (apiKeyHash: string) => {
@@ -435,7 +456,11 @@ export const ApiKeysCardEditor = memo(function ApiKeysCardEditor({
       : -1;
     const editingKey = apiKeys[editingIndex] ?? '';
     const activeApiKeyHashes = collectActiveApiKeyHashes(apiKeys);
-    const aliasError = validateAlias(aliasInputValue, getApiKeyHash(editingKey), activeApiKeyHashes);
+    const aliasError = validateAlias(
+      aliasInputValue,
+      getApiKeyHash(editingKey),
+      activeApiKeyHashes
+    );
     if (aliasError) {
       setAliasFormError(aliasError);
       return;
