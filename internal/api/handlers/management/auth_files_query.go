@@ -1,6 +1,7 @@
 package management
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/clientaccess"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/tidwall/gjson"
 )
@@ -28,6 +30,9 @@ type authFileQuery struct {
 	updatedAt time.Time
 	search    string
 	providers map[string]struct{}
+	planTypes map[string]struct{}
+	groupIDs  []int64
+	groupAuth map[string]struct{}
 	names     map[string]struct{}
 	indexes   map[string]struct{}
 	disabled  *bool
@@ -42,6 +47,7 @@ type authFileCandidate struct {
 	entry       gin.H
 	name        string
 	provider    string
+	planType    string
 	authIndex   string
 	account     string
 	note        string
@@ -60,7 +66,8 @@ func hasAuthFileQuery(c *gin.Context) bool {
 	}
 	query := c.Request.URL.Query()
 	for _, key := range []string{
-		"view", "page", "page_size", "limit", "search", "provider", "type",
+		"view", "page", "page_size", "limit", "search", "provider", "type", "plan_type",
+		"group_id", "group_ids",
 		"name", "auth_index", "disabled", "problem", "healthy", "runtime_only",
 		"sort", "order", "updated_after_ms",
 	} {
@@ -78,6 +85,7 @@ func parseAuthFileQuery(c *gin.Context) (authFileQuery, error) {
 		pageSize:  defaultAuthFilesPageSize,
 		search:    strings.ToLower(strings.TrimSpace(c.Query("search"))),
 		providers: parseAuthFileQuerySet(c, "provider", "type"),
+		planTypes: parseAuthFileQuerySet(c, "plan_type", "plan"),
 		names:     parseAuthFileQuerySet(c, "name"),
 		indexes:   parseAuthFileQuerySet(c, "auth_index"),
 		sort:      strings.ToLower(strings.TrimSpace(c.Query("sort"))),
@@ -160,6 +168,7 @@ func parseAuthFileQuery(c *gin.Context) (authFileQuery, error) {
 	if q.order != "asc" && q.order != "desc" {
 		return q, fmt.Errorf("order must be asc or desc")
 	}
+	q.groupIDs = parseAuthFileQueryIDs(c, "group_id", "group_ids")
 	return q, nil
 }
 
@@ -172,6 +181,27 @@ func parseAuthFileQuerySet(c *gin.Context, keys ...string) map[string]struct{} {
 				if value != "" && value != "all" {
 					result[value] = struct{}{}
 				}
+			}
+		}
+	}
+	return result
+}
+
+func parseAuthFileQueryIDs(c *gin.Context, keys ...string) []int64 {
+	result := make([]int64, 0)
+	seen := make(map[int64]struct{})
+	for _, key := range keys {
+		for _, raw := range c.QueryArray(key) {
+			for _, value := range strings.Split(raw, ",") {
+				parsed, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+				if err != nil || parsed <= 0 {
+					continue
+				}
+				if _, ok := seen[parsed]; ok {
+					continue
+				}
+				seen[parsed] = struct{}{}
+				result = append(result, parsed)
 			}
 		}
 	}
@@ -208,15 +238,27 @@ func (h *Handler) listAuthFilesQuery(c *gin.Context) {
 			return
 		}
 	}
+	if len(q.groupIDs) > 0 {
+		groupAuth, errGroup := h.authFileGroupAuthIndexSet(c.Request.Context(), q.groupIDs)
+		if errGroup != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": errGroup.Error()})
+			return
+		}
+		q.groupAuth = groupAuth
+	}
 
 	filtered := make([]authFileCandidate, 0, len(candidates))
 	providerCounts := make(map[string]int)
+	planTypeCounts := make(map[string]int)
 	for i := range candidates {
 		candidate := candidates[i]
 		if !candidate.matches(q, false) {
 			continue
 		}
 		providerCounts[candidate.provider]++
+		if candidate.planType != "" {
+			planTypeCounts[candidate.planType]++
+		}
 		if !candidate.matches(q, true) {
 			continue
 		}
@@ -250,7 +292,7 @@ func (h *Handler) listAuthFilesQuery(c *gin.Context) {
 	response := gin.H{
 		"files":          files,
 		"total":          total,
-		"facets":         gin.H{"providers": providerCounts},
+		"facets":         gin.H{"providers": providerCounts, "plan_types": planTypeCounts},
 		"server_time_ms": responseTime.UnixMilli(),
 	}
 	if q.paged {
@@ -308,6 +350,7 @@ func (h *Handler) authFileCandidatesFromManager() []authFileCandidate {
 			auth:        auth,
 			name:        name,
 			provider:    provider,
+			planType:    authPlanType(auth),
 			authIndex:   strings.TrimSpace(auth.Index),
 			account:     account,
 			note:        note,
@@ -340,6 +383,10 @@ func (h *Handler) authFileCandidatesFromDisk() ([]authFileCandidate, error) {
 		path := filepath.Join(h.cfg.AuthDir, entry.Name())
 		data, _ := os.ReadFile(path)
 		provider := strings.ToLower(strings.TrimSpace(gjson.GetBytes(data, "type").String()))
+		planType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(data, "plan_type").String()))
+		if planType == "" {
+			planType = strings.ToLower(strings.TrimSpace(gjson.GetBytes(data, "planType").String()))
+		}
 		email := strings.TrimSpace(gjson.GetBytes(data, "email").String())
 		note := strings.TrimSpace(gjson.GetBytes(data, "note").String())
 		priority := int(gjson.GetBytes(data, "priority").Int())
@@ -360,10 +407,14 @@ func (h *Handler) authFileCandidatesFromDisk() ([]authFileCandidate, error) {
 		if priority != 0 {
 			fileEntry["priority"] = priority
 		}
+		if planType != "" {
+			fileEntry["plan_type"] = planType
+		}
 		result = append(result, authFileCandidate{
 			entry:     fileEntry,
 			name:      entry.Name(),
 			provider:  provider,
+			planType:  planType,
 			account:   email,
 			note:      note,
 			priority:  priority,
@@ -382,6 +433,16 @@ func (c authFileCandidate) matches(q authFileQuery, includeProvider bool) bool {
 	}
 	if includeProvider && len(q.providers) > 0 {
 		if _, ok := q.providers[c.provider]; !ok {
+			return false
+		}
+	}
+	if len(q.planTypes) > 0 {
+		if _, ok := q.planTypes[c.planType]; !ok {
+			return false
+		}
+	}
+	if len(q.groupIDs) > 0 {
+		if _, ok := q.groupAuth[strings.ToLower(c.authIndex)]; !ok {
 			return false
 		}
 	}
@@ -406,13 +467,40 @@ func (c authFileCandidate) matches(q authFileQuery, includeProvider bool) bool {
 	}
 	if q.search != "" {
 		haystack := strings.ToLower(strings.Join([]string{
-			c.name, c.provider, c.account, c.note, c.status, c.statusMsg,
+			c.name, c.provider, c.planType, c.account, c.note, c.status, c.statusMsg,
 		}, "\n"))
 		if !strings.Contains(haystack, q.search) {
 			return false
 		}
 	}
 	return true
+}
+
+func (h *Handler) authFileGroupAuthIndexSet(ctx context.Context, groupIDs []int64) (map[string]struct{}, error) {
+	result := make(map[string]struct{})
+	service := h.clientAccessService()
+	if service == nil || len(groupIDs) == 0 {
+		return result, nil
+	}
+	for page := 1; ; page++ {
+		bindings, err := service.ListCredentialBindings(ctx, clientaccess.ListOptions{
+			Page:     page,
+			PageSize: 200,
+			GroupIDs: groupIDs,
+		})
+		if err != nil {
+			return nil, err
+		}
+		for _, binding := range bindings.Items {
+			if authIndex := strings.ToLower(strings.TrimSpace(binding.AuthIndex)); authIndex != "" {
+				result[authIndex] = struct{}{}
+			}
+		}
+		if page*bindings.PageSize >= int(bindings.Total) || len(bindings.Items) == 0 {
+			break
+		}
+	}
+	return result, nil
 }
 
 func (c authFileCandidate) problem() bool {
@@ -494,6 +582,9 @@ func (h *Handler) authFileQueryEntry(candidate authFileCandidate, view string) g
 		"runtime_only":   candidate.runtimeOnly,
 		"source":         map[bool]string{true: "memory", false: "file"}[candidate.runtimeOnly],
 	}
+	if candidate.planType != "" {
+		entry["plan_type"] = candidate.planType
+	}
 	if candidate.account != "" {
 		entry["account"] = candidate.account
 		entry["email"] = candidate.account
@@ -528,4 +619,29 @@ func (h *Handler) authFileQueryEntry(candidate authFileCandidate, view string) g
 		}
 	}
 	return entry
+}
+
+func authPlanType(auth *coreauth.Auth) string {
+	if auth == nil {
+		return ""
+	}
+	if planType := strings.ToLower(strings.TrimSpace(authAttribute(auth, "plan_type"))); planType != "" {
+		return planType
+	}
+	if planType := strings.ToLower(strings.TrimSpace(authAttribute(auth, "planType"))); planType != "" {
+		return planType
+	}
+	if auth.Metadata != nil {
+		for _, key := range []string{"plan_type", "planType"} {
+			if value, _ := auth.Metadata[key].(string); strings.TrimSpace(value) != "" {
+				return strings.ToLower(strings.TrimSpace(value))
+			}
+		}
+	}
+	if claims := extractCodexIDTokenClaims(auth); claims != nil {
+		if value, _ := claims["plan_type"].(string); strings.TrimSpace(value) != "" {
+			return strings.ToLower(strings.TrimSpace(value))
+		}
+	}
+	return ""
 }

@@ -88,9 +88,11 @@ type Include struct {
 	ModelStats         bool              `json:"model_stats"`
 	FailureSources     bool              `json:"failure_sources"`
 	AccountStats       bool              `json:"account_stats"`
+	AccountStatsLimit  int               `json:"account_stats_limit"`
 	CredentialStats    bool              `json:"credential_stats"`
 	CredentialTimeline bool              `json:"credential_timeline"`
 	APIKeyStats        bool              `json:"api_key_stats"`
+	APIKeyStatsLimit   int               `json:"api_key_stats_limit"`
 	FilterOptions      bool              `json:"filter_options"`
 	FilterSelectors    bool              `json:"filter_selectors"`
 	Heatmap            bool              `json:"heatmap"`
@@ -862,7 +864,7 @@ func (s *Service) Analytics(ctx context.Context, req Request) (Response, error) 
 		response.FailureSources = buildFailureSources(stats)
 	}
 	if req.Include.AccountStats {
-		stats, err := s.store.AccountModelStatsWithFilter(ctx, filter)
+		stats, err := s.store.AccountModelStatsWithFilter(ctx, filter, req.Include.AccountStatsLimit)
 		if err != nil {
 			return Response{}, err
 		}
@@ -883,7 +885,7 @@ func (s *Service) Analytics(ctx context.Context, req Request) (Response, error) 
 		response.CredentialTimeline = buildCredentialTimeline(points, granularity, location, prices)
 	}
 	if req.Include.APIKeyStats {
-		stats, err := s.store.APIKeyModelStatsWithFilter(ctx, filter)
+		stats, err := s.store.APIKeyModelStatsWithFilter(ctx, filter, req.Include.APIKeyStatsLimit)
 		if err != nil {
 			return Response{}, err
 		}
@@ -1154,11 +1156,11 @@ func analyticsHourlyRollupEligible(filter store.AnalyticsFilter) bool {
 func (s *Service) filterOptions(ctx context.Context, filter store.AnalyticsFilter, prices map[string]store.ModelPrice) (*FilterOptions, error) {
 	optionFilter := filterOptionsBaseFilter(filter)
 
-	accountStats, err := s.store.AccountModelStatsWithFilter(ctx, optionFilter)
+	accountStats, err := s.store.AccountModelStatsWithFilter(ctx, optionFilter, 0)
 	if err != nil {
 		return nil, err
 	}
-	apiKeyStats, err := s.store.APIKeyModelStatsWithFilter(ctx, optionFilter)
+	apiKeyStats, err := s.store.APIKeyModelStatsWithFilter(ctx, optionFilter, 0)
 	if err != nil {
 		return nil, err
 	}

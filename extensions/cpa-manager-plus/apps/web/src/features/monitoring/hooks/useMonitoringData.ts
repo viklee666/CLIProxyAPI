@@ -476,6 +476,7 @@ export function useMonitoringData({
     filters: analyticsFilters,
     include: {
       summary: true,
+      summary_profile: 'compact',
       timeline: true,
       hourly_distribution: true,
       model_share: true,
@@ -483,9 +484,10 @@ export function useMonitoringData({
       model_stats: true,
       failure_sources: true,
       account_stats: true,
+      account_stats_limit: 500,
       api_key_stats: true,
+      api_key_stats_limit: 500,
       filter_options: true,
-      task_buckets: true,
       recent_failures: 8,
       events_page: {
         limit: MONITORING_EVENTS_PAGE_LIMIT,

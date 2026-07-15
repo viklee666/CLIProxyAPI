@@ -151,6 +151,33 @@
   grid-column: 1 / -1;
 }
 
+.selectField {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+
+  select {
+    min-height: 40px;
+    padding: 8px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: $radius-md;
+    background: var(--input-bg);
+    color: var(--text-primary);
+    font: inherit;
+    font-weight: 400;
+  }
+}
+
+.sectionHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
 .toggleRow {
   display: flex;
   align-items: center;
@@ -207,6 +234,11 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+}
+
+.credentialBound {
+  border-color: color-mix(in srgb, var(--success-color) 35%, var(--border-color));
+  background: color-mix(in srgb, var(--success-color) 8%, transparent);
 }
 
 .secretBox {

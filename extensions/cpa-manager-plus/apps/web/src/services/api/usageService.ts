@@ -649,9 +649,11 @@ export interface MonitoringAnalyticsInclude {
   model_stats?: boolean;
   failure_sources?: boolean;
   account_stats?: boolean;
+  account_stats_limit?: number;
   credential_stats?: boolean;
   credential_timeline?: boolean;
   api_key_stats?: boolean;
+  api_key_stats_limit?: number;
   filter_options?: boolean;
   filter_selectors?: boolean;
   heatmap?: boolean;

@@ -436,8 +436,8 @@ func (s *Store) FailureSourcesWithFilter(ctx context.Context, filter AnalyticsFi
 	return s.UsageEvents.FailureSourcesWithFilter(ctx, filter)
 }
 
-func (s *Store) AccountModelStatsWithFilter(ctx context.Context, filter AnalyticsFilter) ([]AccountModelStat, error) {
-	return s.UsageEvents.AccountModelStatsWithFilter(ctx, filter)
+func (s *Store) AccountModelStatsWithFilter(ctx context.Context, filter AnalyticsFilter, limit int) ([]AccountModelStat, error) {
+	return s.UsageEvents.AccountModelStatsWithFilter(ctx, filter, limit)
 }
 
 func (s *Store) CredentialModelStatsWithFilter(ctx context.Context, filter AnalyticsFilter) ([]CredentialModelStat, error) {
@@ -448,8 +448,8 @@ func (s *Store) CredentialTimelineWithFilter(ctx context.Context, filter Analyti
 	return s.UsageEvents.CredentialTimelineWithFilter(ctx, filter, granularity, location)
 }
 
-func (s *Store) APIKeyModelStatsWithFilter(ctx context.Context, filter AnalyticsFilter) ([]APIKeyModelStat, error) {
-	return s.UsageEvents.APIKeyModelStatsWithFilter(ctx, filter)
+func (s *Store) APIKeyModelStatsWithFilter(ctx context.Context, filter AnalyticsFilter, limit int) ([]APIKeyModelStat, error) {
+	return s.UsageEvents.APIKeyModelStatsWithFilter(ctx, filter, limit)
 }
 
 func (s *Store) TaskBucketsWithFilter(ctx context.Context, filter AnalyticsFilter) ([]TaskBucket, error) {

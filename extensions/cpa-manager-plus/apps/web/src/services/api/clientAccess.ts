@@ -128,7 +128,8 @@ export const clientAccessApi = {
     page = 1,
     pageSize = 200,
     search = '',
-    authIndices: string[] = []
+    authIndices: string[] = [],
+    groupIDs: number[] = []
   ) =>
     apiClient.get<ClientAccessPage<CredentialBinding>>(
       '/client-access/credential-bindings',
@@ -136,6 +137,7 @@ export const clientAccessApi = {
         params: {
           ...listQuery(page, pageSize, search).params,
           auth_indices: authIndices.length > 0 ? authIndices.join(',') : undefined,
+          group_ids: groupIDs.length > 0 ? groupIDs.join(',') : undefined,
         },
       }
     ),

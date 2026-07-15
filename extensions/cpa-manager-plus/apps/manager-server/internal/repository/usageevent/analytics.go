@@ -1135,9 +1135,9 @@ order by sum(case when failed = 1 then 1 else 0 end) desc, max(timestamp_ms) des
 	return stats, rows.Err()
 }
 
-func (r *repository) AccountModelStatsWithFilter(ctx context.Context, filter AnalyticsFilter) ([]AccountModelStat, error) {
+func (r *repository) AccountModelStatsWithFilter(ctx context.Context, filter AnalyticsFilter, limit int) ([]AccountModelStat, error) {
 	where, args := analyticsWhere(filter)
-	rows, err := r.db.QueryContext(ctx, `select
+	query := `select
 	coalesce(account_snapshot, ''),
 	coalesce(auth_label_snapshot, ''),
 	coalesce(nullif(auth_provider_snapshot, ''), provider, ''),
@@ -1150,23 +1150,28 @@ func (r *repository) AccountModelStatsWithFilter(ctx context.Context, filter Ana
 	count(*),
 	sum(case when failed = 0 then 1 else 0 end),
 	sum(case when failed = 1 then 1 else 0 end),
-		coalesce(sum(`+normalizedInputExpr+`), 0),
+		coalesce(sum(` + normalizedInputExpr + `), 0),
 	coalesce(sum(output_tokens), 0),
-	coalesce(sum(`+compatCachedExpr+`), 0),
+	coalesce(sum(` + compatCachedExpr + `), 0),
 	coalesce(sum(cache_read_tokens), 0),
 	coalesce(sum(cache_creation_tokens), 0),
-	coalesce(sum(`+longInputExpr+`), 0),
-	coalesce(sum(`+longOutputExpr+`), 0),
-	coalesce(sum(`+longCachedExpr+`), 0),
-	coalesce(sum(`+longCacheReadExpr+`), 0),
-	coalesce(sum(`+longCacheCreationExpr+`), 0),
+	coalesce(sum(` + longInputExpr + `), 0),
+	coalesce(sum(` + longOutputExpr + `), 0),
+	coalesce(sum(` + longCachedExpr + `), 0),
+	coalesce(sum(` + longCacheReadExpr + `), 0),
+	coalesce(sum(` + longCacheCreationExpr + `), 0),
 	coalesce(sum(total_tokens), 0),
 	max(timestamp_ms),
 	avg(nullif(latency_ms, 0)),
 	count(nullif(latency_ms, 0))
-from usage_events `+where+`
+from usage_events ` + where + `
 group by account_snapshot, auth_label_snapshot, coalesce(nullif(auth_provider_snapshot, ''), provider, ''), auth_index, source_hash, model, billing_model, coalesce(service_tier, '')
-order by max(timestamp_ms) desc, count(*) desc`, args...)
+order by max(timestamp_ms) desc, count(*) desc`
+	if limit > 0 {
+		query += ` limit ?`
+		args = append(args, limit)
+	}
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1684,9 +1689,9 @@ func mergeCredentialTimelineParts(parts [][]CredentialTimelinePoint) []Credentia
 	return result
 }
 
-func (r *repository) APIKeyModelStatsWithFilter(ctx context.Context, filter AnalyticsFilter) ([]APIKeyModelStat, error) {
+func (r *repository) APIKeyModelStatsWithFilter(ctx context.Context, filter AnalyticsFilter, limit int) ([]APIKeyModelStat, error) {
 	where, args := analyticsWhere(filter)
-	rows, err := r.db.QueryContext(ctx, `select
+	query := `select
 	coalesce(api_key_hash, ''),
 	coalesce(account_snapshot, ''),
 	coalesce(auth_label_snapshot, ''),
@@ -1700,23 +1705,28 @@ func (r *repository) APIKeyModelStatsWithFilter(ctx context.Context, filter Anal
 	count(*),
 	sum(case when failed = 0 then 1 else 0 end),
 	sum(case when failed = 1 then 1 else 0 end),
-		coalesce(sum(`+normalizedInputExpr+`), 0),
+		coalesce(sum(` + normalizedInputExpr + `), 0),
 	coalesce(sum(output_tokens), 0),
-	coalesce(sum(`+compatCachedExpr+`), 0),
+	coalesce(sum(` + compatCachedExpr + `), 0),
 	coalesce(sum(cache_read_tokens), 0),
 	coalesce(sum(cache_creation_tokens), 0),
-	coalesce(sum(`+longInputExpr+`), 0),
-	coalesce(sum(`+longOutputExpr+`), 0),
-	coalesce(sum(`+longCachedExpr+`), 0),
-	coalesce(sum(`+longCacheReadExpr+`), 0),
-	coalesce(sum(`+longCacheCreationExpr+`), 0),
+	coalesce(sum(` + longInputExpr + `), 0),
+	coalesce(sum(` + longOutputExpr + `), 0),
+	coalesce(sum(` + longCachedExpr + `), 0),
+	coalesce(sum(` + longCacheReadExpr + `), 0),
+	coalesce(sum(` + longCacheCreationExpr + `), 0),
 	coalesce(sum(total_tokens), 0),
 	max(timestamp_ms),
 	avg(nullif(latency_ms, 0)),
 	count(nullif(latency_ms, 0))
-from usage_events `+where+`
+from usage_events ` + where + `
 group by api_key_hash, account_snapshot, auth_label_snapshot, coalesce(nullif(auth_provider_snapshot, ''), provider, ''), auth_index, source_hash, model, billing_model, coalesce(service_tier, '')
-order by max(timestamp_ms) desc, count(*) desc`, args...)
+order by max(timestamp_ms) desc, count(*) desc`
+	if limit > 0 {
+		query += ` limit ?`
+		args = append(args, limit)
+	}
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

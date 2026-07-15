@@ -54,6 +54,18 @@ func clientAccessListOptions(c *gin.Context) clientaccess.ListOptions {
 		seenAuthIndices[authIndex] = struct{}{}
 		options.AuthIndices = append(options.AuthIndices, authIndex)
 	}
+	seenGroupIDs := make(map[int64]struct{})
+	for _, raw := range append(c.QueryArray("group_id"), strings.Split(c.Query("group_ids"), ",")...) {
+		groupID, errParse := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+		if errParse != nil || groupID <= 0 {
+			continue
+		}
+		if _, ok := seenGroupIDs[groupID]; ok {
+			continue
+		}
+		seenGroupIDs[groupID] = struct{}{}
+		options.GroupIDs = append(options.GroupIDs, groupID)
+	}
 	return options
 }
 

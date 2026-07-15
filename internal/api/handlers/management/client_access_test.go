@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -51,6 +52,15 @@ func TestClientAccessManagementCRUDAndBindings(t *testing.T) {
 	var group clientaccess.Group
 	if errDecode := json.Unmarshal(recorder.Body.Bytes(), &group); errDecode != nil {
 		t.Fatalf("decode group: %v", errDecode)
+	}
+	ctx, recorder = clientAccessContext(http.MethodPost, "/v0/management/client-access/groups", map[string]any{"name": "fallback"})
+	handler.CreateClientAccessGroup(ctx)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("create second group status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var secondGroup clientaccess.Group
+	if errDecode := json.Unmarshal(recorder.Body.Bytes(), &secondGroup); errDecode != nil {
+		t.Fatalf("decode second group: %v", errDecode)
 	}
 
 	ctx, recorder = clientAccessContext(http.MethodPatch, "/v0/management/client-access/groups/1", map[string]any{"description": "primary pool"}, gin.Param{Key: "id", Value: "1"})
@@ -101,6 +111,30 @@ func TestClientAccessManagementCRUDAndBindings(t *testing.T) {
 	}
 	if bindings.Total != 1 || len(bindings.Items) != 1 || bindings.Items[0].AuthIndex != "auth-b" {
 		t.Fatalf("bindings = %+v", bindings)
+	}
+	ctx, recorder = clientAccessContext(http.MethodPut, "/v0/management/client-access/credential-bindings", map[string]any{
+		"auth_indices": []string{"auth-c"},
+		"groups":       []map[string]any{{"group_id": secondGroup.ID, "priority": 10}},
+	})
+	handler.ReplaceClientAccessCredentialBindings(ctx)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("replace second group bindings status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	ctx, recorder = clientAccessContext(http.MethodGet, "/v0/management/client-access/credential-bindings?page=1&page_size=10&group_id="+strconv.FormatInt(group.ID, 10), nil)
+	handler.ListClientAccessCredentialBindings(ctx)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("list bindings by group status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	if errDecode := json.Unmarshal(recorder.Body.Bytes(), &bindings); errDecode != nil {
+		t.Fatalf("decode group-filtered bindings: %v", errDecode)
+	}
+	if bindings.Total != 2 || len(bindings.Items) != 2 {
+		t.Fatalf("group-filtered bindings = %+v", bindings)
+	}
+	for _, binding := range bindings.Items {
+		if binding.GroupID != group.ID {
+			t.Fatalf("unexpected binding for group filter: %+v", binding)
+		}
 	}
 
 	ctx, recorder = clientAccessContext(http.MethodGet, "/v0/management/client-access/keys?page=1&page_size=10&search=desk", nil)

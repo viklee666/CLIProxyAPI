@@ -53,5 +53,6 @@ export interface AuthFilesResponse {
   has_more?: boolean;
   facets?: {
     providers?: Record<string, number>;
+    plan_types?: Record<string, number>;
   };
 }

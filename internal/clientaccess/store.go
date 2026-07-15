@@ -680,6 +680,24 @@ func (s *Store) ListCredentialBindings(ctx context.Context, opts ListOptions) (P
 			conditions = append(conditions, "cg.auth_index IN ("+strings.Join(placeholders, ",")+")")
 		}
 	}
+	if len(opts.GroupIDs) > 0 {
+		placeholders := make([]string, 0, len(opts.GroupIDs))
+		seen := make(map[int64]struct{}, len(opts.GroupIDs))
+		for _, groupID := range opts.GroupIDs {
+			if groupID <= 0 {
+				continue
+			}
+			if _, ok := seen[groupID]; ok {
+				continue
+			}
+			seen[groupID] = struct{}{}
+			placeholders = append(placeholders, "?")
+			args = append(args, groupID)
+		}
+		if len(placeholders) > 0 {
+			conditions = append(conditions, "cg.group_id IN ("+strings.Join(placeholders, ",")+")")
+		}
+	}
 	where := ""
 	if len(conditions) > 0 {
 		where = " WHERE " + strings.Join(conditions, " AND ")

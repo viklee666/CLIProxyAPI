@@ -1020,6 +1020,28 @@ func TestAnalyticsAccountAndAPIKeyStatsUseFullFilteredScope(t *testing.T) {
 		resp.APIKeyStats[0].Contexts[1].FailureRate != 1 {
 		t.Fatalf("second api key context = %#v", resp.APIKeyStats[0].Contexts[1])
 	}
+
+	limited, err := New(db).Analytics(ctx, Request{
+		FromMS: fromMS,
+		ToMS:   toMS,
+		Include: Include{
+			AccountStats:      true,
+			AccountStatsLimit: 1,
+			APIKeyStats:       true,
+			APIKeyStatsLimit:  1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("limited analytics: %v", err)
+	}
+	if len(limited.AccountStats) != 1 || len(limited.AccountStats[0].Models) != 1 ||
+		limited.AccountStats[0].Calls != 1 {
+		t.Fatalf("limited account stats = %#v", limited.AccountStats)
+	}
+	if len(limited.APIKeyStats) != 1 || len(limited.APIKeyStats[0].Contexts) != 1 ||
+		limited.APIKeyStats[0].Calls != 1 {
+		t.Fatalf("limited api key stats = %#v", limited.APIKeyStats)
+	}
 }
 
 func TestAnalyticsSearchMatchesResolvedModelAndProjectID(t *testing.T) {

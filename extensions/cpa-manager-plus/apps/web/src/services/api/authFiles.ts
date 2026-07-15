@@ -18,6 +18,9 @@ export type AuthFilesListQuery = {
   page_size?: number;
   search?: string;
   provider?: string;
+  plan_type?: string;
+  auth_index?: string;
+  group_id?: number;
   disabled?: boolean;
   problem?: boolean;
   healthy?: boolean;

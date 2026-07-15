@@ -150,6 +150,7 @@ type ListOptions struct {
 	Search      string
 	Enabled     *bool
 	AuthIndices []string
+	GroupIDs    []int64
 }
 
 type Page[T any] struct {

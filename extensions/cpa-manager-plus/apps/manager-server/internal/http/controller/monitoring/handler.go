@@ -116,6 +116,12 @@ func validateRequest(req monitoringsvc.Request) error {
 	if req.Include.EventsPage != nil && req.Include.EventsPage.Limit > 50000 {
 		return errors.New("events_page.limit must be less than or equal to 50000")
 	}
+	if req.Include.AccountStatsLimit > 50000 {
+		return errors.New("account_stats_limit must be less than or equal to 50000")
+	}
+	if req.Include.APIKeyStatsLimit > 50000 {
+		return errors.New("api_key_stats_limit must be less than or equal to 50000")
+	}
 	return nil
 }
 
