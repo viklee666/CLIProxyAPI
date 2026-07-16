@@ -24,7 +24,11 @@ import {
   areModelEntriesEqual,
   areStringArraysEqual,
 } from '@/utils/compare';
-import { entriesToModels, modelsToEntries } from '@/components/ui/modelInputListUtils';
+import {
+  createDiscoveredModelEntry,
+  entriesToModels,
+  modelsToEntries,
+} from '@/components/ui/modelInputListUtils';
 import {
   buildCodexResponsesEndpoint,
   excludedModelsToText,
@@ -306,7 +310,7 @@ export function CodexEditDrawer({
           if (!name) return;
           const key = name.toLowerCase();
           if (mergedMap.has(key)) return;
-          mergedMap.set(key, { name, alias: model.alias ?? '' });
+          mergedMap.set(key, createDiscoveredModelEntry(name));
           addedCount += 1;
         });
         const mergedEntries = Array.from(mergedMap.values());

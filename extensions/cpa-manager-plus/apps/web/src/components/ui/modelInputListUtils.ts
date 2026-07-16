@@ -14,6 +14,11 @@ export interface ModelEntry {
   thinking?: Record<string, unknown>;
 }
 
+export const createDiscoveredModelEntry = (name: string): ModelEntry => ({
+  name: String(name ?? '').trim(),
+  alias: '',
+});
+
 export const modelsToEntries = (models?: ModelAlias[]): ModelEntry[] => {
   if (!Array.isArray(models) || models.length === 0) {
     return [{ name: '', alias: '' }];

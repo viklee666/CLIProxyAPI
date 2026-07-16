@@ -16,7 +16,11 @@ import type { ApiKeyEntry, OpenAIProviderConfig } from '@/types';
 import { buildHeaderObject, headersToEntries, normalizeHeaderEntries } from '@/utils/headers';
 import { normalizeAuthIndex } from '@/utils/authIndex';
 import { areKeyValueEntriesEqual, areModelEntriesEqual } from '@/utils/compare';
-import { entriesToModels, modelsToEntries } from '@/components/ui/modelInputListUtils';
+import {
+  createDiscoveredModelEntry,
+  entriesToModels,
+  modelsToEntries,
+} from '@/components/ui/modelInputListUtils';
 import { buildApiKeyEntry, buildOpenAIChatCompletionsEndpoint } from '@/components/providers/utils';
 import {
   appendIdleKeyTestStatus,
@@ -382,7 +386,7 @@ export function OpenAIEditDrawer({
           const name = model.name.trim();
           const key = name.toLowerCase();
           if (!name || mergedMap.has(key)) return;
-          mergedMap.set(key, { name, alias: model.alias ?? '' });
+          mergedMap.set(key, createDiscoveredModelEntry(name));
           addedCount += 1;
         });
         const mergedEntries = Array.from(mergedMap.values());

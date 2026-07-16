@@ -19,7 +19,11 @@ import {
   areStringArraysEqual,
 } from '@/utils/compare';
 import type { ModelInfo } from '@/utils/models';
-import { entriesToModels, modelsToEntries } from '@/components/ui/modelInputListUtils';
+import {
+  createDiscoveredModelEntry,
+  entriesToModels,
+  modelsToEntries,
+} from '@/components/ui/modelInputListUtils';
 import { excludedModelsToText, parseExcludedModels } from '@/components/providers/utils';
 import type { GeminiFormState } from '@/components/providers';
 import styles from '@/features/aiProviders/AiProvidersPage.module.scss';
@@ -257,7 +261,7 @@ export function GeminiEditDrawer({
           const name = stripGeminiModelResourceName(model.name);
           const key = name.toLowerCase();
           if (!name || mergedMap.has(key)) return;
-          mergedMap.set(key, { name, alias: model.alias ?? '' });
+          mergedMap.set(key, createDiscoveredModelEntry(name));
           addedCount += 1;
         });
         const mergedEntries = Array.from(mergedMap.values());

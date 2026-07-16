@@ -10,7 +10,11 @@ import {
   useNotificationStore,
   useOpenAIEditDraftStore,
 } from '@/stores';
-import { entriesToModels, modelsToEntries } from '@/components/ui/modelInputListUtils';
+import {
+  createDiscoveredModelEntry,
+  entriesToModels,
+  modelsToEntries,
+} from '@/components/ui/modelInputListUtils';
 import type { ApiKeyEntry, OpenAIProviderConfig } from '@/types';
 import type { ModelInfo } from '@/utils/models';
 import { normalizeAuthIndex } from '@/utils/authIndex';
@@ -390,7 +394,7 @@ export function AiProvidersOpenAIEditLayout() {
           const name = model.name.trim();
           const key = name.toLowerCase();
           if (!name || mergedMap.has(key)) return;
-          mergedMap.set(key, { name, alias: model.alias ?? '' });
+          mergedMap.set(key, createDiscoveredModelEntry(name));
           addedCount += 1;
         });
 

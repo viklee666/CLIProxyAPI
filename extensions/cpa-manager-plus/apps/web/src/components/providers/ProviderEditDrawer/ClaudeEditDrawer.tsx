@@ -25,7 +25,10 @@ import {
   buildClaudeMessagesEndpoint,
   parseTextList,
 } from '@/components/providers/utils';
-import { modelsToEntries } from '@/components/ui/modelInputListUtils';
+import {
+  createDiscoveredModelEntry,
+  modelsToEntries,
+} from '@/components/ui/modelInputListUtils';
 import type { ProviderFormState } from '@/components/providers';
 import type { ModelInfo } from '@/utils/models';
 import styles from '@/features/aiProviders/AiProvidersPage.module.scss';
@@ -344,7 +347,7 @@ export function ClaudeEditDrawer({
           if (!name) return;
           const key = name.toLowerCase();
           if (mergedMap.has(key)) return;
-          mergedMap.set(key, { name, alias: model.alias ?? '' });
+          mergedMap.set(key, createDiscoveredModelEntry(name));
           addedCount += 1;
         });
 
