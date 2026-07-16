@@ -103,7 +103,6 @@ export function CodexEditDrawer({
 }: CodexEditDrawerProps) {
   const { t } = useTranslation();
   const { showNotification } = useNotificationStore();
-  const fetchConfig = useConfigStore((state) => state.fetchConfig);
   const updateConfigValue = useConfigStore((state) => state.updateConfigValue);
   const clearCache = useConfigStore((state) => state.clearCache);
 
@@ -142,7 +141,8 @@ export function CodexEditDrawer({
     let cancelled = false;
     setLoading(true);
     setError('');
-    fetchConfig('codex-api-key')
+    providersApi
+      .getCodexConfigs()
       .then((value) => {
         if (cancelled) return;
         setConfigs(Array.isArray(value) ? (value as ProviderKeyConfig[]) : []);
@@ -159,7 +159,7 @@ export function CodexEditDrawer({
     return () => {
       cancelled = true;
     };
-  }, [open, fetchConfig, t]);
+  }, [open, t]);
 
   useEffect(() => {
     if (!open || !loaded) return;

@@ -94,7 +94,6 @@ export function GeminiEditDrawer({
 }: GeminiEditDrawerProps) {
   const { t } = useTranslation();
   const { showNotification } = useNotificationStore();
-  const fetchConfig = useConfigStore((state) => state.fetchConfig);
   const updateConfigValue = useConfigStore((state) => state.updateConfigValue);
   const clearCache = useConfigStore((state) => state.clearCache);
 
@@ -141,7 +140,10 @@ export function GeminiEditDrawer({
     let cancelled = false;
     setLoading(true);
     setError('');
-    fetchConfig(configSection)
+    const request = isInteractions
+      ? providersApi.getInteractionsKeys()
+      : providersApi.getGeminiKeys();
+    request
       .then((value) => {
         if (cancelled) return;
         setConfigs(Array.isArray(value) ? (value as GeminiKeyConfig[]) : []);
@@ -158,7 +160,7 @@ export function GeminiEditDrawer({
     return () => {
       cancelled = true;
     };
-  }, [configSection, open, fetchConfig, t]);
+  }, [isInteractions, open, t]);
 
   // Init form when configs loaded
   useEffect(() => {

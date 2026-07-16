@@ -65,7 +65,6 @@ const getErrorMessage = (err: unknown) => {
 export function VertexEditDrawer({ open, editIndex, disabled, onClose, onSaved }: VertexEditDrawerProps) {
   const { t } = useTranslation();
   const { showNotification } = useNotificationStore();
-  const fetchConfig = useConfigStore((state) => state.fetchConfig);
   const updateConfigValue = useConfigStore((state) => state.updateConfigValue);
   const clearCache = useConfigStore((state) => state.clearCache);
 
@@ -90,11 +89,11 @@ export function VertexEditDrawer({ open, editIndex, disabled, onClose, onSaved }
     let cancelled = false;
     setLoading(true);
     setError('');
-    Promise.all([fetchConfig('vertex-api-key'), providersApi.getVertexConfigs()])
-      .then(([configResult, vertexResult]) => {
+    providersApi
+      .getVertexConfigs()
+      .then((vertexResult) => {
         if (cancelled) return;
-        const list = Array.isArray(vertexResult) ? (vertexResult as ProviderKeyConfig[])
-          : Array.isArray(configResult) ? (configResult as ProviderKeyConfig[]) : [];
+        const list = Array.isArray(vertexResult) ? (vertexResult as ProviderKeyConfig[]) : [];
         setConfigs(list);
         updateConfigValue('vertex-api-key', list);
         clearCache('vertex-api-key');
@@ -109,7 +108,7 @@ export function VertexEditDrawer({ open, editIndex, disabled, onClose, onSaved }
         setLoaded(true);
       });
     return () => { cancelled = true; };
-  }, [open, clearCache, fetchConfig, t, updateConfigValue]);
+  }, [open, clearCache, t, updateConfigValue]);
 
   useEffect(() => {
     if (!open || !loaded) return;

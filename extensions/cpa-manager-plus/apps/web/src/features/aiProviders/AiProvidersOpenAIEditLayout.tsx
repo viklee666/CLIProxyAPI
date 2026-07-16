@@ -163,7 +163,6 @@ export function AiProvidersOpenAIEditLayout() {
   const disableControls = connectionStatus !== 'connected';
 
   const config = useConfigStore((state) => state.config);
-  const fetchConfig = useConfigStore((state) => state.fetchConfig);
   const updateConfigValue = useConfigStore((state) => state.updateConfigValue);
   const isCacheValid = useConfigStore((state) => state.isCacheValid);
 
@@ -289,17 +288,10 @@ export function AiProvidersOpenAIEditLayout() {
         setProviders(nextProviders);
         updateConfigValue('openai-compatibility', nextProviders);
       })
-      .catch(async (err: unknown) => {
+      .catch((err: unknown) => {
         if (cancelled) return;
-        try {
-          const fallback = await fetchConfig('openai-compatibility');
-          if (cancelled) return;
-          setProviders(Array.isArray(fallback) ? (fallback as OpenAIProviderConfig[]) : []);
-        } catch {
-          if (cancelled) return;
-          const message = getErrorMessage(err) || t('notification.refresh_failed');
-          showNotification(`${t('notification.load_failed')}: ${message}`, 'error');
-        }
+        const message = getErrorMessage(err) || t('notification.refresh_failed');
+        showNotification(`${t('notification.load_failed')}: ${message}`, 'error');
       })
       .finally(() => {
         if (cancelled) return;
@@ -309,7 +301,7 @@ export function AiProvidersOpenAIEditLayout() {
     return () => {
       cancelled = true;
     };
-  }, [fetchConfig, isCacheValid, showNotification, t, updateConfigValue]);
+  }, [isCacheValid, showNotification, t, updateConfigValue]);
 
   useEffect(() => {
     if (loading) return;

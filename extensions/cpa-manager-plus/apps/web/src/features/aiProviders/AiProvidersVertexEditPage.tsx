@@ -76,7 +76,6 @@ export function AiProvidersVertexEditPage() {
   const connectionStatus = useAuthStore((state) => state.connectionStatus);
   const disableControls = connectionStatus !== 'connected';
 
-  const fetchConfig = useConfigStore((state) => state.fetchConfig);
   const updateConfigValue = useConfigStore((state) => state.updateConfigValue);
   const clearCache = useConfigStore((state) => state.clearCache);
 
@@ -127,15 +126,12 @@ export function AiProvidersVertexEditPage() {
     setLoading(true);
     setError('');
 
-    Promise.all([fetchConfig('vertex-api-key'), providersApi.getVertexConfigs()])
-      .then(([configResult, vertexResult]) => {
+    providersApi
+      .getVertexConfigs()
+      .then((vertexResult) => {
         if (cancelled) return;
 
-        const list = Array.isArray(vertexResult)
-          ? (vertexResult as ProviderKeyConfig[])
-          : Array.isArray(configResult)
-            ? (configResult as ProviderKeyConfig[])
-            : [];
+        const list = Array.isArray(vertexResult) ? (vertexResult as ProviderKeyConfig[]) : [];
         setConfigs(list);
         updateConfigValue('vertex-api-key', list);
         clearCache('vertex-api-key');
@@ -153,7 +149,7 @@ export function AiProvidersVertexEditPage() {
     return () => {
       cancelled = true;
     };
-  }, [clearCache, fetchConfig, t, updateConfigValue]);
+  }, [clearCache, t, updateConfigValue]);
 
   useEffect(() => {
     if (loading) return;

@@ -149,7 +149,6 @@ export function AiProvidersClaudeEditLayout() {
   const disableControls = connectionStatus !== 'connected';
 
   const config = useConfigStore((state) => state.config);
-  const fetchConfig = useConfigStore((state) => state.fetchConfig);
   const isCacheValid = useConfigStore((state) => state.isCacheValid);
   const updateConfigValue = useConfigStore((state) => state.updateConfigValue);
   const clearCache = useConfigStore((state) => state.clearCache);
@@ -233,12 +232,10 @@ export function AiProvidersClaudeEditLayout() {
 
   useEffect(() => {
     let cancelled = false;
-    const hasValidCache = isCacheValid('claude-api-key');
-    if (!hasValidCache) {
-      setLoading(true);
-    }
+    setLoading(true);
 
-    fetchConfig('claude-api-key')
+    providersApi
+      .getClaudeConfigs()
       .then((value) => {
         if (cancelled) return;
         setConfigs(Array.isArray(value) ? (value as ProviderKeyConfig[]) : []);
@@ -256,7 +253,7 @@ export function AiProvidersClaudeEditLayout() {
     return () => {
       cancelled = true;
     };
-  }, [fetchConfig, isCacheValid, showNotification, t]);
+  }, [showNotification, t]);
 
   useEffect(() => {
     if (loading) return;

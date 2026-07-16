@@ -139,7 +139,6 @@ export function ClaudeEditDrawer({
 }: ClaudeEditDrawerProps) {
   const { t } = useTranslation();
   const { showNotification } = useNotificationStore();
-  const fetchConfig = useConfigStore((state) => state.fetchConfig);
   const updateConfigValue = useConfigStore((state) => state.updateConfigValue);
   const clearCache = useConfigStore((state) => state.clearCache);
 
@@ -183,7 +182,8 @@ export function ClaudeEditDrawer({
     if (!open) return;
     let cancelled = false;
     setLoading(true);
-    fetchConfig('claude-api-key')
+    providersApi
+      .getClaudeConfigs()
       .then((value) => {
         if (cancelled) return;
         setConfigs(Array.isArray(value) ? (value as ProviderKeyConfig[]) : []);
@@ -200,7 +200,7 @@ export function ClaudeEditDrawer({
     return () => {
       cancelled = true;
     };
-  }, [open, fetchConfig, showNotification, t]);
+  }, [open, showNotification, t]);
 
   useEffect(() => {
     if (!open || !loaded) return;
