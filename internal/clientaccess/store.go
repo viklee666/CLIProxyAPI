@@ -72,6 +72,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS client_access_keys (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL,
+			key_secret TEXT NOT NULL DEFAULT '',
 			key_prefix TEXT NOT NULL,
 			key_hash TEXT NOT NULL UNIQUE,
 			enabled INTEGER NOT NULL DEFAULT 1,
@@ -136,6 +137,44 @@ func (s *Store) migrate(ctx context.Context) error {
 		if _, errExec := s.db.ExecContext(ctx, statement); errExec != nil {
 			return fmt.Errorf("migrate client access database: %w", errExec)
 		}
+	}
+	if errColumn := s.ensureColumn(ctx, "client_access_keys", "key_secret", "TEXT NOT NULL DEFAULT ''"); errColumn != nil {
+		return errColumn
+	}
+	return nil
+}
+
+func (s *Store) ensureColumn(ctx context.Context, table, column, definition string) error {
+	rows, errQuery := s.db.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
+	if errQuery != nil {
+		return fmt.Errorf("inspect %s columns: %w", table, errQuery)
+	}
+	found := false
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, primaryKey int
+		var defaultValue sql.NullString
+		if errScan := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); errScan != nil {
+			_ = rows.Close()
+			return fmt.Errorf("inspect %s columns: %w", table, errScan)
+		}
+		if name == column {
+			found = true
+		}
+	}
+	if errRows := rows.Err(); errRows != nil {
+		_ = rows.Close()
+		return fmt.Errorf("inspect %s columns: %w", table, errRows)
+	}
+	if errClose := rows.Close(); errClose != nil {
+		return fmt.Errorf("inspect %s columns: %w", table, errClose)
+	}
+	if found {
+		return nil
+	}
+	if _, errExec := s.db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN `+column+` `+definition); errExec != nil {
+		return fmt.Errorf("add %s.%s column: %w", table, column, errExec)
 	}
 	return nil
 }
@@ -321,7 +360,7 @@ type keyRowScanner interface {
 	Scan(dest ...any) error
 }
 
-const keyColumns = `id, name, key_prefix, key_hash, enabled, allow_all_groups, allow_ungrouped, expires_at_ms,
+const keyColumns = `id, name, key_secret, key_prefix, key_hash, enabled, allow_all_groups, allow_ungrouped, expires_at_ms,
 	rpm_limit, concurrency_limit,
 	request_limit_total, request_used_total, request_limit_5h, request_used_5h, request_window_5h_ms,
 	request_limit_1d, request_used_1d, request_window_1d_ms, request_limit_7d, request_used_7d, request_window_7d_ms,
@@ -337,7 +376,7 @@ func scanKey(scanner keyRowScanner) (Key, string, error) {
 	var tokenWindow5hMS, tokenWindow1dMS, tokenWindow7dMS, lastUsedMS sql.NullInt64
 	var createdMS, updatedMS int64
 	errScan := scanner.Scan(
-		&item.ID, &item.Name, &item.KeyPrefix, &hash, &enabled, &allowAll, &allowUngrouped, &expiresMS,
+		&item.ID, &item.Name, &item.Secret, &item.KeyPrefix, &hash, &enabled, &allowAll, &allowUngrouped, &expiresMS,
 		&item.RPMLimit, &item.ConcurrencyLimit,
 		&item.RequestLimitTotal, &item.RequestUsedTotal, &item.RequestLimit5h, &item.RequestUsed5h, &requestWindow5hMS,
 		&item.RequestLimit1d, &item.RequestUsed1d, &requestWindow1dMS, &item.RequestLimit7d, &item.RequestUsed7d, &requestWindow7dMS,
@@ -425,10 +464,10 @@ func (s *Store) CreateKey(ctx context.Context, input KeyCreate, secret, prefix, 
 	}
 	defer func() { _ = tx.Rollback() }()
 	result, errExec := tx.ExecContext(ctx, `INSERT INTO client_access_keys(
-		name, key_prefix, key_hash, enabled, allow_all_groups, allow_ungrouped, expires_at_ms, rpm_limit, concurrency_limit,
+		name, key_secret, key_prefix, key_hash, enabled, allow_all_groups, allow_ungrouped, expires_at_ms, rpm_limit, concurrency_limit,
 		request_limit_total, request_limit_5h, request_limit_1d, request_limit_7d,
 		token_limit_total, token_limit_5h, token_limit_1d, token_limit_7d, created_at_ms, updated_at_ms
-	) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, name, prefix, hash, boolInt(enabled), boolInt(allowAll), boolInt(input.AllowUngrouped), nullableMillis(input.ExpiresAt), input.RPMLimit, input.ConcurrencyLimit, input.RequestLimitTotal, input.RequestLimit5h, input.RequestLimit1d, input.RequestLimit7d, input.TokenLimitTotal, input.TokenLimit5h, input.TokenLimit1d, input.TokenLimit7d, now.UnixMilli(), now.UnixMilli())
+	) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, name, secret, prefix, hash, boolInt(enabled), boolInt(allowAll), boolInt(input.AllowUngrouped), nullableMillis(input.ExpiresAt), input.RPMLimit, input.ConcurrencyLimit, input.RequestLimitTotal, input.RequestLimit5h, input.RequestLimit1d, input.RequestLimit7d, input.TokenLimitTotal, input.TokenLimit5h, input.TokenLimit1d, input.TokenLimit7d, now.UnixMilli(), now.UnixMilli())
 	if errExec != nil {
 		return Key{}, fmt.Errorf("create client key: %w", errExec)
 	}
@@ -442,7 +481,6 @@ func (s *Store) CreateKey(ctx context.Context, input KeyCreate, secret, prefix, 
 	if errCommit := tx.Commit(); errCommit != nil {
 		return Key{}, errCommit
 	}
-	_ = secret
 	return s.GetKey(ctx, keyID)
 }
 

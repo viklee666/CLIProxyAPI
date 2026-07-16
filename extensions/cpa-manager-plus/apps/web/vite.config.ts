@@ -36,13 +36,14 @@ function getVersion(): string {
 }
 
 const isDemoSiteBuild = (mode: string) =>
-  mode === 'demo' || process.env.DEMO_SITE === 'true' || process.env.VITE_DEMO_SITE === 'true';
+  mode === 'demo' || mode === 'demo-bundle' || process.env.DEMO_SITE === 'true' || process.env.VITE_DEMO_SITE === 'true';
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => {
   const demoSite = isDemoSiteBuild(mode);
   const useRealDemoFixtures = demoSite || mode === 'test';
-  const singleFile = process.env.CPA_SINGLE_FILE !== 'false';
+  const singleFile =
+    mode === 'bundle' || mode === 'demo-bundle' || process.env.CPA_SINGLE_FILE === 'true';
 
   return {
     plugins: [

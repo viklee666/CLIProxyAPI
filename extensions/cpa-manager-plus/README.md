@@ -207,7 +207,7 @@ docker compose -f docker-compose.manager.yml up --build
 
 ## Release
 
-- `npm run build` creates a single-file `apps/web/dist/index.html`.
+- `npm run build` creates a cacheable multi-file panel under `apps/web/dist/`; `npm run build:bundle` remains available for a single-file `index.html`.
 - `bin/release/package-native.sh` embeds the built panel into native packages.
 - Tag pushes such as `vX.Y.Z` trigger `.github/workflows/release.yml`.
 - Release assets include `management.html`, native packages, and Docker images for `linux/amd64` and `linux/arm64`.

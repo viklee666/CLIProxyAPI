@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import {
   authFilesApi,
   type AuthFileFieldsPatch,
+  type AuthFileJsonUpload,
   type AuthFilesListQuery,
 } from '@/services/api';
 import { apiClient } from '@/services/api/client';
@@ -15,13 +16,13 @@ import type { AuthFileItem } from '@/types';
 import { formatFileSize } from '@/utils/format';
 import { MAX_AUTH_FILE_SIZE } from '@/utils/constants';
 import { downloadBlob } from '@/utils/download';
-import {
-  convertAuthJsonInput,
-  getDefaultSub2ApiAuthFileName,
-  getDefaultSessionAuthFileName,
-  type AuthJsonConversionResult,
-  type AuthJsonInputType,
-} from '@/features/authFiles/sessionAuthConverter';
+import { loadAuthJsonConverter } from '@/features/authFiles/authJsonConverterLoader';
+import type {
+  AuthJsonConversionResult,
+  AuthJsonDetectionType,
+  AuthJsonInputType,
+  AuthJsonRecord,
+} from '@/features/authFiles/authJsonTypes';
 import {
   getTypeLabel,
   hasAuthFileStatusMessage,
@@ -72,6 +73,7 @@ export type UseAuthFilesDataResult = {
   batchFieldsUpdating: boolean;
   fileInputRef: RefObject<HTMLInputElement | null>;
   loadFiles: (options?: { throwOnError?: boolean }) => Promise<void>;
+  prepareAuthJsonConverter: () => Promise<void>;
   handleUploadClick: () => void;
   handleFileChange: (event: ChangeEvent<HTMLInputElement>) => Promise<void>;
   savePastedAuthJson: (
@@ -96,10 +98,9 @@ export type UseAuthFilesDataResult = {
   batchDelete: (names: string[]) => void;
 };
 
-type PastedAuthJsonPayload = {
-  authJson: AuthJsonConversionResult;
-  resolvedFileName: string;
-};
+const DEFAULT_AUTH_JSON_FILE_NAME = 'codex-account.json';
+const AUTH_JSON_UPLOAD_BATCH_FILES = 20;
+const AUTH_JSON_UPLOAD_BATCH_BYTES = 2 * 1024 * 1024;
 
 type AuthFilePatchTargetGroup = {
   name: string;
@@ -159,22 +160,77 @@ const groupBatchPatchTargets = (targets: AuthFilePatchTarget[]): AuthFilePatchTa
   return Array.from(groups.values());
 };
 
-export const buildPastedAuthJsonPayload = (
-  type: AuthJsonInputType,
+const authJsonRecords = (authJson: AuthJsonConversionResult): AuthJsonRecord[] =>
+  Array.isArray(authJson) ? authJson : [authJson];
+
+const numberedAuthFileName = (fileName: string, index: number) => {
+  const suffix = String(index + 1).padStart(3, '0');
+  const baseName = fileName.toLowerCase().endsWith('.json') ? fileName.slice(0, -5) : fileName;
+  return `${baseName}-${suffix}.json`;
+};
+
+const uniqueAuthFileName = (name: string, usedNames: Set<string>) => {
+  if (!usedNames.has(name)) {
+    usedNames.add(name);
+    return name;
+  }
+  const baseName = name.toLowerCase().endsWith('.json') ? name.slice(0, -5) : name;
+  let suffix = 2;
+  while (usedNames.has(`${baseName}-${suffix}.json`)) suffix += 1;
+  const uniqueName = `${baseName}-${suffix}.json`;
+  usedNames.add(uniqueName);
+  return uniqueName;
+};
+
+export const buildConvertedAuthJsonUploads = async (
+  type: AuthJsonDetectionType,
   fileName: string,
   jsonText: string
-): PastedAuthJsonPayload => {
-  const authJson = convertAuthJsonInput(jsonText, type);
-  const resolvedFileName =
-    type === 'session' && fileName === 'codex-account.json'
-      ? getDefaultSessionAuthFileName(authJson as Record<string, unknown>)
-      : type === 'sub2api' && fileName === 'codex-account.json'
-        ? getDefaultSub2ApiAuthFileName(authJson)
-        : fileName;
-  return {
-    authJson,
-    resolvedFileName,
-  };
+): Promise<AuthFileJsonUpload[]> => {
+  const converter = await loadAuthJsonConverter();
+  const authJson = converter.convertAuthJsonInput(jsonText, type);
+  const records = authJsonRecords(authJson);
+  const usedNames = new Set<string>();
+  return records.map((record, index) => {
+    let resolvedFileName = fileName;
+    if (records.length === 1) {
+      if (fileName === DEFAULT_AUTH_JSON_FILE_NAME && type === 'session') {
+        resolvedFileName = converter.getDefaultSessionAuthFileName(record);
+      } else if (fileName === DEFAULT_AUTH_JSON_FILE_NAME && type === 'sub2api') {
+        resolvedFileName = converter.getDefaultSub2ApiAuthFileName(record);
+      }
+    } else if (fileName === DEFAULT_AUTH_JSON_FILE_NAME) {
+      resolvedFileName = converter.getDefaultSessionAuthFileName(record);
+    } else {
+      resolvedFileName = numberedAuthFileName(fileName, index);
+    }
+    return {
+      name: uniqueAuthFileName(resolvedFileName, usedNames),
+      text: JSON.stringify(record),
+    };
+  });
+};
+
+const chunkAuthJsonUploads = (files: AuthFileJsonUpload[]): AuthFileJsonUpload[][] => {
+  const batches: AuthFileJsonUpload[][] = [];
+  let batch: AuthFileJsonUpload[] = [];
+  let batchBytes = 0;
+  files.forEach((file) => {
+    const fileBytes = new Blob([file.text]).size;
+    if (
+      batch.length > 0 &&
+      (batch.length >= AUTH_JSON_UPLOAD_BATCH_FILES ||
+        batchBytes + fileBytes > AUTH_JSON_UPLOAD_BATCH_BYTES)
+    ) {
+      batches.push(batch);
+      batch = [];
+      batchBytes = 0;
+    }
+    batch.push(file);
+    batchBytes += fileBytes;
+  });
+  if (batch.length > 0) batches.push(batch);
+  return batches;
 };
 
 export function useAuthFilesData(query?: AuthFilesListQuery): UseAuthFilesDataResult {
@@ -314,9 +370,29 @@ export function useAuthFilesData(query?: AuthFilesListQuery): UseAuthFilesDataRe
     [query, t]
   );
 
-  const handleUploadClick = useCallback(() => {
-    fileInputRef.current?.click();
+  const prepareAuthJsonConverter = useCallback(async () => {
+    await loadAuthJsonConverter();
   }, []);
+
+  const uploadAuthJsonBatches = useCallback(async (filesToUpload: AuthFileJsonUpload[]) => {
+    const uploadedFiles: string[] = [];
+    const failed: Array<{ name: string; error: string }> = [];
+    for (const batch of chunkAuthJsonUploads(filesToUpload)) {
+      try {
+        const result = await authFilesApi.uploadJsonTexts(batch);
+        uploadedFiles.push(...result.files);
+        failed.push(...result.failed);
+      } catch {
+        failed.push(...batch.map((file) => ({ name: file.name, error: 'Upload failed' })));
+      }
+    }
+    return { uploadedFiles, failed };
+  }, []);
+
+  const handleUploadClick = useCallback(() => {
+    void prepareAuthJsonConverter();
+    fileInputRef.current?.click();
+  }, [prepareAuthJsonConverter]);
 
   const handleFileChange = useCallback(
     async (event: ChangeEvent<HTMLInputElement>) => {
@@ -357,20 +433,37 @@ export function useAuthFilesData(query?: AuthFilesListQuery): UseAuthFilesDataRe
 
       setUploading(true);
       try {
-        const result = await authFilesApi.uploadFiles(validFiles);
-        const successCount = result.uploaded;
+        const convertedFiles: AuthFileJsonUpload[] = [];
+        const conversionFailures: Array<{ name: string; error: string }> = [];
+        for (const file of validFiles) {
+          try {
+            convertedFiles.push(
+              ...(await buildConvertedAuthJsonUploads('auto', file.name, await file.text()))
+            );
+          } catch (error) {
+            conversionFailures.push({
+              name: file.name,
+              error: error instanceof Error ? error.message : 'Invalid auth JSON',
+            });
+          }
+        }
+
+        const result = await uploadAuthJsonBatches(convertedFiles);
+        const failures = [...conversionFailures, ...result.failed];
+        const successCount = result.uploadedFiles.length;
 
         if (successCount > 0) {
-          const suffix = validFiles.length > 1 ? ` (${successCount}/${validFiles.length})` : '';
+          const total = convertedFiles.length + conversionFailures.length;
+          const suffix = total > 1 ? ` (${successCount}/${total})` : '';
           showNotification(
             `${t('auth_files.upload_success')}${suffix}`,
-            result.failed.length ? 'warning' : 'success'
+            failures.length ? 'warning' : 'success'
           );
           await loadFiles();
         }
 
-        if (result.failed.length > 0) {
-          const details = result.failed.map((item) => `${item.name}: ${item.error}`).join('; ');
+        if (failures.length > 0) {
+          const details = failures.map((item) => `${item.name}: ${item.error}`).join('; ');
           showNotification(`${t('notification.upload_failed')}: ${details}`, 'error');
         }
       } catch (err: unknown) {
@@ -381,7 +474,7 @@ export function useAuthFilesData(query?: AuthFilesListQuery): UseAuthFilesDataRe
         event.target.value = '';
       }
     },
-    [loadFiles, showNotification, t]
+    [loadFiles, showNotification, t, uploadAuthJsonBatches]
   );
 
   const savePastedAuthJson = useCallback(
@@ -392,22 +485,33 @@ export function useAuthFilesData(query?: AuthFilesListQuery): UseAuthFilesDataRe
       authJsonPasteSavingRef.current = true;
       setAuthJsonPasteSaving(true);
       try {
-        const { authJson, resolvedFileName } = buildPastedAuthJsonPayload(type, fileName, jsonText);
-        try {
-          await authFilesApi.saveJsonObject(resolvedFileName, authJson);
-        } catch {
-          throw new Error(t('notification.save_failed'));
+        const uploads = await buildConvertedAuthJsonUploads(type, fileName, jsonText);
+        const result = await uploadAuthJsonBatches(uploads);
+        if (result.failed.length > 0) {
+          const details = result.failed.map((item) => `${item.name}: ${item.error}`).join('; ');
+          throw new Error(`${t('notification.save_failed')}: ${details}`);
         }
+        const resolvedFileName = result.uploadedFiles[0] ?? uploads[0]?.name ?? fileName;
         try {
           await loadFiles({ throwOnError: true });
         } catch (reloadError) {
           const reloadMessage =
             reloadError instanceof Error ? reloadError.message : t('notification.refresh_failed');
-          showNotification(t('auth_files.paste_success', { name: resolvedFileName }), 'success');
+          showNotification(
+            uploads.length > 1
+              ? t('auth_files.paste_success_batch', { count: uploads.length })
+              : t('auth_files.paste_success', { name: resolvedFileName }),
+            'success'
+          );
           showNotification(`${t('notification.refresh_failed')}: ${reloadMessage}`, 'warning');
           return resolvedFileName;
         }
-        showNotification(t('auth_files.paste_success', { name: resolvedFileName }), 'success');
+        showNotification(
+          uploads.length > 1
+            ? t('auth_files.paste_success_batch', { count: uploads.length })
+            : t('auth_files.paste_success', { name: resolvedFileName }),
+          'success'
+        );
         return resolvedFileName;
       } catch (err) {
         throw new Error(err instanceof Error ? err.message : t('notification.save_failed'));
@@ -416,7 +520,7 @@ export function useAuthFilesData(query?: AuthFilesListQuery): UseAuthFilesDataRe
         setAuthJsonPasteSaving(false);
       }
     },
-    [loadFiles, showNotification, t]
+    [loadFiles, showNotification, t, uploadAuthJsonBatches]
   );
 
   const handleDelete = useCallback(
@@ -927,6 +1031,7 @@ export function useAuthFilesData(query?: AuthFilesListQuery): UseAuthFilesDataRe
     batchFieldsUpdating,
     fileInputRef,
     loadFiles,
+    prepareAuthJsonConverter,
     handleUploadClick,
     handleFileChange,
     savePastedAuthJson,

@@ -402,7 +402,7 @@ func (s *Service) CreateKey(ctx context.Context, input KeyCreate) (CreatedKey, e
 	if errReload := s.reload(ctx); errReload != nil {
 		return CreatedKey{}, errReload
 	}
-	return CreatedKey{Key: key, Secret: secret}, nil
+	return CreatedKey{Key: key}, nil
 }
 
 func (s *Service) GetKey(ctx context.Context, id int64) (Key, error) {

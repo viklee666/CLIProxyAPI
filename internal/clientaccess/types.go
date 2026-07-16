@@ -30,6 +30,7 @@ type Group struct {
 type Key struct {
 	ID                 int64      `json:"id"`
 	Name               string     `json:"name"`
+	Secret             string     `json:"secret,omitempty"`
 	KeyPrefix          string     `json:"key_prefix"`
 	KeyMask            string     `json:"key_mask"`
 	Enabled            bool       `json:"enabled"`
@@ -70,7 +71,6 @@ type Key struct {
 
 type CreatedKey struct {
 	Key
-	Secret string `json:"secret"`
 }
 
 type CredentialBinding struct {

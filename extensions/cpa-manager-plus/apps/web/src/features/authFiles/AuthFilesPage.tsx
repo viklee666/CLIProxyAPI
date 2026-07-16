@@ -124,7 +124,7 @@ import {
   writePersistedAuthFilesCompactMode,
   type AuthFilesSortMode,
 } from '@/features/authFiles/uiState';
-import type { AuthJsonInputType } from '@/features/authFiles/sessionAuthConverter';
+import type { AuthJsonInputType } from '@/features/authFiles/authJsonTypes';
 import type { AuthFileItem, CodexQuotaState } from '@/types';
 import { disableCredentialAfterForbidden } from '@/services/credentialStatusActions';
 import {
@@ -344,6 +344,7 @@ export function AuthFilesPage() {
     batchFieldsUpdating,
     fileInputRef,
     loadFiles,
+    prepareAuthJsonConverter,
     handleUploadClick,
     handleFileChange,
     savePastedAuthJson,
@@ -1589,7 +1590,10 @@ export function AuthFilesPage() {
                 <Button
                   variant="secondary"
                   size="sm"
-                  onClick={() => setAuthJsonPasteOpen(true)}
+                  onClick={() => {
+                    void prepareAuthJsonConverter();
+                    setAuthJsonPasteOpen(true);
+                  }}
                   disabled={disableControls || authJsonPasteSaving}
                   loading={authJsonPasteSaving}
                 >

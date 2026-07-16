@@ -105,6 +105,10 @@ type AuthFileBatchUploadResult = {
   files: string[];
   failed: AuthFileBatchFailure[];
 };
+export type AuthFileJsonUpload = {
+  name: string;
+  text: string;
+};
 type AuthFileBatchDeleteResult = {
   status: string;
   deleted: number;
@@ -931,6 +935,25 @@ export const authFilesApi = {
   },
 
   upload: (file: File) => authFilesApi.uploadFiles([file]),
+
+  uploadJsonTexts: async (files: AuthFileJsonUpload[]): Promise<AuthFileBatchUploadResult> => {
+    const requestedNames = files.map((file) => file.name);
+    if (requestedNames.length === 0) {
+      return { status: 'ok', uploaded: 0, files: [], failed: [] };
+    }
+
+    const formData = new FormData();
+    const formField = files.length === 1 ? 'file' : 'files';
+    files.forEach((file) => {
+      formData.append(
+        formField,
+        new Blob([file.text], { type: 'application/json' }),
+        file.name
+      );
+    });
+    const payload = await apiClient.postForm<AuthFileBatchUploadResponse>('/auth-files', formData);
+    return normalizeBatchUploadResponse(payload, requestedNames);
+  },
 
   deleteFiles: async (names: string[]): Promise<AuthFileBatchDeleteResult> => {
     const requestedNames = normalizeRequestedAuthFileNames(names);

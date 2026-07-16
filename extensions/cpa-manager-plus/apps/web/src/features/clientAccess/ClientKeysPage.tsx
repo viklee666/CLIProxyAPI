@@ -12,6 +12,7 @@ import styles from './ClientAccessPage.module.scss';
 
 type KeyForm = {
   name: string;
+  secret: string;
   enabled: boolean;
   allowAllGroups: boolean;
   allowUngrouped: boolean;
@@ -31,6 +32,7 @@ type KeyForm = {
 
 const emptyForm: KeyForm = {
   name: '',
+  secret: '',
   enabled: true,
   allowAllGroups: true,
   allowUngrouped: false,
@@ -127,6 +129,7 @@ export function ClientKeysPage() {
     setEditing(key);
     setForm({
       name: key.name,
+      secret: key.secret ?? '',
       enabled: key.enabled,
       allowAllGroups: key.allow_all_groups,
       allowUngrouped: key.allow_ungrouped,
@@ -178,6 +181,7 @@ export function ClientKeysPage() {
         : editing
           ? { clear_expires_at: true }
           : {}),
+      ...(!editing && form.secret.trim() ? { secret: form.secret.trim() } : {}),
     };
     try {
       if (editing) {
@@ -246,10 +250,11 @@ export function ClientKeysPage() {
         {!loading && !error && items.length === 0 ? <div className={styles.empty}>{t('client_access.no_keys')}</div> : null}
         {!loading && !error && items.length > 0 ? (
           <table className={styles.table}>
-            <thead><tr><th>{t('common.name')}</th><th>{t('common.status')}</th><th>{t('client_access.groups')}</th><th>RPM</th><th>{t('client_access.concurrency')}</th><th>{t('client_access.request_quota')}</th><th>{t('client_access.token_quota')}</th><th>{t('client_access.expires')}</th><th /></tr></thead>
+            <thead><tr><th>{t('common.name')}</th><th>{t('client_access.key_value')}</th><th>{t('common.status')}</th><th>{t('client_access.groups')}</th><th>RPM</th><th>{t('client_access.concurrency')}</th><th>{t('client_access.request_quota')}</th><th>{t('client_access.token_quota')}</th><th>{t('client_access.expires')}</th><th /></tr></thead>
             <tbody>{items.map((key) => (
               <tr key={key.id}>
-                <td><div className={styles.name}>{key.name}</div><div className={styles.muted}>{key.key_mask}</div></td>
+                <td><div className={styles.name}>{key.name}</div></td>
+                <td><div className={styles.keyValue}><code>{key.secret || key.key_mask}</code><Button size="xs" variant="secondary" disabled={!key.secret} onClick={async () => { const copied = await copyToClipboard(key.secret ?? ''); showNotification(t(copied ? 'client_access.key_copied' : 'notification.copy_failed'), copied ? 'success' : 'error'); }}>{t('common.copy')}</Button></div></td>
                 <td><span className={`${styles.badge} ${key.enabled ? styles.badgeActive : styles.badgeDisabled}`}>{key.enabled ? t('common.enabled') : t('common.disabled')}</span></td>
                 <td>{key.allow_all_groups ? t('client_access.all_groups') : (key.group_ids ?? []).map((id) => groupByID.get(id)?.name ?? `#${id}`).join(', ') || '-'}</td>
                 <td>{key.rpm_limit || '∞'}</td>
@@ -280,6 +285,7 @@ export function ClientKeysPage() {
       <Modal open={modalOpen} onClose={() => setModalOpen(false)} width={920} title={editing ? t('client_access.edit_key') : t('client_access.add_key')} footer={<><Button variant="secondary" onClick={() => setModalOpen(false)}>{t('common.cancel')}</Button><Button loading={saving} onClick={save}>{t('common.save')}</Button></>}>
         <div className={styles.modalGrid}>
           <Input label={t('common.name')} value={form.name} onChange={(event) => setForm((value) => ({ ...value, name: event.target.value }))} />
+          {!editing ? <Input label={t('client_access.key_value')} hint={t('client_access.key_value_hint')} value={form.secret} onChange={(event) => setForm((value) => ({ ...value, secret: event.target.value }))} autoComplete="off" /> : null}
           <Input label={t('client_access.expires')} type="datetime-local" value={form.expiresAt} onChange={(event) => setForm((value) => ({ ...value, expiresAt: event.target.value }))} />
           <Input label="RPM" type="number" min={0} value={form.rpmLimit} onChange={(event) => setForm((value) => ({ ...value, rpmLimit: event.target.value }))} />
           <Input label={t('client_access.concurrency_limit')} type="number" min={0} value={form.concurrencyLimit} onChange={(event) => setForm((value) => ({ ...value, concurrencyLimit: event.target.value }))} />
@@ -299,7 +305,7 @@ export function ClientKeysPage() {
           {!form.allowAllGroups ? <div className={`${styles.fullWidth} ${styles.groupPicker}`}>{groups.map((group) => <label className={styles.groupOption} key={group.id}><input type="checkbox" checked={form.groupIDs.includes(group.id)} onChange={() => toggleGroup(group.id)} />{group.name}</label>)}</div> : null}
         </div>
       </Modal>
-      <Modal open={Boolean(secret)} onClose={() => setSecret('')} title={t('client_access.secret_title')} footer={<><Button variant="secondary" onClick={async () => { const copied = await copyToClipboard(secret); showNotification(t(copied ? 'notification.link_copied' : 'notification.copy_failed'), copied ? 'success' : 'error'); }}>{t('common.copy')}</Button><Button onClick={() => setSecret('')}>{t('common.confirm')}</Button></>}>
+      <Modal open={Boolean(secret)} onClose={() => setSecret('')} title={t('client_access.secret_title')} footer={<><Button variant="secondary" onClick={async () => { const copied = await copyToClipboard(secret); showNotification(t(copied ? 'client_access.key_copied' : 'notification.copy_failed'), copied ? 'success' : 'error'); }}>{t('common.copy')}</Button><Button onClick={() => setSecret('')}>{t('common.confirm')}</Button></>}>
         <p>{t('client_access.secret_hint')}</p><div className={styles.secretBox}>{secret}</div>
       </Modal>
     </div>

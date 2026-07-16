@@ -1,7 +1,12 @@
-export type AuthJsonInputType = 'cpa' | 'session' | 'sub2api';
+import type {
+  AuthJsonConversionResult,
+  AuthJsonDetectionType,
+  AuthJsonInputType,
+} from './authJsonTypes';
+
+export type { AuthJsonConversionResult, AuthJsonDetectionType, AuthJsonInputType } from './authJsonTypes';
 
 type JsonRecord = Record<string, unknown>;
-export type AuthJsonConversionResult = JsonRecord | JsonRecord[];
 type TraversalState = {
   visited: WeakSet<object>;
   visitedRecords: number;
@@ -132,7 +137,7 @@ const FORBIDDEN_INVISIBLE_CODE_POINTS = new Set([
 
 const CREDENTIAL_CONTAINER_KEYS = ['credentials', 'auth', 'cookies'] as const;
 
-const MAX_AUTH_JSON_INPUT_CHARS = 1_000_000;
+const MAX_AUTH_JSON_INPUT_CHARS = 10 * 1024 * 1024;
 const MAX_JSON_TRAVERSAL_DEPTH = 64;
 const MAX_JSON_RECORDS = 5_000;
 const MAX_JWT_SEGMENT_CHARS = 16_384;
@@ -598,29 +603,6 @@ const hasForbiddenInvisibleCharacter = (
   );
 };
 
-const hasUnsafeCpaIdToken = (
-  value: unknown,
-  depth = 0,
-  state: TraversalState = createTraversalState()
-): boolean => {
-  assertTraversalDepth(depth);
-
-  if (Array.isArray(value)) {
-    if (!markTraversalRecord(value, state)) return false;
-    return value.some((item) => hasUnsafeCpaIdToken(item, depth + 1, state));
-  }
-  if (!isRecord(value)) return false;
-  if (!markTraversalRecord(value, state)) return false;
-
-  return Object.entries(value).some(([key, item]) => {
-    const normalizedKey = key.toLowerCase();
-    if ((normalizedKey === 'id_token' || normalizedKey === 'idtoken') && isUnsafeIdToken(item)) {
-      return true;
-    }
-    return hasUnsafeCpaIdToken(item, depth + 1, state);
-  });
-};
-
 const convertSessionToCpaAuthJson = (record: JsonRecord, now: Date): JsonRecord => {
   const token = isRecord(record.token) ? record.token : undefined;
   const credentials = isRecord(record.credentials) ? record.credentials : undefined;
@@ -887,28 +869,174 @@ const convertSub2ApiToCpaAuthJson = (value: unknown, now: Date): AuthJsonConvers
   return converted.length === 1 ? converted[0] : converted;
 };
 
+const sanitizeUnsafeIdTokens = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(sanitizeUnsafeIdTokens);
+  if (!isRecord(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key, item]) => {
+        const normalizedKey = key.toLowerCase();
+        return !(
+          (normalizedKey === 'id_token' || normalizedKey === 'idtoken') &&
+          isUnsafeIdToken(item)
+        );
+      })
+      .map(([key, item]) => [key, sanitizeUnsafeIdTokens(item)])
+  );
+};
+
+const normalizeCpaAuthRecord = (record: JsonRecord, label: string): JsonRecord => {
+  const normalized = sanitizeUnsafeIdTokens(record) as JsonRecord;
+  if (!hasCpaAuthFileShape(normalized)) {
+    throw new AuthJsonConversionError(`${label} is missing required auth fields`);
+  }
+  return normalized;
+};
+
+const convertCpaToCpaAuthJson = (value: unknown): AuthJsonConversionResult => {
+  const records = Array.isArray(value) ? value : [value];
+  if (records.length === 0) {
+    throw new AuthJsonConversionError('CPA auth JSON contains no accounts');
+  }
+  const converted = records.map((item, index) => {
+    if (!isRecord(item)) {
+      throw new AuthJsonConversionError(`CPA auth JSON account #${index + 1} must be an object`);
+    }
+    return normalizeCpaAuthRecord(
+      item,
+      records.length === 1 ? 'CPA auth JSON' : `CPA auth JSON account #${index + 1}`
+    );
+  });
+  return converted.length === 1 ? converted[0] : converted;
+};
+
+const getOpenAIClaims = (payload: JsonRecord | undefined): JsonRecord | undefined =>
+  firstRecord(payload?.['https://api.openai.com/auth'], payload?.auth);
+
+const getOpenAIProfileClaims = (payload: JsonRecord | undefined): JsonRecord | undefined =>
+  firstRecord(payload?.['https://api.openai.com/profile'], payload?.profile);
+
+const convertCockpitAccountToCpaAuthJson = (record: JsonRecord, now: Date, index: number) => {
+  const sanitizedRecord = sanitizeUnsafeIdTokens(record) as JsonRecord;
+  const accessToken = firstNonEmptyString(record.access_token, record.accessToken);
+  if (!accessToken) {
+    throw new AuthJsonConversionError(
+      `Cockpit account #${index + 1} is missing access_token`
+    );
+  }
+  const inputIdToken = firstNonEmptyString(record.id_token, record.idToken);
+  const accessPayload = parseJwtPayload(accessToken);
+  const idPayload = parseJwtPayload(inputIdToken);
+  const accessAuth = getOpenAIClaims(accessPayload);
+  const idAuth = getOpenAIClaims(idPayload);
+  const accessProfile = getOpenAIProfileClaims(accessPayload);
+  const idProfile = getOpenAIProfileClaims(idPayload);
+  const accountId = firstNonEmpty(
+    record.account_id,
+    record.chatgpt_account_id,
+    accessAuth?.chatgpt_account_id,
+    idAuth?.chatgpt_account_id
+  );
+  const email = firstNonEmpty(
+    record.email,
+    accessProfile?.email,
+    idProfile?.email,
+    accessPayload?.email,
+    idPayload?.email
+  );
+  const planType = firstNonEmpty(
+    record.plan_type,
+    record.chatgpt_plan_type,
+    accessAuth?.chatgpt_plan_type,
+    idAuth?.chatgpt_plan_type
+  );
+  const expiresAt = firstNonEmpty(
+    normalizeTimestamp(record.expired),
+    normalizeTimestamp(record.expires_at),
+    normalizeTimestamp(accessPayload?.exp)
+  );
+  const idToken = isUnsafeIdToken(inputIdToken) ? undefined : inputIdToken;
+
+  return stripUnavailable({
+    ...sanitizedRecord,
+    type: 'codex',
+    account_id: accountId,
+    chatgpt_account_id: accountId,
+    email,
+    name: firstNonEmpty(record.name, email, accountId, 'Cockpit Codex Account'),
+    plan_type: planType,
+    chatgpt_plan_type: planType,
+    id_token: idToken,
+    access_token: accessToken,
+    refresh_token: firstNonEmptyString(record.refresh_token, record.refreshToken),
+    session_token: firstNonEmptyString(record.session_token, record.sessionToken),
+    last_refresh: firstNonEmpty(normalizeTimestamp(record.last_refresh), normalizeTimestamp(now)),
+    expired: expiresAt,
+    note: firstNonEmpty(record.note, record.account_note),
+  }) as JsonRecord;
+};
+
+const convertCockpitToCpaAuthJson = (value: unknown, now: Date): AuthJsonConversionResult => {
+  const records = Array.isArray(value) ? value : [value];
+  if (records.length === 0) {
+    throw new AuthJsonConversionError('Cockpit JSON contains no accounts');
+  }
+  const converted = records.map((item, index) => {
+    if (!isRecord(item)) {
+      throw new AuthJsonConversionError(`Cockpit account #${index + 1} must be an object`);
+    }
+    return convertCockpitAccountToCpaAuthJson(item, now, index);
+  });
+  return converted.length === 1 ? converted[0] : converted;
+};
+
+const looksLikeSub2Api = (value: unknown) => {
+  const { accounts } = collectSub2ApiAccounts(value);
+  return accounts.some((account) => isRecord(account.credentials));
+};
+
+const detectAuthJsonInputType = (value: unknown): AuthJsonInputType => {
+  if (looksLikeSub2Api(value)) return 'sub2api';
+  const records = Array.isArray(value) ? value : [value];
+  if (
+    records.length > 0 &&
+    records.every(
+      (item) =>
+        isRecord(item) &&
+        Boolean(firstNonEmptyString(item.type, item.provider)) &&
+        hasCpaAuthFileShape(item)
+    )
+  ) {
+    return 'cpa';
+  }
+  if (
+    records.length > 0 &&
+    records.every(
+      (item) => isRecord(item) && Boolean(firstNonEmptyString(item.access_token, item.accessToken))
+    )
+  ) {
+    return 'cockpit';
+  }
+  return 'session';
+};
+
 export const convertAuthJsonInput = (
   text: string,
-  type: AuthJsonInputType,
+  type: AuthJsonDetectionType,
   now = new Date()
 ): AuthJsonConversionResult => {
-  const parsed = parseJsonObject(text, type === 'session' || type === 'sub2api');
+  const parsed = parseJsonObject(text, true);
   if (hasForbiddenInvisibleCharacter(parsed)) {
     throw new AuthJsonConversionError('Auth JSON contains unsupported invisible characters');
   }
-  if (type === 'cpa') {
-    if (hasUnsafeCpaIdToken(parsed)) {
-      throw new AuthJsonConversionError('CPA auth JSON contains unsupported id_token');
-    }
-    if (!isRecord(parsed) || !hasCpaAuthFileShape(parsed)) {
-      throw new AuthJsonConversionError('CPA auth JSON is missing required auth fields');
-    }
-    return parsed;
-  }
+  const resolvedType = type === 'auto' ? detectAuthJsonInputType(parsed) : type;
+  if (resolvedType === 'cpa') return convertCpaToCpaAuthJson(parsed);
 
-  if (type === 'sub2api') {
+  if (resolvedType === 'sub2api') {
     return convertSub2ApiToCpaAuthJson(parsed, now);
   }
+
+  if (resolvedType === 'cockpit') return convertCockpitToCpaAuthJson(parsed, now);
 
   const sessions = collectSessionLikeObjects(parsed);
   if (sessions.length === 0) {

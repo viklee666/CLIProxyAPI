@@ -21,6 +21,7 @@ export type ClientGroup = {
 export type ClientKey = {
   id: number;
   name: string;
+  secret?: string;
   key_prefix: string;
   key_mask: string;
   enabled: boolean;

@@ -142,6 +142,13 @@ func TestClientAccessManagementCRUDAndBindings(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("list keys status = %d, body=%s", recorder.Code, recorder.Body.String())
 	}
+	var keys clientaccess.Page[clientaccess.Key]
+	if errDecode := json.Unmarshal(recorder.Body.Bytes(), &keys); errDecode != nil {
+		t.Fatalf("decode keys: %v", errDecode)
+	}
+	if len(keys.Items) != 1 || keys.Items[0].Secret != key.Secret {
+		t.Fatalf("listed keys = %+v", keys)
+	}
 
 	ctx, recorder = clientAccessContext(http.MethodDelete, "/v0/management/client-access/keys/1", nil, gin.Param{Key: "id", Value: "1"})
 	handler.DeleteClientAccessKey(ctx)

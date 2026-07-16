@@ -634,7 +634,7 @@ describe('convertAuthJsonInput', () => {
     const oversized = JSON.stringify({
       type: 'codex',
       access_token: 'existing-access-token',
-      padding: 'x'.repeat(3_000_000),
+      padding: 'x'.repeat(10 * 1024 * 1024 + 1),
     });
 
     expect(() => convertAuthJsonInput(oversized, 'cpa')).toThrow(
@@ -914,7 +914,7 @@ describe('convertAuthJsonInput', () => {
     });
   });
 
-  it('rejects CPA auth JSON with unsigned or empty-signature id_token values', () => {
+  it('removes unsigned or empty-signature id_token values from CPA auth JSON', () => {
     const invalidInputs = [
       {
         type: 'codex',
@@ -931,10 +931,50 @@ describe('convertAuthJsonInput', () => {
     ];
 
     invalidInputs.forEach((input) => {
-      expect(() => convertAuthJsonInput(JSON.stringify(input), 'cpa')).toThrow(
-        'CPA auth JSON contains unsupported id_token'
-      );
+      const result = convertAuthJsonInput(JSON.stringify(input), 'cpa');
+      expect(result).not.toHaveProperty('id_token');
+      expect(result).not.toHaveProperty('credentials.idToken');
     });
+  });
+
+  it('converts Cockpit Codex JSON to canonical CPA fields', () => {
+    const result = convertAuthJsonInput(
+      JSON.stringify({
+        type: 'codex',
+        access_token: 'cockpit-access-token',
+        refresh_token: 'cockpit-refresh-token',
+        account_id: 'cockpit-account',
+        email: 'cockpit@example.com',
+        account_note: 'imported from cockpit',
+      }),
+      'cockpit',
+      new Date('2026-07-17T00:00:00.000Z')
+    );
+
+    expect(result).toMatchObject({
+      type: 'codex',
+      access_token: 'cockpit-access-token',
+      refresh_token: 'cockpit-refresh-token',
+      account_id: 'cockpit-account',
+      chatgpt_account_id: 'cockpit-account',
+      email: 'cockpit@example.com',
+      note: 'imported from cockpit',
+    });
+  });
+
+  it('accepts a CPA account array for later per-account upload splitting', () => {
+    const result = convertAuthJsonInput(
+      JSON.stringify([
+        { type: 'codex', access_token: 'token-one', email: 'one@example.com' },
+        { type: 'codex', access_token: 'token-two', email: 'two@example.com' },
+      ]),
+      'cpa'
+    );
+
+    expect(result).toEqual([
+      { type: 'codex', access_token: 'token-one', email: 'one@example.com' },
+      { type: 'codex', access_token: 'token-two', email: 'two@example.com' },
+    ]);
   });
 
   it('converts explicit session fields when JWT-shaped payloads are malformed', () => {

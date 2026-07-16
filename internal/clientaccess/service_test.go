@@ -28,6 +28,55 @@ func newTestService(t *testing.T) *Service {
 	return service
 }
 
+func TestServiceMigratesLegacyKeySecretColumn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "client-access.sqlite")
+	service, errNew := New(path)
+	if errNew != nil {
+		t.Fatalf("New() error = %v", errNew)
+	}
+	legacy, errCreateLegacy := service.CreateKey(context.Background(), KeyCreate{
+		Name:         "legacy",
+		CustomSecret: "sk-cpa-legacy-secret",
+	})
+	if errCreateLegacy != nil {
+		t.Fatalf("CreateKey(legacy) error = %v", errCreateLegacy)
+	}
+	if _, errDrop := service.store.db.Exec(`ALTER TABLE client_access_keys DROP COLUMN key_secret`); errDrop != nil {
+		t.Fatalf("drop key_secret column: %v", errDrop)
+	}
+	if errClose := service.Close(); errClose != nil {
+		t.Fatalf("Close() error = %v", errClose)
+	}
+
+	reopened, errReopen := New(path)
+	if errReopen != nil {
+		t.Fatalf("New(legacy database) error = %v", errReopen)
+	}
+	defer func() { _ = reopened.Close() }()
+	legacyAfterMigration, errGetLegacy := reopened.GetKey(context.Background(), legacy.ID)
+	if errGetLegacy != nil {
+		t.Fatalf("GetKey(legacy) error = %v", errGetLegacy)
+	}
+	if legacyAfterMigration.Secret != "" {
+		t.Fatalf("legacy secret should be unavailable after migration, got %q", legacyAfterMigration.Secret)
+	}
+	legacyAuth, legacyAuthErr := authenticateSecret(reopened, "sk-cpa-legacy-secret")
+	if legacyAuthErr != nil {
+		t.Fatalf("Authenticate(legacy) error = %v", legacyAuthErr)
+	}
+	legacyAuth.Release()
+	created, errCreate := reopened.CreateKey(context.Background(), KeyCreate{
+		Name:         "migrated",
+		CustomSecret: "sk-cpa-migrated-secret",
+	})
+	if errCreate != nil {
+		t.Fatalf("CreateKey() error = %v", errCreate)
+	}
+	if created.Secret != "sk-cpa-migrated-secret" {
+		t.Fatalf("CreateKey() secret = %q", created.Secret)
+	}
+}
+
 func TestServicePersistentRequestQuotaAndWindowReset(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "client-access.sqlite")
 	service, errNew := New(path)
@@ -322,6 +371,9 @@ func TestServiceGroupAndKeyCRUD(t *testing.T) {
 	}
 	if page.Total != 1 || len(page.Items) != 1 {
 		t.Fatalf("ListKeys() = %+v", page)
+	}
+	if page.Items[0].Secret != created.Secret {
+		t.Fatalf("ListKeys() secret = %q, want %q", page.Items[0].Secret, created.Secret)
 	}
 
 	disabled := false

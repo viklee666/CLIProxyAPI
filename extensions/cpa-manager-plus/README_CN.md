@@ -207,7 +207,7 @@ docker compose -f docker-compose.manager.yml up --build
 
 ## 发布
 
-- `npm run build` 生成单文件 `apps/web/dist/index.html`。
+- `npm run build` 在 `apps/web/dist/` 生成可缓存的多文件面板；如需单文件 `index.html`，可使用 `npm run build:bundle`。
 - `bin/release/package-native.sh` 将构建后的面板内置到原生包。
 - 推送 `vX.Y.Z` 这类 tag 会触发 `.github/workflows/release.yml`。
 - 发布产物包含 `management.html`、原生运行包，以及 `linux/amd64` 和 `linux/arm64` Docker 镜像。

@@ -251,6 +251,19 @@
   font-family: monospace;
 }
 
+.keyValue {
+  display: flex;
+  min-width: 240px;
+  align-items: center;
+  gap: 8px;
+
+  code {
+    overflow-wrap: anywhere;
+    color: var(--text-primary);
+    font-family: monospace;
+  }
+}
+
 .sectionTitle {
   margin: 4px 0 0;
   color: var(--text-primary);

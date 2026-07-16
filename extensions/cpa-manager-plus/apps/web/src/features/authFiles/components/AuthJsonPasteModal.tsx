@@ -4,7 +4,7 @@ import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Select } from '@/components/ui/Select';
-import type { AuthJsonInputType } from '@/features/authFiles/sessionAuthConverter';
+import type { AuthJsonInputType } from '@/features/authFiles/authJsonTypes';
 import styles from './AuthJsonPasteModal.module.scss';
 
 type AuthJsonPasteModalProps = {
@@ -98,6 +98,7 @@ export function AuthJsonPasteModal({
       { value: 'cpa', label: t('auth_files.paste_type_cpa') },
       { value: 'session', label: t('auth_files.paste_type_session') },
       { value: 'sub2api', label: t('auth_files.paste_type_sub2api') },
+      { value: 'cockpit', label: t('auth_files.paste_type_cockpit') },
     ],
     [t]
   );
@@ -107,12 +108,16 @@ export function AuthJsonPasteModal({
       ? 'auth_files.paste_session_placeholder'
       : type === 'sub2api'
         ? 'auth_files.paste_sub2api_placeholder'
+        : type === 'cockpit'
+          ? 'auth_files.paste_cockpit_placeholder'
         : 'auth_files.paste_cpa_placeholder';
   const pasteHintKey =
     type === 'session'
       ? 'auth_files.paste_session_hint'
       : type === 'sub2api'
         ? 'auth_files.paste_sub2api_hint'
+        : type === 'cockpit'
+          ? 'auth_files.paste_cockpit_hint'
         : 'auth_files.paste_cpa_hint';
 
   const handleSave = async () => {

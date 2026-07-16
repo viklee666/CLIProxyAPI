@@ -13,7 +13,7 @@ const { mocks } = vi.hoisted(() => {
     mocks: {
       connectionStatus: 'connected' as 'connected' | 'disconnected',
       list: vi.fn(),
-      saveJsonObject: vi.fn(),
+      uploadJsonTexts: vi.fn(),
       deleteFiles: vi.fn(),
       deleteAll: vi.fn(),
       showNotification: vi.fn(),
@@ -105,7 +105,7 @@ vi.mock('@/utils/clipboard', () => ({
 vi.mock('@/services/api', () => ({
   authFilesApi: {
     list: mocks.list,
-    saveJsonObject: mocks.saveJsonObject,
+    uploadJsonTexts: mocks.uploadJsonTexts,
     deleteFiles: mocks.deleteFiles,
     deleteAll: mocks.deleteAll,
   },
@@ -281,7 +281,7 @@ const findButtonByText = (renderer: ReactTestRenderer, text: string) => {
 describe('AuthFilesPage real auth JSON paste flow', () => {
   beforeEach(() => {
     mocks.list.mockReset();
-    mocks.saveJsonObject.mockReset();
+    mocks.uploadJsonTexts.mockReset();
     mocks.deleteFiles.mockReset();
     mocks.deleteAll.mockReset();
     mocks.showNotification.mockReset();
@@ -301,7 +301,12 @@ describe('AuthFilesPage real auth JSON paste flow', () => {
     mocks.lastCodexInspectionLastRun = null;
 
     mocks.list.mockResolvedValue({ files: [] });
-    mocks.saveJsonObject.mockResolvedValue(undefined);
+    mocks.uploadJsonTexts.mockImplementation(async (files: Array<{ name: string }>) => ({
+      status: 'ok',
+      uploaded: files.length,
+      files: files.map((file) => file.name),
+      failed: [],
+    }));
     mocks.deleteFiles.mockResolvedValue({ deleted: 0, failed: [], files: [] });
     mocks.deleteAll.mockResolvedValue(undefined);
     mocks.loadExcluded.mockResolvedValue(undefined);
@@ -820,15 +825,15 @@ describe('AuthFilesPage real auth JSON paste flow', () => {
     });
 
     await vi.waitFor(() => {
-      expect(mocks.saveJsonObject).toHaveBeenCalledWith(
-        'codex-session-session.user+tag@example.com.json',
-        expect.objectContaining({
-          type: 'codex',
-          email: 'Session.User+tag@example.com',
-          account_id: 'session-account',
-          access_token: 'plain-access-token',
-        })
-      );
+      const uploads = mocks.uploadJsonTexts.mock.calls[0]?.[0];
+      expect(uploads).toHaveLength(1);
+      expect(uploads[0].name).toBe('codex-session-session.user+tag@example.com.json');
+      expect(JSON.parse(uploads[0].text)).toMatchObject({
+        type: 'codex',
+        email: 'Session.User+tag@example.com',
+        account_id: 'session-account',
+        access_token: 'plain-access-token',
+      });
     });
     await vi.waitFor(() => {
       expect(mocks.showNotification).toHaveBeenCalledWith(
@@ -843,7 +848,7 @@ describe('AuthFilesPage real auth JSON paste flow', () => {
     });
   });
 
-  it('submits sub2api paste through modal and uploads converted codex array', async () => {
+  it('submits sub2api paste through modal and uploads separate CPA files', async () => {
     const sub2apiInput = JSON.stringify({
       exported_at: '2026-06-01T12:00:00.000Z',
       proxies: [],
@@ -896,7 +901,9 @@ describe('AuthFilesPage real auth JSON paste flow', () => {
     });
 
     await vi.waitFor(() => {
-      expect(mocks.saveJsonObject).toHaveBeenCalledWith('sub2api-codex-accounts.codex.json', [
+      const uploads = mocks.uploadJsonTexts.mock.calls[0]?.[0];
+      expect(uploads).toHaveLength(2);
+      expect(uploads.map((item: { text: string }) => JSON.parse(item.text))).toEqual([
         expect.objectContaining({
           type: 'codex',
           email: 'first@example.com',
@@ -942,7 +949,7 @@ describe('AuthFilesPage real auth JSON paste flow', () => {
       await findButtonByText(renderer!, 'auth_files.paste_save_button').props.onClick?.();
     });
 
-    expect(mocks.saveJsonObject).not.toHaveBeenCalled();
+    expect(mocks.uploadJsonTexts).not.toHaveBeenCalled();
     expect(JSON.stringify(renderer!.toJSON())).toContain(
       'CPA auth JSON is missing required auth fields'
     );
@@ -982,7 +989,7 @@ describe('AuthFilesPage real auth JSON paste flow', () => {
       await findButtonByText(renderer!, 'auth_files.paste_save_button').props.onClick?.();
     });
 
-    expect(mocks.saveJsonObject).not.toHaveBeenCalled();
+    expect(mocks.uploadJsonTexts).not.toHaveBeenCalled();
     expect(renderer!.root.findAllByProps({ id: 'auth-json-paste-content' })).toHaveLength(1);
 
     await act(async () => {

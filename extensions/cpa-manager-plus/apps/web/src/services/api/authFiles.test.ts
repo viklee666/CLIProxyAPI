@@ -315,6 +315,26 @@ describe('authFilesApi save auth file upload contracts', () => {
     expect(uploadedFiles.map((file) => file.name)).toEqual(['first-auth.json', 'second-auth.json']);
   });
 
+  it('uploadJsonTexts creates named JSON blobs for converted CPA records', async () => {
+    mocks.postForm.mockResolvedValueOnce({
+      status: 'ok',
+      uploaded: 2,
+      files: ['first-cpa.json', 'second-cpa.json'],
+      failed: [],
+    });
+
+    const result = await authFilesApi.uploadJsonTexts([
+      { name: 'first-cpa.json', text: '{"type":"codex","access_token":"first"}' },
+      { name: 'second-cpa.json', text: '{"type":"codex","access_token":"second"}' },
+    ]);
+
+    expect(result.uploaded).toBe(2);
+    const formData = mocks.postForm.mock.calls[0]?.[1] as FormData;
+    const uploadedFiles = formData.getAll('files') as File[];
+    expect(uploadedFiles.map((file) => file.name)).toEqual(['first-cpa.json', 'second-cpa.json']);
+    await expect(uploadedFiles[0].text()).resolves.toContain('"access_token":"first"');
+  });
+
   it('uploadFiles preserves partial failures returned by the batch endpoint', async () => {
     // Arrange
     mocks.postForm.mockResolvedValueOnce({

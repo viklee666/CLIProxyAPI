@@ -4,13 +4,13 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 version="${VERSION:-dev}"
 out_dir="${OUT_DIR:-"${repo_root}/dist/native"}"
-web_html="${WEB_HTML:-"${repo_root}/apps/web/dist/index.html"}"
+web_dist="${WEB_DIST:-"${repo_root}/apps/web/dist"}"
 binary_name="cpa-manager-plus"
 server_src="${repo_root}/apps/manager-server"
 native_script_src="${repo_root}/bin/native"
 
-if [ ! -f "${web_html}" ]; then
-  echo "missing ${web_html}; run npm run build first" >&2
+if [ ! -f "${web_dist}/index.html" ]; then
+  echo "missing ${web_dist}/index.html; run npm run build first" >&2
   exit 1
 fi
 
@@ -22,7 +22,10 @@ rm -rf "${out_dir}"
 mkdir -p "${out_dir}"
 
 cp -R "${server_src}" "${work_dir}/manager-server"
-cp "${web_html}" "${work_dir}/manager-server/internal/httpapi/web/management.html"
+rm -rf "${work_dir}/manager-server/internal/httpapi/web"
+mkdir -p "${work_dir}/manager-server/internal/httpapi/web"
+cp -R "${web_dist}/." "${work_dir}/manager-server/internal/httpapi/web/"
+mv "${work_dir}/manager-server/internal/httpapi/web/index.html" "${work_dir}/manager-server/internal/httpapi/web/management.html"
 
 targets=(
   "linux amd64"
