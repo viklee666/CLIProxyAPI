@@ -298,3 +298,25 @@ func (h *Handler) ReplaceClientAccessCredentialBindings(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"updated": len(input.AuthIndices)})
 }
+
+func (h *Handler) ReplaceClientAccessGroupCredentialBindings(c *gin.Context) {
+	service := requireClientAccess(c, h)
+	if service == nil {
+		return
+	}
+	groupID, ok := clientAccessID(c)
+	if !ok {
+		return
+	}
+	var input clientaccess.GroupCredentialBindingBatch
+	if errBind := c.ShouldBindJSON(&input); errBind != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	stats, errReplace := service.ReplaceGroupCredentialBindings(c.Request.Context(), groupID, input)
+	if errReplace != nil {
+		writeClientAccessError(c, errReplace)
+		return
+	}
+	c.JSON(http.StatusOK, stats)
+}

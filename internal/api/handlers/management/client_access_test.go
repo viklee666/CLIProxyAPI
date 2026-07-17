@@ -112,6 +112,24 @@ func TestClientAccessManagementCRUDAndBindings(t *testing.T) {
 	if bindings.Total != 1 || len(bindings.Items) != 1 || bindings.Items[0].AuthIndex != "auth-b" {
 		t.Fatalf("bindings = %+v", bindings)
 	}
+	ctx, recorder = clientAccessContext(http.MethodPut, "/v0/management/client-access/groups/1/credential-bindings", map[string]any{
+		"auth_indices": []string{"auth-a"}, "priority": 25,
+	}, gin.Param{Key: "id", Value: strconv.FormatInt(group.ID, 10)})
+	handler.ReplaceClientAccessGroupCredentialBindings(ctx)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("replace group bindings status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	ctx, recorder = clientAccessContext(http.MethodGet, "/v0/management/client-access/credential-bindings?page=1&page_size=10&auth_indices=auth-b", nil)
+	handler.ListClientAccessCredentialBindings(ctx)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("list removed group binding status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	if errDecode := json.Unmarshal(recorder.Body.Bytes(), &bindings); errDecode != nil {
+		t.Fatalf("decode removed bindings: %v", errDecode)
+	}
+	if bindings.Total != 0 {
+		t.Fatalf("removed group bindings = %+v", bindings)
+	}
 	ctx, recorder = clientAccessContext(http.MethodPut, "/v0/management/client-access/credential-bindings", map[string]any{
 		"auth_indices": []string{"auth-c"},
 		"groups":       []map[string]any{{"group_id": secondGroup.ID, "priority": 10}},

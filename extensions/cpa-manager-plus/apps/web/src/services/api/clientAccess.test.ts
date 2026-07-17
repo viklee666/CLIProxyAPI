@@ -73,4 +73,15 @@ describe('clientAccessApi pagination helpers', () => {
       dry_run: false,
     });
   });
+
+  it('replaces only the selected group credential membership', async () => {
+    mocks.put.mockResolvedValue({ matched: 2, updated: 2, unchanged: 0 });
+
+    await clientAccessApi.replaceGroupCredentialBindings(7, ['auth-1', 'auth-2'], 15);
+
+    expect(mocks.put).toHaveBeenCalledWith('/client-access/groups/7/credential-bindings', {
+      auth_indices: ['auth-1', 'auth-2'],
+      priority: 15,
+    });
+  });
 });

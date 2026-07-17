@@ -229,6 +229,14 @@ export const clientAccessApi = {
       auth_indices: authIndices,
       groups,
     }),
+  replaceGroupCredentialBindings: (groupID: number, authIndices: string[], priority: number) =>
+    apiClient.put<CredentialBindingBulkResult>(
+      `/client-access/groups/${groupID}/credential-bindings`,
+      {
+        auth_indices: authIndices,
+        priority,
+      }
+    ),
   bulkReplaceCredentialBindings: (
     selection: CredentialBindingSelection,
     groups: Array<{ group_id: number; priority: number }>,

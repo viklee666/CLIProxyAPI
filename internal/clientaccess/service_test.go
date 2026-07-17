@@ -545,3 +545,57 @@ func TestServiceCredentialBindingsReplaceClearDisableAndCascade(t *testing.T) {
 		t.Fatalf("full cascade bindings total = %d", page.Total)
 	}
 }
+
+func TestServiceReplaceGroupCredentialBindingsPreservesOtherGroups(t *testing.T) {
+	service := newTestService(t)
+	ctx := context.Background()
+	first, errFirst := service.CreateGroup(ctx, GroupCreate{Name: "first"})
+	if errFirst != nil {
+		t.Fatalf("CreateGroup(first) error = %v", errFirst)
+	}
+	second, errSecond := service.CreateGroup(ctx, GroupCreate{Name: "second"})
+	if errSecond != nil {
+		t.Fatalf("CreateGroup(second) error = %v", errSecond)
+	}
+	if errReplace := service.ReplaceCredentialBindings(ctx, CredentialBindingBatch{
+		AuthIndices: []string{"shared", "first-only"},
+		Groups:      []CredentialGroupInput{{GroupID: first.ID, Priority: 10}},
+	}); errReplace != nil {
+		t.Fatalf("ReplaceCredentialBindings(first) error = %v", errReplace)
+	}
+	if errReplace := service.ReplaceCredentialBindings(ctx, CredentialBindingBatch{
+		AuthIndices: []string{"shared", "second-only"},
+		Groups:      []CredentialGroupInput{{GroupID: second.ID, Priority: 20}},
+	}); errReplace != nil {
+		t.Fatalf("ReplaceCredentialBindings(second) error = %v", errReplace)
+	}
+
+	if _, errReplace := service.ReplaceGroupCredentialBindings(ctx, first.ID, GroupCredentialBindingBatch{
+		AuthIndices: []string{"first-next", "shared"},
+		Priority:    30,
+	}); errReplace != nil {
+		t.Fatalf("ReplaceGroupCredentialBindings() error = %v", errReplace)
+	}
+	page, errList := service.ListCredentialBindings(ctx, ListOptions{Page: 1, PageSize: 20, AuthIndices: []string{"shared", "second-only"}})
+	if errList != nil {
+		t.Fatalf("ListCredentialBindings() error = %v", errList)
+	}
+	if page.Total != 3 {
+		t.Fatalf("bindings total = %d, want 3", page.Total)
+	}
+	allowed, priority, overridden := service.ResolveCredentialAccess("shared", []int64{first.ID, second.ID}, false, false)
+	if !allowed || !overridden || priority != 30 {
+		t.Fatalf("ResolveCredentialAccess(shared) = (%v, %d, %v)", allowed, priority, overridden)
+	}
+	if _, errClear := service.ReplaceGroupCredentialBindings(ctx, first.ID, GroupCredentialBindingBatch{}); errClear != nil {
+		t.Fatalf("ReplaceGroupCredentialBindings(clear) error = %v", errClear)
+	}
+	allowed, priority, overridden = service.ResolveCredentialAccess("shared", []int64{first.ID}, false, false)
+	if allowed || overridden || priority != 0 {
+		t.Fatalf("ResolveCredentialAccess(cleared first group) = (%v, %d, %v)", allowed, priority, overridden)
+	}
+	allowed, priority, overridden = service.ResolveCredentialAccess("shared", []int64{second.ID}, false, false)
+	if !allowed || !overridden || priority != 20 {
+		t.Fatalf("ResolveCredentialAccess(preserved second group) = (%v, %d, %v)", allowed, priority, overridden)
+	}
+}

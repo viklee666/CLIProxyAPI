@@ -472,6 +472,20 @@ func (s *Service) ReplaceCredentialBindingsWithStats(ctx context.Context, input 
 	return stats, nil
 }
 
+func (s *Service) ReplaceGroupCredentialBindings(ctx context.Context, groupID int64, input GroupCredentialBindingBatch) (CredentialBindingChangeStats, error) {
+	stats, errReplace := s.store.ReplaceGroupCredentialBindings(ctx, groupID, input.AuthIndices, input.Priority)
+	if errReplace != nil {
+		return CredentialBindingChangeStats{}, errReplace
+	}
+	if stats.Updated == 0 {
+		return stats, nil
+	}
+	if errReload := s.reload(ctx); errReload != nil {
+		return CredentialBindingChangeStats{}, errReload
+	}
+	return stats, nil
+}
+
 // ResolveCredentialAccess applies client group isolation and returns a request-specific priority.
 func (s *Service) ResolveCredentialAccess(authIndex string, allowedGroupIDs []int64, allowAllGroups, allowUngrouped bool) (bool, int, bool) {
 	if s == nil || allowAllGroups {

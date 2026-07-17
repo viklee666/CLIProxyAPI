@@ -858,6 +858,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/client-access/groups/:id", s.mgmt.GetClientAccessGroup)
 		mgmt.PATCH("/client-access/groups/:id", s.mgmt.UpdateClientAccessGroup)
 		mgmt.DELETE("/client-access/groups/:id", s.mgmt.DeleteClientAccessGroup)
+		mgmt.PUT("/client-access/groups/:id/credential-bindings", s.mgmt.ReplaceClientAccessGroupCredentialBindings)
 		mgmt.GET("/client-access/keys", s.mgmt.ListClientAccessKeys)
 		mgmt.POST("/client-access/keys", s.mgmt.CreateClientAccessKey)
 		mgmt.GET("/client-access/keys/:id", s.mgmt.GetClientAccessKey)

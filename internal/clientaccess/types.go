@@ -90,6 +90,13 @@ type CredentialBindingBatch struct {
 	Groups      []CredentialGroupInput `json:"groups"`
 }
 
+// GroupCredentialBindingBatch replaces the credential membership of one client group.
+// It intentionally leaves memberships in other groups unchanged.
+type GroupCredentialBindingBatch struct {
+	AuthIndices []string `json:"auth_indices"`
+	Priority    int      `json:"priority"`
+}
+
 type CredentialBindingChangeStats struct {
 	Matched   int `json:"matched"`
 	Updated   int `json:"updated"`

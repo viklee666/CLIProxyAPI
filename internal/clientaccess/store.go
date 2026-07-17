@@ -892,6 +892,109 @@ func (s *Store) ReplaceCredentialBindings(ctx context.Context, authIndices []str
 	return errReplace
 }
 
+// ReplaceGroupCredentialBindings replaces only the membership rows of groupID.
+// Credentials may remain assigned to any other client groups.
+func (s *Store) ReplaceGroupCredentialBindings(ctx context.Context, groupID int64, authIndices []string, priority int) (CredentialBindingChangeStats, error) {
+	if groupID <= 0 {
+		return CredentialBindingChangeStats{}, errors.New("group id is required")
+	}
+	authIndices = normalizeAuthIndices(authIndices)
+	stats := CredentialBindingChangeStats{Matched: len(authIndices)}
+
+	tx, errBegin := s.db.BeginTx(ctx, nil)
+	if errBegin != nil {
+		return CredentialBindingChangeStats{}, errBegin
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var groupCount int
+	if errCount := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM client_access_groups WHERE id = ?`, groupID).Scan(&groupCount); errCount != nil {
+		return CredentialBindingChangeStats{}, errCount
+	}
+	if groupCount != 1 {
+		return CredentialBindingChangeStats{}, sql.ErrNoRows
+	}
+
+	existing := make(map[string]int)
+	rows, errQuery := tx.QueryContext(ctx, `SELECT auth_index, priority FROM client_access_credential_groups WHERE group_id = ?`, groupID)
+	if errQuery != nil {
+		return CredentialBindingChangeStats{}, errQuery
+	}
+	for rows.Next() {
+		var authIndex string
+		var existingPriority int
+		if errScan := rows.Scan(&authIndex, &existingPriority); errScan != nil {
+			_ = rows.Close()
+			return CredentialBindingChangeStats{}, errScan
+		}
+		existing[authIndex] = existingPriority
+	}
+	if errRows := rows.Err(); errRows != nil {
+		_ = rows.Close()
+		return CredentialBindingChangeStats{}, errRows
+	}
+	if errClose := rows.Close(); errClose != nil {
+		return CredentialBindingChangeStats{}, errClose
+	}
+
+	unchanged := len(existing) == len(authIndices)
+	if unchanged {
+		for _, authIndex := range authIndices {
+			if existing[authIndex] != priority {
+				unchanged = false
+				break
+			}
+		}
+	}
+	if unchanged {
+		stats.Unchanged = len(authIndices)
+		if errCommit := tx.Commit(); errCommit != nil {
+			return CredentialBindingChangeStats{}, errCommit
+		}
+		return stats, nil
+	}
+	changedAuthIndices := make(map[string]struct{}, len(existing)+len(authIndices))
+	for authIndex := range existing {
+		changedAuthIndices[authIndex] = struct{}{}
+	}
+	for _, authIndex := range authIndices {
+		changedAuthIndices[authIndex] = struct{}{}
+	}
+
+	if _, errDelete := tx.ExecContext(ctx, `DELETE FROM client_access_credential_groups WHERE group_id = ?`, groupID); errDelete != nil {
+		return CredentialBindingChangeStats{}, errDelete
+	}
+	nowMS := time.Now().UTC().UnixMilli()
+	values := make([]string, 0, sqliteInsertRowsPerBatch)
+	args := make([]any, 0, sqliteInsertRowsPerBatch*4)
+	flushInsert := func() error {
+		if len(values) == 0 {
+			return nil
+		}
+		_, errInsert := tx.ExecContext(ctx, `INSERT INTO client_access_credential_groups(auth_index, group_id, priority, created_at_ms) VALUES `+strings.Join(values, ","), args...)
+		values = values[:0]
+		args = args[:0]
+		return errInsert
+	}
+	for _, authIndex := range authIndices {
+		values = append(values, "(?, ?, ?, ?)")
+		args = append(args, authIndex, groupID, priority, nowMS)
+		if len(values) >= sqliteInsertRowsPerBatch {
+			if errInsert := flushInsert(); errInsert != nil {
+				return CredentialBindingChangeStats{}, errInsert
+			}
+		}
+	}
+	if errInsert := flushInsert(); errInsert != nil {
+		return CredentialBindingChangeStats{}, errInsert
+	}
+	if errCommit := tx.Commit(); errCommit != nil {
+		return CredentialBindingChangeStats{}, errCommit
+	}
+	stats.Updated = len(changedAuthIndices)
+	return stats, nil
+}
+
 func (s *Store) ReplaceCredentialBindingsWithStats(ctx context.Context, authIndices []string, groups []CredentialGroupInput) (CredentialBindingChangeStats, error) {
 	authIndices = normalizeAuthIndices(authIndices)
 	groups = normalizeCredentialGroups(groups)
