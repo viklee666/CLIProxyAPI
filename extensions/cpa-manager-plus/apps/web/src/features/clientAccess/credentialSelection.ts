@@ -19,6 +19,9 @@ const normalizedValues = (values: string[]) =>
 const normalizedExactValues = (values: string[]) =>
   Array.from(new Set(values.map((value) => value.trim()).filter(Boolean))).sort();
 
+export const mergeCredentialAuthIndices = (...groups: string[][]) =>
+  normalizedExactValues(groups.flat());
+
 export const isQueryCredentialSelectionActive = (state: CredentialQuerySelectionState) =>
   state.all ||
   state.selectCurrentPlan ||

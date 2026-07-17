@@ -17,6 +17,7 @@ import { resolveCodexPlanType } from '@/utils/quota';
 import {
   buildCredentialBindingSelection,
   isQueryCredentialSelectionActive,
+  mergeCredentialAuthIndices,
 } from './credentialSelection';
 import styles from './ClientAccessPage.module.scss';
 import {
@@ -54,7 +55,6 @@ export function GroupResourceAssignmentsModal({
   const [selectedAuthIndices, setSelectedAuthIndices] = useState<string[]>([]);
   const [selectedGroupIDs, setSelectedGroupIDs] = useState<number[]>([]);
   const [selectedProviderKeys, setSelectedProviderKeys] = useState<string[]>([]);
-  const [stagedProviderKeys, setStagedProviderKeys] = useState<string[]>([]);
   const [bindingPriority, setBindingPriority] = useState('0');
   const [resourceSearch, setResourceSearch] = useState('');
   const [groupFilter, setGroupFilter] = useState('all');
@@ -63,11 +63,6 @@ export function GroupResourceAssignmentsModal({
   const [selectAllCredentials, setSelectAllCredentials] = useState(false);
   const [selectCurrentPlan, setSelectCurrentPlan] = useState(false);
   const [excludedAuthIndices, setExcludedAuthIndices] = useState<string[]>([]);
-  const [selectionPreview, setSelectionPreview] = useState<{
-    matched: number;
-    excluded: number;
-  } | null>(null);
-  const [selectionPreviewLoading, setSelectionPreviewLoading] = useState(false);
   const [resourcePage, setResourcePage] = useState(1);
   const [resourceTotal, setResourceTotal] = useState(0);
   const [resourceLoading, setResourceLoading] = useState(false);
@@ -101,7 +96,6 @@ export function GroupResourceAssignmentsModal({
     setSelectedAuthIndices([]);
     setSelectedGroupIDs([]);
     setSelectedProviderKeys([]);
-    setStagedProviderKeys([]);
     setBindingPriority('0');
     setResourceSearch('');
     setGroupFilter('all');
@@ -110,7 +104,6 @@ export function GroupResourceAssignmentsModal({
     setSelectAllCredentials(false);
     setSelectCurrentPlan(false);
     setExcludedAuthIndices([]);
-    setSelectionPreview(null);
     setResourcePage(1);
 
     void Promise.all([
@@ -253,13 +246,14 @@ export function GroupResourceAssignmentsModal({
     }
     return Array.from(values).sort();
   }, [authFiles, planFacets]);
+  const serverSelectionActive = selectAllCredentials || selectCurrentPlan;
   const querySelectionState = useMemo(
     () => ({
       all: selectAllCredentials,
       selectCurrentPlan,
       planFilter,
       providers: [],
-      includedAuthIndices: selectedProviderAuthIndices,
+      includedAuthIndices: serverSelectionActive ? selectedProviderAuthIndices : [],
       excludedAuthIndices,
     }),
     [
@@ -267,6 +261,7 @@ export function GroupResourceAssignmentsModal({
       planFilter,
       selectAllCredentials,
       selectCurrentPlan,
+      serverSelectionActive,
       selectedProviderAuthIndices,
     ]
   );
@@ -275,6 +270,14 @@ export function GroupResourceAssignmentsModal({
     [querySelectionState]
   );
   const querySelectionActive = isQueryCredentialSelectionActive(querySelectionState);
+  const effectiveAuthIndices = useMemo(
+    () => mergeCredentialAuthIndices(selectedAuthIndices, selectedProviderAuthIndices),
+    [selectedAuthIndices, selectedProviderAuthIndices]
+  );
+  const effectiveAuthIndexSet = useMemo(
+    () => new Set(effectiveAuthIndices),
+    [effectiveAuthIndices]
+  );
   const isQueryCandidate = (authIndex: string) =>
     selectAllCredentials ||
     selectedProviderAuthIndices.length === 0 ||
@@ -282,7 +285,7 @@ export function GroupResourceAssignmentsModal({
   const isAuthIndexSelected = (authIndex: string) =>
     querySelectionActive
       ? isQueryCandidate(authIndex) && !excludedAuthIndexSet.has(authIndex)
-      : selectedAuthIndexSet.has(authIndex);
+      : effectiveAuthIndexSet.has(authIndex);
 
   const toggleAuthIndex = (authIndex: string) => {
     if (querySelectionActive) {
@@ -302,7 +305,9 @@ export function GroupResourceAssignmentsModal({
   };
 
   const toggleVisibleAuthIndices = () => {
-    const eligible = visibleAuthIndices.filter(isQueryCandidate);
+    const eligible = querySelectionActive
+      ? visibleAuthIndices.filter(isQueryCandidate)
+      : visibleAuthIndices;
     if (querySelectionActive) {
       setExcludedAuthIndices((current) => {
         const next = new Set(current);
@@ -320,8 +325,11 @@ export function GroupResourceAssignmentsModal({
       const next = new Set(current);
       const allSelected =
         visibleAuthIndices.length > 0 &&
-        visibleAuthIndices.every((authIndex) => next.has(authIndex));
+        visibleAuthIndices.every(
+          (authIndex) => selectedProviderAuthIndexSet.has(authIndex) || next.has(authIndex)
+        );
       for (const authIndex of visibleAuthIndices) {
+        if (selectedProviderAuthIndexSet.has(authIndex)) continue;
         if (allSelected) next.delete(authIndex);
         else next.add(authIndex);
       }
@@ -330,36 +338,28 @@ export function GroupResourceAssignmentsModal({
   };
 
   const toggleProviderResource = (resource: ProviderResource) => {
-    if (querySelectionActive) {
-      setSelectAllCredentials(false);
-      setSelectedProviderKeys((current) =>
-        current.includes(resource.key)
-          ? current.filter((key) => key !== resource.key)
-          : [...current, resource.key]
+    if (selectAllCredentials) setSelectAllCredentials(false);
+    const selectedAsProvider = selectedProviderKeySet.has(resource.key);
+    const selectedExplicitly = resource.authIndices.every((authIndex) =>
+      selectedAuthIndexSet.has(authIndex)
+    );
+    if (!querySelectionActive && !selectedAsProvider && selectedExplicitly) {
+      const resourceAuthIndexSet = new Set(resource.authIndices);
+      setSelectedAuthIndices((current) =>
+        current.filter((authIndex) => !resourceAuthIndexSet.has(authIndex))
       );
-      setSelectedAuthIndices([]);
-      setExcludedAuthIndices([]);
       return;
     }
-    const selected = resource.authIndices.every((authIndex) => selectedAuthIndexSet.has(authIndex));
-    setStagedProviderKeys((current) =>
-      selected
+    setSelectedProviderKeys((current) =>
+      selectedAsProvider
         ? current.filter((key) => key !== resource.key)
-        : Array.from(new Set([...current, resource.key]))
+        : [...current, resource.key]
     );
-    setSelectedAuthIndices((current) => {
-      const next = new Set(current);
-      for (const authIndex of resource.authIndices) {
-        if (selected) next.delete(authIndex);
-        else next.add(authIndex);
-      }
-      return Array.from(next);
-    });
+    setExcludedAuthIndices([]);
   };
 
   const enableCurrentPlanSelection = (checked: boolean) => {
     if (checked) {
-      setSelectedProviderKeys(stagedProviderKeys);
       setSelectedAuthIndices([]);
       setSelectAllCredentials(false);
       setExcludedAuthIndices([]);
@@ -382,61 +382,17 @@ export function GroupResourceAssignmentsModal({
       selectedGroupIDSet.has(binding.group_id)
     );
 
-  useEffect(() => {
-    if (!open || !querySelection) {
-      setSelectionPreview(null);
-      setSelectionPreviewLoading(false);
-      return;
-    }
-    let cancelled = false;
-    setSelectionPreviewLoading(true);
-    const timer = window.setTimeout(() => {
-      const request = group
-        ? clientAccessApi.replaceGroupCredentialBindingsBySelection(
-            group.id,
-            querySelection,
-            Number.parseInt(bindingPriority || '0', 10) || 0,
-            true
-          )
-        : clientAccessApi.bulkReplaceCredentialBindings(querySelection, [], true);
-      void request
-        .then((result) => {
-          if (!cancelled)
-            setSelectionPreview({ matched: result.matched, excluded: result.excluded });
-        })
-        .catch(() => {
-          if (!cancelled) setSelectionPreview(null);
-        })
-        .finally(() => {
-          if (!cancelled) setSelectionPreviewLoading(false);
-        });
-    }, 200);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [bindingPriority, group, open, querySelection]);
-
   const selectionScope = useMemo(() => {
     if (!querySelection) {
       return t('client_access.explicit_selection_scope', {
-        count: selectedAuthIndices.length,
-        defaultValue: `Explicitly selected ${selectedAuthIndices.length} credentials; selection is preserved across pages.`,
+        count: effectiveAuthIndices.length,
+        defaultValue: `Explicitly selected ${effectiveAuthIndices.length} credentials; selection is preserved across pages.`,
       });
     }
-    const estimated = selectionPreviewLoading
-      ? t('client_access.selection_preview_loading', { defaultValue: 'Calculating on the server…' })
-      : selectionPreview
-        ? t('client_access.selection_preview_result', {
-            matched: selectionPreview.matched,
-            excluded: selectionPreview.excluded,
-            defaultValue: `Matches ${selectionPreview.matched}; excluded ${selectionPreview.excluded}.`,
-          })
-        : t('client_access.selection_preview_unavailable', {
-            defaultValue: 'Preview unavailable.',
-          });
     if (querySelection.all) {
-      return `${t('client_access.all_credentials_scope', { defaultValue: 'All credentials across all pages.' })} ${estimated}`;
+      return t('client_access.all_credentials_scope', {
+        defaultValue: 'All credentials across all pages.',
+      });
     }
     const parts: string[] = [];
     if (querySelection.plan_types.length > 0) parts.push(querySelection.plan_types.join(', '));
@@ -448,24 +404,22 @@ export function GroupResourceAssignmentsModal({
           .join(', ')
       );
     }
-    return `${t('client_access.query_selection_scope', {
+    return t('client_access.query_selection_scope', {
       scope: parts.filter(Boolean).join(' × '),
       defaultValue: `Server-side selection: ${parts.filter(Boolean).join(' × ')}.`,
-    })} ${estimated}`;
+    });
   }, [
+    effectiveAuthIndices.length,
     providerResources,
     querySelection,
-    selectedAuthIndices.length,
     selectedProviderKeySet,
     selectedProviderKeys.length,
-    selectionPreview,
-    selectionPreviewLoading,
     t,
   ]);
 
   const save = async () => {
     if (!group && !isBatch) return;
-    if (isBatch && !querySelection && selectedAuthIndices.length === 0) return;
+    if (isBatch && !querySelection && effectiveAuthIndices.length === 0) return;
     setResourceSaving(true);
     try {
       const priority = Number.parseInt(bindingPriority || '0', 10) || 0;
@@ -479,7 +433,7 @@ export function GroupResourceAssignmentsModal({
         } else {
           await clientAccessApi.replaceGroupCredentialBindings(
             group.id,
-            selectedAuthIndices,
+            effectiveAuthIndices,
             priority
           );
         }
@@ -488,7 +442,7 @@ export function GroupResourceAssignmentsModal({
         if (querySelection) {
           await clientAccessApi.bulkReplaceCredentialBindings(querySelection, targetGroups);
         } else {
-          await clientAccessApi.replaceCredentialBindings(selectedAuthIndices, targetGroups);
+          await clientAccessApi.replaceCredentialBindings(effectiveAuthIndices, targetGroups);
         }
       }
       showNotification(t('client_access.bindings_saved'), 'success');
@@ -502,7 +456,9 @@ export function GroupResourceAssignmentsModal({
   };
 
   const totalPages = Math.max(1, Math.ceil(resourceTotal / pageSize));
-  const eligibleVisibleAuthIndices = visibleAuthIndices.filter(isQueryCandidate);
+  const eligibleVisibleAuthIndices = querySelectionActive
+    ? visibleAuthIndices.filter(isQueryCandidate)
+    : visibleAuthIndices;
   const allVisibleSelected =
     eligibleVisibleAuthIndices.length > 0 && eligibleVisibleAuthIndices.every(isAuthIndexSelected);
 
@@ -523,7 +479,7 @@ export function GroupResourceAssignmentsModal({
           </Button>
           <Button
             loading={resourceSaving}
-            disabled={isBatch && !querySelection && selectedAuthIndices.length === 0}
+            disabled={isBatch && !querySelection && effectiveAuthIndices.length === 0}
             onClick={save}
           >
             {t('common.save')}
@@ -548,7 +504,9 @@ export function GroupResourceAssignmentsModal({
           </div>
           <div className={styles.selectionCounter}>
             <b>
-              {querySelection ? (selectionPreview?.matched ?? '…') : selectedAuthIndices.length}
+              {querySelection
+                ? t('client_access.cross_page_short', { defaultValue: 'All pages' })
+                : effectiveAuthIndices.length}
             </b>
             <span>{t('client_access.credentials')}</span>
           </div>
@@ -619,7 +577,6 @@ export function GroupResourceAssignmentsModal({
                   setSelectAllCredentials(checked);
                   setSelectCurrentPlan(false);
                   setSelectedProviderKeys([]);
-                  setStagedProviderKeys([]);
                   setSelectedAuthIndices([]);
                   setExcludedAuthIndices([]);
                 }}
@@ -683,9 +640,9 @@ export function GroupResourceAssignmentsModal({
                 const explicitlySelected = resource.authIndices.filter((authIndex) =>
                   selectedAuthIndexSet.has(authIndex)
                 ).length;
-                const selected = querySelectionActive
-                  ? selectedProviderKeySet.has(resource.key)
-                  : explicitlySelected === resource.authIndices.length;
+                const selectedAsProvider = selectedProviderKeySet.has(resource.key);
+                const selected =
+                  selectedAsProvider || explicitlySelected === resource.authIndices.length;
                 return (
                   <label
                     className={`${styles.providerCard} ${selected ? styles.providerCardActive : ''}`}
@@ -699,7 +656,7 @@ export function GroupResourceAssignmentsModal({
                     <span>
                       <b>{resource.label}</b>
                       <small>
-                        {querySelectionActive && selected
+                        {selectedAsProvider
                           ? t('client_access.provider_filter_active', {
                               defaultValue: 'Active filter',
                             })
@@ -779,15 +736,17 @@ export function GroupResourceAssignmentsModal({
                 const planType = planTypeOf(file);
                 const alreadyBound = isBatch && isBoundToSelectedGroups(authIndex);
                 const queryCandidate = isQueryCandidate(authIndex);
+                const selectedByProvider =
+                  !querySelectionActive && selectedProviderAuthIndexSet.has(authIndex);
                 return (
                   <label
-                    className={`${styles.credentialOption} ${isAuthIndexSelected(authIndex) ? styles.credentialBound : ''} ${!queryCandidate ? styles.credentialUnavailable : ''}`}
+                    className={`${styles.credentialOption} ${isAuthIndexSelected(authIndex) ? styles.credentialBound : ''} ${querySelectionActive && !queryCandidate ? styles.credentialUnavailable : ''}`}
                     key={`${file.name}-${authIndex}`}
                   >
                     <input
                       type="checkbox"
                       checked={isAuthIndexSelected(authIndex)}
-                      disabled={querySelectionActive && !queryCandidate}
+                      disabled={(querySelectionActive && !queryCandidate) || selectedByProvider}
                       onChange={() => toggleAuthIndex(authIndex)}
                     />
                     <span>
@@ -797,6 +756,13 @@ export function GroupResourceAssignmentsModal({
                         {planType || t('common.unknown', { defaultValue: 'Unknown' })}
                       </small>
                       <small title={authIndex}>{authIndex}</small>
+                      {selectedByProvider ? (
+                        <small>
+                          {t('client_access.selected_by_provider', {
+                            defaultValue: 'Selected by AI provider',
+                          })}
+                        </small>
+                      ) : null}
                       {isBatch ? (
                         <small>
                           {bindingLabels(authIndex) || t('client_access.ungrouped')}

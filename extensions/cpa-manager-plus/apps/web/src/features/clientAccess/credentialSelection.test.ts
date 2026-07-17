@@ -2,9 +2,16 @@ import { describe, expect, it } from 'vitest';
 import {
   buildCredentialBindingSelection,
   isQueryCredentialSelectionActive,
+  mergeCredentialAuthIndices,
 } from './credentialSelection';
 
 describe('credentialSelection', () => {
+  it('keeps provider and manually selected credentials as a union', () => {
+    expect(
+      mergeCredentialAuthIndices(['manual-1', 'shared'], ['provider-1', 'shared'], [' manual-2 '])
+    ).toEqual(['manual-1', 'manual-2', 'provider-1', 'shared']);
+  });
+
   it('builds an all-credentials selector and ignores provider and plan filters', () => {
     expect(
       buildCredentialBindingSelection({
