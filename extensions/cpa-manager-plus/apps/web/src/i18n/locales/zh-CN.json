@@ -272,7 +272,7 @@
     "selection_preview_result": "预计命中 {{matched}} 个，已排除 {{excluded}} 个。",
     "selection_preview_unavailable": "预计范围暂不可用。",
     "all_credentials_scope": "已选择服务端全部凭证。",
-    "query_selection_scope": "服务端组合筛选：{{scope}}。",
+    "query_selection_scope": "服务端合并选择：{{scope}}。",
     "request_quota": "请求额度",
     "token_quota": "Token 额度",
     "request_limits": "请求额度（0 表示不限）",

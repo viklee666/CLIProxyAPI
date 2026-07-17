@@ -272,7 +272,7 @@
     "selection_preview_result": "預計命中 {{matched}} 個，已排除 {{excluded}} 個。",
     "selection_preview_unavailable": "預計範圍暫不可用。",
     "all_credentials_scope": "已選擇伺服器全部憑證。",
-    "query_selection_scope": "伺服器組合篩選：{{scope}}。",
+    "query_selection_scope": "伺服器合併選擇：{{scope}}。",
     "request_quota": "請求額度",
     "token_quota": "Token 額度",
     "request_limits": "請求額度（0 表示不限）",

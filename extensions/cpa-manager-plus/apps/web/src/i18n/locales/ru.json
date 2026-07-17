@@ -272,7 +272,7 @@
     "selection_preview_result": "Совпадений: {{matched}}, исключено: {{excluded}}.",
     "selection_preview_unavailable": "Предпросмотр недоступен.",
     "all_credentials_scope": "Выбраны все учетные данные сервера.",
-    "query_selection_scope": "Комбинированный фильтр сервера: {{scope}}.",
+    "query_selection_scope": "Объединенный выбор сервера: {{scope}}.",
     "request_quota": "Лимит запросов",
     "token_quota": "Лимит токенов",
     "request_limits": "Лимиты запросов (0 = без лимита)",

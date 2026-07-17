@@ -237,3 +237,63 @@ func TestReplaceClientAccessGroupCredentialBindingsQuerySelectionPreservesOtherG
 		t.Fatalf("bindings were not preserved: %+v", page.Items)
 	}
 }
+
+func TestResolveClientAccessCredentialSelectionUnionsPlanAndIncludedUpstreams(t *testing.T) {
+	handler, _ := newClientAccessHandler(t)
+	manager := coreauth.NewManager(nil, nil, nil)
+	dir := t.TempDir()
+	register := func(id, provider, planType string) string {
+		t.Helper()
+		path := filepath.Join(dir, id+".json")
+		if errWrite := writeTestJSON(path, `{}`); errWrite != nil {
+			t.Fatalf("write auth file: %v", errWrite)
+		}
+		auth := &coreauth.Auth{
+			ID:         id,
+			FileName:   id + ".json",
+			Provider:   provider,
+			Attributes: map[string]string{"path": path, "plan_type": planType},
+		}
+		index := auth.EnsureIndex()
+		if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+			t.Fatalf("register auth: %v", errRegister)
+		}
+		return index
+	}
+	planCredential := register("codex-k12", "codex", "k12")
+	upstreamAuth := &coreauth.Auth{
+		ID:       "codex-upstream",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"source":  "config:codex[test]",
+			"api_key": "test-upstream-key",
+		},
+	}
+	upstreamCredential := upstreamAuth.EnsureIndex()
+	if _, errRegister := manager.Register(context.Background(), upstreamAuth); errRegister != nil {
+		t.Fatalf("register upstream auth: %v", errRegister)
+	}
+	register("codex-other-plan", "codex", "plus")
+	handler.authManager = manager
+
+	resolved, excluded, errResolve := handler.resolveClientAccessCredentialSelection(clientAccessCredentialSelection{
+		Mode:                "query",
+		PlanTypes:           []string{"k12"},
+		IncludedAuthIndices: []string{upstreamCredential},
+	})
+	if errResolve != nil {
+		t.Fatalf("resolve selection: %v", errResolve)
+	}
+	if excluded != 0 {
+		t.Fatalf("excluded = %d", excluded)
+	}
+	if len(resolved) != 2 {
+		t.Fatalf("resolved = %#v", resolved)
+	}
+	resolvedSet := normalizedExactStringSet(resolved)
+	for _, expected := range []string{planCredential, upstreamCredential} {
+		if _, ok := resolvedSet[expected]; !ok {
+			t.Fatalf("resolved selection missing %q: %#v", expected, resolved)
+		}
+	}
+}

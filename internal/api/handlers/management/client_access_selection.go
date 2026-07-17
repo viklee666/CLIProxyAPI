@@ -95,7 +95,7 @@ func (h *Handler) resolveClientAccessCredentialSelection(selection clientAccessC
 		return nil, 0, errClientAccessAuthManagerUnavailable
 	}
 	excluded := normalizedExactStringSet(selection.ExcludedAuthIndices)
-	candidates := h.authFileCandidatesFromManager()
+	candidates := h.clientAccessCredentialSelectionCandidates()
 	result := make([]string, 0, len(candidates))
 	seen := make(map[string]struct{}, len(candidates))
 	excludedCount := 0
@@ -105,20 +105,20 @@ func (h *Handler) resolveClientAccessCredentialSelection(selection clientAccessC
 			continue
 		}
 		if !selection.All {
+			matchesFilters := len(providers) > 0 || len(planTypes) > 0
 			if len(providers) > 0 {
 				if _, ok := providers[strings.ToLower(strings.TrimSpace(candidate.provider))]; !ok {
-					continue
+					matchesFilters = false
 				}
 			}
 			if len(planTypes) > 0 {
 				if _, ok := planTypes[strings.ToLower(strings.TrimSpace(candidate.planType))]; !ok {
-					continue
+					matchesFilters = false
 				}
 			}
-			if len(included) > 0 {
-				if _, ok := included[authIndex]; !ok {
-					continue
-				}
+			_, explicitlyIncluded := included[authIndex]
+			if !matchesFilters && !explicitlyIncluded {
+				continue
 			}
 		}
 		if _, ok := seen[authIndex]; ok {
@@ -132,6 +132,30 @@ func (h *Handler) resolveClientAccessCredentialSelection(selection clientAccessC
 		result = append(result, authIndex)
 	}
 	return result, excludedCount, nil
+}
+
+func (h *Handler) clientAccessCredentialSelectionCandidates() []authFileCandidate {
+	if h == nil || h.authManager == nil {
+		return nil
+	}
+	auths := h.authManager.List()
+	result := make([]authFileCandidate, 0, len(auths))
+	for _, auth := range auths {
+		if auth == nil {
+			continue
+		}
+		auth.EnsureIndex()
+		authIndex := strings.TrimSpace(auth.Index)
+		if authIndex == "" {
+			continue
+		}
+		result = append(result, authFileCandidate{
+			provider:  strings.ToLower(strings.TrimSpace(auth.Provider)),
+			planType:  authPlanType(auth),
+			authIndex: authIndex,
+		})
+	}
+	return result
 }
 
 func normalizedStringSet(values []string) map[string]struct{} {

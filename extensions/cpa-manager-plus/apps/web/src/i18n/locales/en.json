@@ -272,7 +272,7 @@
     "selection_preview_result": "Matches {{matched}}; excluded {{excluded}}.",
     "selection_preview_unavailable": "Selection preview unavailable.",
     "all_credentials_scope": "All server credentials are selected.",
-    "query_selection_scope": "Server-side combined filter: {{scope}}.",
+    "query_selection_scope": "Server-side merged selection: {{scope}}.",
     "request_quota": "Request quota",
     "token_quota": "Token quota",
     "request_limits": "Request limits (0 = unlimited)",

@@ -405,8 +405,8 @@ export function GroupResourceAssignmentsModal({
       );
     }
     return t('client_access.query_selection_scope', {
-      scope: parts.filter(Boolean).join(' × '),
-      defaultValue: `Server-side selection: ${parts.filter(Boolean).join(' × ')}.`,
+      scope: parts.filter(Boolean).join(' + '),
+      defaultValue: `Server-side selection: ${parts.filter(Boolean).join(' + ')}.`,
     });
   }, [
     effectiveAuthIndices.length,
