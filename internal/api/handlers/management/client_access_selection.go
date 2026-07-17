@@ -16,6 +16,7 @@ type clientAccessCredentialSelection struct {
 	All                 bool     `json:"all"`
 	Providers           []string `json:"providers"`
 	PlanTypes           []string `json:"plan_types"`
+	IncludedAuthIndices []string `json:"included_auth_indices"`
 	ExcludedAuthIndices []string `json:"excluded_auth_indices"`
 }
 
@@ -86,8 +87,9 @@ func (h *Handler) resolveClientAccessCredentialSelection(selection clientAccessC
 	}
 	providers := normalizedStringSet(selection.Providers)
 	planTypes := normalizedStringSet(selection.PlanTypes)
-	if !selection.All && len(providers) == 0 && len(planTypes) == 0 {
-		return nil, 0, errors.New("query selection requires all, providers, or plan_types")
+	included := normalizedExactStringSet(selection.IncludedAuthIndices)
+	if !selection.All && len(providers) == 0 && len(planTypes) == 0 && len(included) == 0 {
+		return nil, 0, errors.New("query selection requires all, providers, plan_types, or included_auth_indices")
 	}
 	if h == nil || h.authManager == nil {
 		return nil, 0, errClientAccessAuthManagerUnavailable
@@ -110,6 +112,11 @@ func (h *Handler) resolveClientAccessCredentialSelection(selection clientAccessC
 			}
 			if len(planTypes) > 0 {
 				if _, ok := planTypes[strings.ToLower(strings.TrimSpace(candidate.planType))]; !ok {
+					continue
+				}
+			}
+			if len(included) > 0 {
+				if _, ok := included[authIndex]; !ok {
 					continue
 				}
 			}

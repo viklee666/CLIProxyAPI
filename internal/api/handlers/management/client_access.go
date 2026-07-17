@@ -308,15 +308,50 @@ func (h *Handler) ReplaceClientAccessGroupCredentialBindings(c *gin.Context) {
 	if !ok {
 		return
 	}
-	var input clientaccess.GroupCredentialBindingBatch
+	var input struct {
+		AuthIndices []string                         `json:"auth_indices"`
+		Priority    int                              `json:"priority"`
+		Selection   *clientAccessCredentialSelection `json:"selection,omitempty"`
+		DryRun      bool                             `json:"dry_run,omitempty"`
+	}
 	if errBind := c.ShouldBindJSON(&input); errBind != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
 	}
-	stats, errReplace := service.ReplaceGroupCredentialBindings(c.Request.Context(), groupID, input)
+	authIndices := input.AuthIndices
+	excluded := 0
+	if input.Selection != nil {
+		var errResolve error
+		authIndices, excluded, errResolve = h.resolveClientAccessCredentialSelection(*input.Selection)
+		if errResolve != nil {
+			if errors.Is(errResolve, errClientAccessAuthManagerUnavailable) {
+				c.JSON(http.StatusServiceUnavailable, gin.H{"error": errResolve.Error()})
+				return
+			}
+			c.JSON(http.StatusBadRequest, gin.H{"error": errResolve.Error()})
+			return
+		}
+	}
+	if input.DryRun {
+		c.JSON(http.StatusOK, clientAccessCredentialBindingsBulkResponse{
+			Matched:  len(authIndices),
+			Excluded: excluded,
+			DryRun:   true,
+		})
+		return
+	}
+	stats, errReplace := service.ReplaceGroupCredentialBindings(c.Request.Context(), groupID, clientaccess.GroupCredentialBindingBatch{
+		AuthIndices: authIndices,
+		Priority:    input.Priority,
+	})
 	if errReplace != nil {
 		writeClientAccessError(c, errReplace)
 		return
 	}
-	c.JSON(http.StatusOK, stats)
+	c.JSON(http.StatusOK, clientAccessCredentialBindingsBulkResponse{
+		Matched:   stats.Matched,
+		Updated:   stats.Updated,
+		Unchanged: stats.Unchanged,
+		Excluded:  excluded,
+	})
 }

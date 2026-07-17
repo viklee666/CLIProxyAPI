@@ -5,6 +5,7 @@ export type CredentialQuerySelectionState = {
   selectCurrentPlan: boolean;
   planFilter: string;
   providers: string[];
+  includedAuthIndices: string[];
   excludedAuthIndices: string[];
 };
 
@@ -19,7 +20,10 @@ const normalizedExactValues = (values: string[]) =>
   Array.from(new Set(values.map((value) => value.trim()).filter(Boolean))).sort();
 
 export const isQueryCredentialSelectionActive = (state: CredentialQuerySelectionState) =>
-  state.all || state.selectCurrentPlan || normalizedValues(state.providers).length > 0;
+  state.all ||
+  state.selectCurrentPlan ||
+  normalizedValues(state.providers).length > 0 ||
+  normalizedExactValues(state.includedAuthIndices).length > 0;
 
 export const buildCredentialBindingSelection = (
   state: CredentialQuerySelectionState
@@ -31,6 +35,7 @@ export const buildCredentialBindingSelection = (
       all: true,
       providers: [],
       plan_types: [],
+      included_auth_indices: [],
       excluded_auth_indices: normalizedExactValues(state.excludedAuthIndices),
     };
   }
@@ -45,6 +50,7 @@ export const buildCredentialBindingSelection = (
     all: false,
     providers,
     plan_types: planTypes,
+    included_auth_indices: normalizedExactValues(state.includedAuthIndices),
     excluded_auth_indices: normalizedExactValues(state.excludedAuthIndices),
   };
 };

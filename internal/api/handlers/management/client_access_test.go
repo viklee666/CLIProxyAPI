@@ -146,7 +146,7 @@ func TestClientAccessManagementCRUDAndBindings(t *testing.T) {
 	if errDecode := json.Unmarshal(recorder.Body.Bytes(), &bindings); errDecode != nil {
 		t.Fatalf("decode group-filtered bindings: %v", errDecode)
 	}
-	if bindings.Total != 2 || len(bindings.Items) != 2 {
+	if bindings.Total != 1 || len(bindings.Items) != 1 {
 		t.Fatalf("group-filtered bindings = %+v", bindings)
 	}
 	for _, binding := range bindings.Items {

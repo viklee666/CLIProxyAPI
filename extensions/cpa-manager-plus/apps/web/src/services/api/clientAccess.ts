@@ -74,6 +74,7 @@ export type CredentialBindingSelection = {
   all: boolean;
   providers: string[];
   plan_types: string[];
+  included_auth_indices: string[];
   excluded_auth_indices: string[];
 };
 
@@ -235,6 +236,20 @@ export const clientAccessApi = {
       {
         auth_indices: authIndices,
         priority,
+      }
+    ),
+  replaceGroupCredentialBindingsBySelection: (
+    groupID: number,
+    selection: CredentialBindingSelection,
+    priority: number,
+    dryRun = false
+  ) =>
+    apiClient.put<CredentialBindingBulkResult>(
+      `/client-access/groups/${groupID}/credential-bindings`,
+      {
+        selection,
+        priority,
+        dry_run: dryRun,
       }
     ),
   bulkReplaceCredentialBindings: (

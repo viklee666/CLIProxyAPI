@@ -12,6 +12,7 @@ describe('credentialSelection', () => {
         selectCurrentPlan: true,
         planFilter: 'team',
         providers: ['Codex'],
+        includedAuthIndices: ['auth-a'],
         excludedAuthIndices: [' auth-b ', 'auth-b'],
       })
     ).toEqual({
@@ -19,6 +20,7 @@ describe('credentialSelection', () => {
       all: true,
       providers: [],
       plan_types: [],
+      included_auth_indices: [],
       excluded_auth_indices: ['auth-b'],
     });
   });
@@ -30,6 +32,7 @@ describe('credentialSelection', () => {
         selectCurrentPlan: true,
         planFilter: ' Team ',
         providers: ['Codex', 'CLAUDE', 'codex'],
+        includedAuthIndices: [' auth-1 ', 'auth-1'],
         excludedAuthIndices: [],
       })
     ).toEqual({
@@ -37,6 +40,7 @@ describe('credentialSelection', () => {
       all: false,
       providers: ['claude', 'codex'],
       plan_types: ['team'],
+      included_auth_indices: ['auth-1'],
       excluded_auth_indices: [],
     });
   });
@@ -47,6 +51,7 @@ describe('credentialSelection', () => {
       selectCurrentPlan: false,
       planFilter: 'all',
       providers: ['gemini'],
+      includedAuthIndices: [],
       excludedAuthIndices: [],
     };
     expect(isQueryCredentialSelectionActive(providerState)).toBe(true);
@@ -57,8 +62,29 @@ describe('credentialSelection', () => {
         selectCurrentPlan: false,
         planFilter: 'team',
         providers: [],
+        includedAuthIndices: [],
         excludedAuthIndices: [],
       })
     ).toBeNull();
+  });
+
+  it('uses exact provider auth indices as a server-side restriction', () => {
+    expect(
+      buildCredentialBindingSelection({
+        all: false,
+        selectCurrentPlan: true,
+        planFilter: 'plus',
+        providers: [],
+        includedAuthIndices: ['auth-2', ' auth-1 ', 'auth-2'],
+        excludedAuthIndices: ['auth-2'],
+      })
+    ).toEqual({
+      mode: 'query',
+      all: false,
+      providers: [],
+      plan_types: ['plus'],
+      included_auth_indices: ['auth-1', 'auth-2'],
+      excluded_auth_indices: ['auth-2'],
+    });
   });
 });

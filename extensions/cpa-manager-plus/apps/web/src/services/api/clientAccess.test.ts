@@ -62,6 +62,7 @@ describe('clientAccessApi pagination helpers', () => {
       all: false,
       providers: ['codex'],
       plan_types: ['team'],
+      included_auth_indices: ['auth-1', 'auth-2'],
       excluded_auth_indices: ['auth-2'],
     };
 
@@ -82,6 +83,26 @@ describe('clientAccessApi pagination helpers', () => {
     expect(mocks.put).toHaveBeenCalledWith('/client-access/groups/7/credential-bindings', {
       auth_indices: ['auth-1', 'auth-2'],
       priority: 15,
+    });
+  });
+
+  it('sends a query selector to one group without expanding auth indices', async () => {
+    mocks.put.mockResolvedValue({ matched: 2, updated: 1, unchanged: 1, excluded: 0 });
+    const selection = {
+      mode: 'query' as const,
+      all: false,
+      providers: [],
+      plan_types: ['team'],
+      included_auth_indices: ['auth-1', 'auth-2'],
+      excluded_auth_indices: [],
+    };
+
+    await clientAccessApi.replaceGroupCredentialBindingsBySelection(7, selection, 15, true);
+
+    expect(mocks.put).toHaveBeenCalledWith('/client-access/groups/7/credential-bindings', {
+      selection,
+      priority: 15,
+      dry_run: true,
     });
   });
 });

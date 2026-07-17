@@ -1,47 +1,39 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
 import { ToggleSwitch } from '@/components/ui/ToggleSwitch';
-import { useDebounce } from '@/hooks/useDebounce';
 import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
-import {
-  authFilesApi,
-  clientAccessApi,
-  providersApi,
-  type ClientGroup,
-  type CredentialBinding,
-} from '@/services/api';
-import type { AuthFileItem } from '@/types';
+import { authFilesApi, clientAccessApi, type ClientGroup } from '@/services/api';
 import { useNotificationStore } from '@/stores';
-import { resolveCodexPlanType } from '@/utils/quota';
+import type { AuthFileItem } from '@/types';
 import { GroupResourceAssignmentsModal } from './GroupResourceAssignmentsModal';
-import {
-  buildProviderResources,
-  type ProviderLabels,
-  type ProviderResource,
-} from './providerResources';
 import styles from './ClientAccessPage.module.scss';
-import {
-  buildCredentialBindingSelection,
-  isQueryCredentialSelectionActive,
-} from './credentialSelection';
 
 type GroupForm = { name: string; description: string; enabled: boolean };
+type GroupResourceSummary = {
+  credentials: string[];
+  providers: Array<{ name: string; count: number }>;
+  priorities: number[];
+};
+
 const emptyForm: GroupForm = { name: '', description: '', enabled: true };
 const authIndexOf = (file: AuthFileItem) => String(file.authIndex ?? file.auth_index ?? '').trim();
-const planTypeOf = (file: AuthFileItem) => resolveCodexPlanType(file) ?? '';
 
 export function ClientGroupsPage() {
   const { t } = useTranslation();
   const showNotification = useNotificationStore((state) => state.showNotification);
   const showConfirmation = useNotificationStore((state) => state.showConfirmation);
   const [items, setItems] = useState<ClientGroup[]>([]);
+  const [resourceSummaries, setResourceSummaries] = useState<Record<number, GroupResourceSummary>>(
+    {}
+  );
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [summaryLoading, setSummaryLoading] = useState(false);
   const [error, setError] = useState('');
   const [editing, setEditing] = useState<ClientGroup | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
@@ -49,59 +41,76 @@ export function ClientGroupsPage() {
   const [saving, setSaving] = useState(false);
   const [resourceGroup, setResourceGroup] = useState<ClientGroup | null>(null);
   const [bindingModalOpen, setBindingModalOpen] = useState(false);
-  const [authFiles, setAuthFiles] = useState<AuthFileItem[]>([]);
-  const [bindings, setBindings] = useState<CredentialBinding[]>([]);
-  const [bindingGroups, setBindingGroups] = useState<ClientGroup[]>([]);
-  const [selectedAuthIndices, setSelectedAuthIndices] = useState<string[]>([]);
-  const [selectedGroupIDs, setSelectedGroupIDs] = useState<number[]>([]);
-  const [bindingPriority, setBindingPriority] = useState('0');
-  const [bindingSearch, setBindingSearch] = useState('');
-  const [bindingGroupFilter, setBindingGroupFilter] = useState('all');
-  const [bindingPlanFilter, setBindingPlanFilter] = useState('all');
-  const [bindingPlanFacets, setBindingPlanFacets] = useState<Record<string, number>>({});
-  const [bindingProviderResources, setBindingProviderResources] = useState<ProviderResource[]>([]);
-  const [selectAllCredentials, setSelectAllCredentials] = useState(false);
-  const [selectCurrentPlan, setSelectCurrentPlan] = useState(false);
-  const [excludedAuthIndices, setExcludedAuthIndices] = useState<string[]>([]);
-  const [selectionPreview, setSelectionPreview] = useState<{
-    matched: number;
-    excluded: number;
-  } | null>(null);
-  const [selectionPreviewLoading, setSelectionPreviewLoading] = useState(false);
-  const [bindingPage, setBindingPage] = useState(1);
-  const [bindingTotal, setBindingTotal] = useState(0);
-  const [bindingLoading, setBindingLoading] = useState(false);
-  const [bindingSaving, setBindingSaving] = useState(false);
   const pageSize = 20;
-  const bindingPageSize = 50;
-  const debouncedBindingSearch = useDebounce(bindingSearch, 300);
 
-  const providerLabels = useMemo<ProviderLabels>(
-    () => ({
-      defaultEndpoint: t('client_access.default_endpoint'),
-      gemini: 'Gemini',
-      interactions: 'Interactions',
-      codex: 'Codex',
-      claude: 'Claude',
-      vertex: 'Vertex',
-      openAICompatible: 'OpenAI Compatible',
-    }),
-    [t]
-  );
+  const loadResourceSummaries = useCallback(async (groups: ClientGroup[]) => {
+    const groupIDs = groups.map((group) => group.id);
+    if (groupIDs.length === 0) {
+      setResourceSummaries({});
+      return;
+    }
+    setSummaryLoading(true);
+    try {
+      const [filesResponse, bindings] = await Promise.all([
+        authFilesApi.listSummary(),
+        clientAccessApi.listAllCredentialBindings([], groupIDs),
+      ]);
+      const fileByAuthIndex = new Map<string, AuthFileItem>();
+      for (const file of filesResponse.files ?? []) {
+        const authIndex = authIndexOf(file);
+        if (authIndex) fileByAuthIndex.set(authIndex, file);
+      }
+      const credentialsByGroup = new Map<number, string[]>();
+      const providersByGroup = new Map<number, Map<string, number>>();
+      const prioritiesByGroup = new Map<number, Set<number>>();
+      for (const binding of bindings) {
+        const file = fileByAuthIndex.get(binding.auth_index);
+        const credentialName = file?.name || binding.auth_index;
+        const providerName = String(file?.provider ?? file?.type ?? 'Unknown').trim() || 'Unknown';
+        credentialsByGroup.set(binding.group_id, [
+          ...(credentialsByGroup.get(binding.group_id) ?? []),
+          credentialName,
+        ]);
+        const providerCounts = providersByGroup.get(binding.group_id) ?? new Map<string, number>();
+        providerCounts.set(providerName, (providerCounts.get(providerName) ?? 0) + 1);
+        providersByGroup.set(binding.group_id, providerCounts);
+        const priorities = prioritiesByGroup.get(binding.group_id) ?? new Set<number>();
+        priorities.add(binding.priority);
+        prioritiesByGroup.set(binding.group_id, priorities);
+      }
+      const next: Record<number, GroupResourceSummary> = {};
+      for (const group of groups) {
+        next[group.id] = {
+          credentials: Array.from(new Set(credentialsByGroup.get(group.id) ?? [])).sort(),
+          providers: Array.from(providersByGroup.get(group.id)?.entries() ?? [])
+            .map(([name, count]) => ({ name, count }))
+            .sort((left, right) => right.count - left.count || left.name.localeCompare(right.name)),
+          priorities: Array.from(prioritiesByGroup.get(group.id) ?? []).sort((a, b) => b - a),
+        };
+      }
+      setResourceSummaries(next);
+    } catch {
+      setResourceSummaries({});
+    } finally {
+      setSummaryLoading(false);
+    }
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
       const response = await clientAccessApi.listGroups(page, pageSize, search);
-      setItems(response.items ?? []);
+      const groups = response.items ?? [];
+      setItems(groups);
       setTotal(response.total ?? 0);
+      await loadResourceSummaries(groups);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : String(loadError));
     } finally {
       setLoading(false);
     }
-  }, [page, search]);
+  }, [loadResourceSummaries, page, search]);
 
   useEffect(() => void load(), [load]);
   useHeaderRefresh(load);
@@ -122,11 +131,8 @@ export function ClientGroupsPage() {
     if (!form.name.trim()) return;
     setSaving(true);
     try {
-      if (editing) {
-        await clientAccessApi.updateGroup(editing.id, form);
-      } else {
-        await clientAccessApi.createGroup(form);
-      }
+      if (editing) await clientAccessApi.updateGroup(editing.id, form);
+      else await clientAccessApi.createGroup(form);
       setModalOpen(false);
       showNotification(t('client_access.saved'), 'success');
       await load();
@@ -150,318 +156,6 @@ export function ClientGroupsPage() {
     });
   };
 
-  const openResourceBindings = (group: ClientGroup) => setResourceGroup(group);
-
-  const openBindings = () => {
-    setBindingPage(1);
-    setBindingSearch('');
-    setBindingGroupFilter('all');
-    setBindingPlanFilter('all');
-    setBindingProviderResources([]);
-    setSelectAllCredentials(false);
-    setSelectCurrentPlan(false);
-    setExcludedAuthIndices([]);
-    setSelectionPreview(null);
-    setSelectedAuthIndices([]);
-    setSelectedGroupIDs([]);
-    setBindingModalOpen(true);
-  };
-
-  const loadBindingPage = useCallback(async () => {
-    if (!bindingModalOpen) return;
-    setBindingLoading(true);
-    try {
-      const selectedGroupID =
-        bindingGroupFilter === 'all' ? 0 : Number.parseInt(bindingGroupFilter, 10) || 0;
-      const filesResponse = await authFilesApi.list({
-        view: 'summary',
-        page: bindingPage,
-        page_size: bindingPageSize,
-        search: debouncedBindingSearch.trim() || undefined,
-        plan_type: bindingPlanFilter === 'all' ? undefined : bindingPlanFilter,
-        group_id: selectedGroupID > 0 ? selectedGroupID : undefined,
-        sort: 'name',
-        order: 'asc',
-      });
-      const authIndices = (filesResponse.files ?? []).map(authIndexOf).filter(Boolean);
-      const bindingsResponse =
-        authIndices.length > 0 ? await clientAccessApi.listAllCredentialBindings(authIndices) : [];
-      const files = filesResponse.files ?? [];
-      setAuthFiles(files);
-      setBindingTotal(filesResponse.total ?? files.length);
-      setBindings(bindingsResponse);
-      setBindingPlanFacets((current) => ({
-        ...current,
-        ...(filesResponse.facets?.plan_types ?? {}),
-      }));
-    } catch (loadError) {
-      showNotification(loadError instanceof Error ? loadError.message : String(loadError), 'error');
-    } finally {
-      setBindingLoading(false);
-    }
-  }, [
-    bindingGroupFilter,
-    bindingModalOpen,
-    bindingPage,
-    bindingPlanFilter,
-    debouncedBindingSearch,
-    showNotification,
-  ]);
-
-  useEffect(() => {
-    if (!bindingModalOpen) return;
-    let cancelled = false;
-    void Promise.all([
-      clientAccessApi.listAllGroups(),
-      providersApi.getGeminiKeys(),
-      providersApi.getInteractionsKeys(),
-      providersApi.getCodexConfigs(),
-      providersApi.getClaudeConfigs(),
-      providersApi.getVertexConfigs(),
-      providersApi.getOpenAIProviders(),
-    ])
-      .then(([groups, gemini, interactions, codex, claude, vertex, openAI]) => {
-        if (!cancelled) setBindingGroups(groups);
-        if (!cancelled) {
-          setBindingProviderResources(
-            buildProviderResources(
-              [
-                { type: 'gemini', configs: gemini },
-                { type: 'interactions', configs: interactions },
-                { type: 'codex', configs: codex },
-                { type: 'claude', configs: claude },
-                { type: 'vertex', configs: vertex },
-              ],
-              openAI,
-              providerLabels
-            )
-          );
-        }
-      })
-      .catch((loadError) => {
-        if (!cancelled)
-          showNotification(
-            loadError instanceof Error ? loadError.message : String(loadError),
-            'error'
-          );
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [bindingModalOpen, providerLabels, showNotification]);
-  useEffect(() => void loadBindingPage(), [loadBindingPage]);
-  useEffect(
-    () => setBindingPage(1),
-    [bindingGroupFilter, bindingPlanFilter, debouncedBindingSearch]
-  );
-  useEffect(() => {
-    if (bindingPlanFilter === 'all') setSelectCurrentPlan(false);
-  }, [bindingPlanFilter]);
-
-  const visibleAuthFiles = authFiles.filter((file) => Boolean(authIndexOf(file)));
-  const visibleAuthIndices = useMemo(
-    () => visibleAuthFiles.map(authIndexOf).filter(Boolean),
-    [visibleAuthFiles]
-  );
-  const selectedAuthIndexSet = useMemo(() => new Set(selectedAuthIndices), [selectedAuthIndices]);
-  const excludedAuthIndexSet = useMemo(() => new Set(excludedAuthIndices), [excludedAuthIndices]);
-  const selectedGroupIDSet = useMemo(() => new Set(selectedGroupIDs), [selectedGroupIDs]);
-  const bindingGroupByID = useMemo(
-    () => new Map(bindingGroups.map((group) => [group.id, group])),
-    [bindingGroups]
-  );
-  const bindingsByAuthIndex = useMemo(() => {
-    const result = new Map<string, CredentialBinding[]>();
-    for (const binding of bindings) {
-      const list = result.get(binding.auth_index) ?? [];
-      list.push(binding);
-      result.set(binding.auth_index, list);
-    }
-    return result;
-  }, [bindings]);
-  const planOptions = useMemo(() => {
-    const values = new Set<string>(Object.keys(bindingPlanFacets));
-    for (const file of visibleAuthFiles) {
-      const planType = planTypeOf(file);
-      if (planType) values.add(planType);
-    }
-    return Array.from(values).sort();
-  }, [bindingPlanFacets, visibleAuthFiles]);
-  const querySelectionState = useMemo(
-    () => ({
-      all: selectAllCredentials,
-      selectCurrentPlan,
-      planFilter: bindingPlanFilter,
-      providers: [],
-      excludedAuthIndices,
-    }),
-    [bindingPlanFilter, excludedAuthIndices, selectAllCredentials, selectCurrentPlan]
-  );
-  const querySelection = useMemo(
-    () => buildCredentialBindingSelection(querySelectionState),
-    [querySelectionState]
-  );
-  const querySelectionActive = isQueryCredentialSelectionActive(querySelectionState);
-  const toggleAuthIndex = (authIndex: string) => {
-    if (querySelectionActive) {
-      setExcludedAuthIndices((current) =>
-        current.includes(authIndex)
-          ? current.filter((item) => item !== authIndex)
-          : [...current, authIndex]
-      );
-      return;
-    }
-    setSelectedAuthIndices((current) =>
-      current.includes(authIndex)
-        ? current.filter((item) => item !== authIndex)
-        : [...current, authIndex]
-    );
-  };
-  const toggleBindingGroup = (groupID: number) =>
-    setSelectedGroupIDs((current) =>
-      current.includes(groupID) ? current.filter((item) => item !== groupID) : [...current, groupID]
-    );
-  const toggleProviderResource = (resource: ProviderResource) => {
-    setSelectAllCredentials(false);
-    setSelectCurrentPlan(false);
-    setExcludedAuthIndices([]);
-    setSelectedAuthIndices((current) => {
-      const next = new Set(current);
-      const selected = resource.authIndices.every((authIndex) => next.has(authIndex));
-      for (const authIndex of resource.authIndices) {
-        if (selected) {
-          next.delete(authIndex);
-        } else {
-          next.add(authIndex);
-        }
-      }
-      return Array.from(next);
-    });
-  };
-  const toggleVisibleAuthIndices = () => {
-    if (querySelectionActive) {
-      setExcludedAuthIndices((current) => {
-        const next = new Set(current);
-        const allSelected =
-          visibleAuthIndices.length > 0 &&
-          visibleAuthIndices.every((authIndex) => !next.has(authIndex));
-        for (const authIndex of visibleAuthIndices) {
-          if (allSelected) {
-            next.add(authIndex);
-          } else {
-            next.delete(authIndex);
-          }
-        }
-        return Array.from(next);
-      });
-      return;
-    }
-    setSelectedAuthIndices((current) => {
-      const next = new Set(current);
-      const allSelected =
-        visibleAuthIndices.length > 0 &&
-        visibleAuthIndices.every((authIndex) => next.has(authIndex));
-      for (const authIndex of visibleAuthIndices) {
-        if (allSelected) {
-          next.delete(authIndex);
-        } else {
-          next.add(authIndex);
-        }
-      }
-      return Array.from(next);
-    });
-  };
-  const bindingLabels = (authIndex: string) =>
-    (bindingsByAuthIndex.get(authIndex) ?? [])
-      .map((binding) => bindingGroupByID.get(binding.group_id)?.name ?? `#${binding.group_id}`)
-      .join(', ');
-  const isBoundToSelectedGroups = (authIndex: string) =>
-    selectedGroupIDs.length > 0 &&
-    (bindingsByAuthIndex.get(authIndex) ?? []).some((binding) =>
-      selectedGroupIDSet.has(binding.group_id)
-    );
-  const isAuthIndexSelected = (authIndex: string) =>
-    querySelectionActive
-      ? !excludedAuthIndexSet.has(authIndex)
-      : selectedAuthIndexSet.has(authIndex);
-
-  useEffect(() => {
-    if (!bindingModalOpen || !querySelection) {
-      setSelectionPreview(null);
-      setSelectionPreviewLoading(false);
-      return;
-    }
-    let cancelled = false;
-    setSelectionPreviewLoading(true);
-    const timer = window.setTimeout(() => {
-      void clientAccessApi
-        .bulkReplaceCredentialBindings(querySelection, [], true)
-        .then((result) => {
-          if (!cancelled)
-            setSelectionPreview({ matched: result.matched, excluded: result.excluded });
-        })
-        .catch(() => {
-          if (!cancelled) setSelectionPreview(null);
-        })
-        .finally(() => {
-          if (!cancelled) setSelectionPreviewLoading(false);
-        });
-    }, 200);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [bindingModalOpen, querySelection]);
-
-  const selectionScope = useMemo(() => {
-    if (!querySelection) {
-      return `显式选择 ${selectedAuthIndices.length} 个凭证；翻页后仍会保留。`;
-    }
-    const estimated = selectionPreviewLoading
-      ? '正在由服务端计算预计范围…'
-      : selectionPreview
-        ? `预计命中 ${selectionPreview.matched} 个，已排除 ${selectionPreview.excluded} 个。`
-        : '预计范围暂不可用。';
-    if (querySelection.all) {
-      return `服务端选择全部凭证；provider 与订阅等级条件会被忽略。${estimated}`;
-    }
-    const parts: string[] = [];
-    if (querySelection.providers.length > 0) {
-      parts.push(`provider: ${querySelection.providers.join(', ')}`);
-    }
-    if (querySelection.plan_types.length > 0) {
-      parts.push(`订阅等级: ${querySelection.plan_types.join(', ')}`);
-    }
-    return `服务端跨页选择 ${parts.join(' + ')}；搜索和显示分组只影响当前列表。${estimated}`;
-  }, [querySelection, selectedAuthIndices.length, selectionPreview, selectionPreviewLoading]);
-
-  const saveBindings = async () => {
-    if (!querySelection && selectedAuthIndices.length === 0) return;
-    setBindingSaving(true);
-    try {
-      const priority = Number.parseInt(bindingPriority || '0', 10) || 0;
-      const groups = selectedGroupIDs.map((groupID) => ({ group_id: groupID, priority }));
-      if (querySelection) {
-        const result = await clientAccessApi.bulkReplaceCredentialBindings(querySelection, groups);
-        showNotification(
-          `凭证分配完成：命中 ${result.matched}，更新 ${result.updated}，未变化 ${result.unchanged}`,
-          'success'
-        );
-      } else {
-        await clientAccessApi.replaceCredentialBindings(selectedAuthIndices, groups);
-        showNotification(t('client_access.bindings_saved'), 'success');
-      }
-      setSelectedAuthIndices([]);
-      setExcludedAuthIndices([]);
-      await loadBindingPage();
-      await load();
-    } catch (saveError) {
-      showNotification(saveError instanceof Error ? saveError.message : String(saveError), 'error');
-    } finally {
-      setBindingSaving(false);
-    }
-  };
-
   const pages = Math.max(1, Math.ceil(total / pageSize));
 
   return (
@@ -472,7 +166,7 @@ export function ClientGroupsPage() {
           <p>{t('client_access.groups_description')}</p>
         </div>
         <div className={styles.actions}>
-          <Button variant="secondary" onClick={openBindings}>
+          <Button variant="secondary" onClick={() => setBindingModalOpen(true)}>
             {t('client_access.assign_credentials')}
           </Button>
           <Button onClick={openCreate}>{t('client_access.add_group')}</Button>
@@ -495,51 +189,105 @@ export function ClientGroupsPage() {
           <div className={styles.empty}>{t('client_access.no_groups')}</div>
         ) : null}
         {!loading && !error && items.length > 0 ? (
-          <table className={styles.table}>
+          <table className={`${styles.table} ${styles.groupsTable}`}>
             <thead>
               <tr>
                 <th>{t('common.name')}</th>
                 <th>{t('common.status')}</th>
                 <th>{t('client_access.keys')}</th>
-                <th>{t('client_access.credentials')}</th>
+                <th>
+                  {t('client_access.assigned_resources', { defaultValue: 'Assigned resources' })}
+                </th>
                 <th />
               </tr>
             </thead>
             <tbody>
-              {items.map((group) => (
-                <tr key={group.id}>
-                  <td>
-                    <div className={styles.name}>{group.name}</div>
-                    <div className={styles.muted}>{group.description || '-'}</div>
-                  </td>
-                  <td>
-                    <span
-                      className={`${styles.badge} ${group.enabled ? styles.badgeActive : styles.badgeDisabled}`}
-                    >
-                      {group.enabled ? t('common.enabled') : t('common.disabled')}
-                    </span>
-                  </td>
-                  <td>{group.key_count}</td>
-                  <td>{group.credential_count}</td>
-                  <td>
-                    <div className={styles.actions}>
-                      <Button
-                        size="xs"
-                        variant="secondary"
-                        onClick={() => openResourceBindings(group)}
+              {items.map((group) => {
+                const summary = resourceSummaries[group.id];
+                const visibleCredentials = summary?.credentials.slice(0, 3) ?? [];
+                const remainingCredentials = Math.max(
+                  0,
+                  (summary?.credentials.length ?? group.credential_count) -
+                    visibleCredentials.length
+                );
+                return (
+                  <tr key={group.id}>
+                    <td>
+                      <div className={styles.name}>{group.name}</div>
+                      <div className={styles.muted}>{group.description || '-'}</div>
+                    </td>
+                    <td>
+                      <span
+                        className={`${styles.badge} ${group.enabled ? styles.badgeActive : styles.badgeDisabled}`}
                       >
-                        {t('client_access.assign_resources')}
-                      </Button>
-                      <Button size="xs" variant="secondary" onClick={() => openEdit(group)}>
-                        {t('common.edit')}
-                      </Button>
-                      <Button size="xs" variant="danger" onClick={() => remove(group)}>
-                        {t('common.delete')}
-                      </Button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+                        {group.enabled ? t('common.enabled') : t('common.disabled')}
+                      </span>
+                    </td>
+                    <td>
+                      <span className={styles.metricValue}>{group.key_count}</span>
+                    </td>
+                    <td>
+                      {summaryLoading && !summary ? (
+                        <span className={styles.muted}>{t('common.loading')}</span>
+                      ) : group.credential_count === 0 ? (
+                        <span className={styles.resourceEmpty}>
+                          {t('client_access.no_assigned_resources', {
+                            defaultValue: 'No resources assigned',
+                          })}
+                        </span>
+                      ) : (
+                        <div className={styles.resourceSummary}>
+                          <div className={styles.resourceSummaryTop}>
+                            <b>
+                              {t('client_access.credential_count', {
+                                count: group.credential_count,
+                                defaultValue: `${group.credential_count} credentials`,
+                              })}
+                            </b>
+                            {summary?.priorities.length ? (
+                              <span>
+                                P {summary.priorities.slice(0, 2).join(' / ')}
+                                {summary.priorities.length > 2 ? '…' : ''}
+                              </span>
+                            ) : null}
+                          </div>
+                          <div className={styles.resourceChips}>
+                            {(summary?.providers ?? []).slice(0, 4).map((provider) => (
+                              <span key={provider.name}>
+                                {provider.name} · {provider.count}
+                              </span>
+                            ))}
+                          </div>
+                          <div
+                            className={styles.resourceNames}
+                            title={summary?.credentials.join(', ') || undefined}
+                          >
+                            {visibleCredentials.join(' · ')}
+                            {remainingCredentials > 0 ? ` · +${remainingCredentials}` : ''}
+                          </div>
+                        </div>
+                      )}
+                    </td>
+                    <td>
+                      <div className={styles.actions}>
+                        <Button
+                          size="xs"
+                          variant="secondary"
+                          onClick={() => setResourceGroup(group)}
+                        >
+                          {t('client_access.assign_resources')}
+                        </Button>
+                        <Button size="xs" variant="secondary" onClick={() => openEdit(group)}>
+                          {t('common.edit')}
+                        </Button>
+                        <Button size="xs" variant="danger" onClick={() => remove(group)}>
+                          {t('common.delete')}
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         ) : null}
@@ -596,214 +344,13 @@ export function ClientGroupsPage() {
           label={t('common.enabled')}
         />
       </Modal>
-      <Modal
+      <GroupResourceAssignmentsModal
+        group={null}
+        batch
         open={bindingModalOpen}
         onClose={() => setBindingModalOpen(false)}
-        width={860}
-        title={t('client_access.assign_credentials')}
-        footer={
-          <>
-            <Button variant="secondary" onClick={() => setBindingModalOpen(false)}>
-              {t('common.cancel')}
-            </Button>
-            <Button
-              loading={bindingSaving}
-              disabled={!querySelection && selectedAuthIndices.length === 0}
-              onClick={saveBindings}
-            >
-              {t('common.save')}
-            </Button>
-          </>
-        }
-      >
-        <div className={styles.modalGrid}>
-          <div className={styles.fullWidth}>
-            <Input
-              label={t('client_access.search_credentials')}
-              value={bindingSearch}
-              onChange={(event) => setBindingSearch(event.target.value)}
-            />
-          </div>
-          <label className={styles.selectField}>
-            <span>显示分组</span>
-            <select
-              value={bindingGroupFilter}
-              onChange={(event) => setBindingGroupFilter(event.target.value)}
-            >
-              <option value="all">全部凭证</option>
-              {bindingGroups.map((group) => (
-                <option key={group.id} value={group.id}>
-                  {group.name} ({group.credential_count})
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className={styles.selectField}>
-            <span>订阅等级</span>
-            <select
-              value={bindingPlanFilter}
-              onChange={(event) => setBindingPlanFilter(event.target.value)}
-            >
-              <option value="all">全部等级</option>
-              {planOptions.map((planType) => (
-                <option key={planType} value={planType}>
-                  {planType} ({bindingPlanFacets[planType] ?? 0})
-                </option>
-              ))}
-            </select>
-          </label>
-          <Input
-            label={t('common.priority')}
-            type="number"
-            value={bindingPriority}
-            onChange={(event) => setBindingPriority(event.target.value)}
-          />
-          <div className={styles.fullWidth}>
-            <strong>服务端跨页选择</strong>
-            <div className={styles.groupPicker}>
-              <label className={styles.groupOption}>
-                <input
-                  type="checkbox"
-                  checked={selectAllCredentials}
-                  onChange={(event) => {
-                    const checked = event.target.checked;
-                    setSelectAllCredentials(checked);
-                    setSelectedAuthIndices([]);
-                    setExcludedAuthIndices([]);
-                    if (checked) {
-                      setSelectCurrentPlan(false);
-                    }
-                  }}
-                />
-                全选所有凭证
-              </label>
-              <label className={styles.groupOption}>
-                <input
-                  type="checkbox"
-                  checked={selectCurrentPlan}
-                  disabled={selectAllCredentials || bindingPlanFilter === 'all'}
-                  onChange={(event) => {
-                    setSelectCurrentPlan(event.target.checked);
-                    setSelectedAuthIndices([]);
-                    setExcludedAuthIndices([]);
-                  }}
-                />
-                全选当前订阅等级的全部凭证
-              </label>
-            </div>
-            <div className={styles.muted}>{selectionScope}</div>
-          </div>
-          <div className={styles.fullWidth}>
-            <strong>{t('client_access.ai_providers')}</strong>
-            <div className={styles.groupPicker}>
-              {bindingProviderResources.map((resource) => (
-                <label className={styles.groupOption} key={resource.key}>
-                  <input
-                    type="checkbox"
-                    checked={resource.authIndices.every((authIndex) =>
-                      selectedAuthIndexSet.has(authIndex)
-                    )}
-                    disabled={selectAllCredentials || selectCurrentPlan}
-                    onChange={() => toggleProviderResource(resource)}
-                  />
-                  {resource.label} ({resource.authIndices.length})
-                </label>
-              ))}
-              {bindingProviderResources.length === 0 ? (
-                <span className={styles.muted}>{t('client_access.no_available_providers')}</span>
-              ) : null}
-            </div>
-          </div>
-          <div className={styles.fullWidth}>
-            <strong>{t('client_access.groups')}</strong>
-            <div className={styles.groupPicker}>
-              {bindingGroups.map((group) => (
-                <label className={styles.groupOption} key={group.id}>
-                  <input
-                    type="checkbox"
-                    checked={selectedGroupIDs.includes(group.id)}
-                    onChange={() => toggleBindingGroup(group.id)}
-                  />
-                  {group.name}
-                </label>
-              ))}
-            </div>
-          </div>
-          <div className={styles.fullWidth}>
-            <div className={styles.sectionHeader}>
-              <strong>
-                {t('client_access.credentials')}
-                {querySelectionActive ? '（取消勾选会加入排除项）' : ''}
-              </strong>
-              <Button
-                size="xs"
-                variant="secondary"
-                disabled={visibleAuthIndices.length === 0 || bindingLoading}
-                onClick={toggleVisibleAuthIndices}
-              >
-                {visibleAuthIndices.length > 0 && visibleAuthIndices.every(isAuthIndexSelected)
-                  ? '取消全选当前页'
-                  : '全选当前页'}
-              </Button>
-            </div>
-            {bindingLoading ? (
-              <div className={styles.loading}>{t('common.loading')}</div>
-            ) : (
-              <div className={styles.credentialPicker}>
-                {visibleAuthFiles.map((file) => {
-                  const authIndex = authIndexOf(file);
-                  const planType = planTypeOf(file);
-                  const alreadyBound = isBoundToSelectedGroups(authIndex);
-                  return (
-                    <label
-                      className={`${styles.credentialOption} ${alreadyBound ? styles.credentialBound : ''}`}
-                      key={`${file.name}-${authIndex}`}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={isAuthIndexSelected(authIndex)}
-                        onChange={() => toggleAuthIndex(authIndex)}
-                      />
-                      <span>
-                        <b>{file.name}</b>
-                        <small>
-                          {file.provider ?? file.type ?? '-'} · {planType || '未知等级'} ·{' '}
-                          {authIndex}
-                        </small>
-                        <small>
-                          {bindingLabels(authIndex) || t('client_access.ungrouped')}
-                          {alreadyBound ? ' · 已在选中分组' : ''}
-                        </small>
-                      </span>
-                    </label>
-                  );
-                })}
-              </div>
-            )}
-            <div className={styles.pagination}>
-              <Button
-                size="xs"
-                variant="secondary"
-                disabled={bindingPage <= 1 || bindingLoading}
-                onClick={() => setBindingPage((value) => value - 1)}
-              >
-                {t('common.previous')}
-              </Button>
-              <span>
-                {bindingPage} / {Math.max(1, Math.ceil(bindingTotal / bindingPageSize))}
-              </span>
-              <Button
-                size="xs"
-                variant="secondary"
-                disabled={bindingPage * bindingPageSize >= bindingTotal || bindingLoading}
-                onClick={() => setBindingPage((value) => value + 1)}
-              >
-                {t('common.next')}
-              </Button>
-            </div>
-          </div>
-        </div>
-      </Modal>
+        onSaved={load}
+      />
       <GroupResourceAssignmentsModal
         group={resourceGroup}
         open={resourceGroup !== null}
