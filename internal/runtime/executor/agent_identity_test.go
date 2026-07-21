@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha512"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -18,6 +19,8 @@ import (
 
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/tidwall/gjson"
+	"golang.org/x/crypto/curve25519"
+	"golang.org/x/crypto/nacl/box"
 )
 
 func agentIdentityTestAuth(t *testing.T, keyName string) (*cliproxyauth.Auth, ed25519.PublicKey) {
@@ -55,6 +58,31 @@ func parseAgentAssertionForTest(t *testing.T, header string) agentAssertion {
 		t.Fatalf("unmarshal assertion envelope: %v", err)
 	}
 	return assertion
+}
+
+func encryptAgentTaskIDForTest(t *testing.T, auth *cliproxyauth.Auth, taskID string) string {
+	t.Helper()
+	privateKey, err := agentIdentityPrivateKey(agentIdentityCredsFromAuth(auth).privateKeyB64)
+	if err != nil {
+		t.Fatalf("parse agent private key: %v", err)
+	}
+	digest := sha512.Sum512(privateKey.Seed())
+	var curvePrivate [32]byte
+	copy(curvePrivate[:], digest[:32])
+	curvePrivate[0] &= 248
+	curvePrivate[31] &= 127
+	curvePrivate[31] |= 64
+	curvePublicBytes, err := curve25519.X25519(curvePrivate[:], curve25519.Basepoint)
+	if err != nil {
+		t.Fatalf("derive task encryption key: %v", err)
+	}
+	var curvePublic [32]byte
+	copy(curvePublic[:], curvePublicBytes)
+	ciphertext, err := box.SealAnonymous(nil, []byte(taskID), &curvePublic, rand.Reader)
+	if err != nil {
+		t.Fatalf("encrypt task id: %v", err)
+	}
+	return base64.StdEncoding.EncodeToString(ciphertext)
 }
 
 func TestBuildAgentAssertionSignsCanonicalPayload(t *testing.T) {
@@ -415,6 +443,35 @@ func TestCodexPrepareRequestAuthRegistersMissingTask(t *testing.T) {
 	}
 }
 
+func TestCodexPrepareRequestAuthDecryptsEncryptedTask(t *testing.T) {
+	auth, _ := agentIdentityTestAuth(t, "agent_private_key")
+	auth.ID = "agent-auth-encrypted"
+	auth.Metadata["auth_kind"] = "agent_identity"
+	delete(auth.Metadata, "task_id")
+	encryptedTaskID := encryptAgentTaskIDForTest(t, auth, "task-encrypted")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/agent/agent-test/task/register" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"encrypted_task_id": encryptedTaskID})
+	}))
+	defer server.Close()
+
+	previousBaseURL := agentIdentityAuthBaseURL
+	agentIdentityAuthBaseURL = server.URL
+	t.Cleanup(func() { agentIdentityAuthBaseURL = previousBaseURL })
+
+	updated, err := NewCodexExecutor(nil).PrepareRequestAuth(context.Background(), auth)
+	if err != nil {
+		t.Fatalf("PrepareRequestAuth() error = %v", err)
+	}
+	if got := agentIdentityMetadataString(updated, "task_id"); got != "task-encrypted" {
+		t.Fatalf("task_id = %q, want task-encrypted", got)
+	}
+}
+
 func TestCodexRecoverRequestAuthRecognizesInvalidTask(t *testing.T) {
 	auth, _ := agentIdentityTestAuth(t, "agent_private_key")
 	executor := NewCodexExecutor(nil)
@@ -433,11 +490,17 @@ func TestCodexRecoverRequestAuthRecognizesInvalidTask(t *testing.T) {
 }
 
 func TestCodexStatusClassificationPreservesInvalidTaskCode(t *testing.T) {
-	err := newCodexStatusErr(http.StatusUnauthorized, []byte(`{"error":{"code":"invalid_task_id","message":"task expired"}}`))
+	err := newCodexStatusErr(http.StatusUnauthorized, []byte(`{"error":{"code":"invalid_task_id","message":"invalid task_id task-secret"}}`))
 	if !isAgentIdentityTaskInvalidError(err) {
 		t.Fatalf("classified error = %v, want invalid task marker", err)
 	}
 	if got := gjson.Get(err.Error(), "error.code").String(); got != "invalid_task_id" {
 		t.Fatalf("error.code = %q, want invalid_task_id", got)
+	}
+	if strings.Contains(err.Error(), "task-secret") {
+		t.Fatalf("classified error leaked task id: %v", err)
+	}
+	if got := gjson.Get(err.Error(), "error.message").String(); got != "agent identity task is invalid or expired" {
+		t.Fatalf("error.message = %q", got)
 	}
 }

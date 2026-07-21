@@ -2086,15 +2086,20 @@ func classifyCodexStatusError(statusCode int, body []byte) []byte {
 	if !ok {
 		return body
 	}
-	message := gjson.GetBytes(body, "error.message").String()
-	if message == "" {
-		message = gjson.GetBytes(body, "message").String()
-	}
-	if message == "" {
-		message = strings.TrimSpace(string(body))
-	}
-	if message == "" {
-		message = http.StatusText(statusCode)
+	message := ""
+	if code == "invalid_task_id" {
+		message = "agent identity task is invalid or expired"
+	} else {
+		message = gjson.GetBytes(body, "error.message").String()
+		if message == "" {
+			message = gjson.GetBytes(body, "message").String()
+		}
+		if message == "" {
+			message = strings.TrimSpace(string(body))
+		}
+		if message == "" {
+			message = http.StatusText(statusCode)
+		}
 	}
 	out := []byte(`{"error":{}}`)
 	out, _ = sjson.SetBytes(out, "error.message", message)

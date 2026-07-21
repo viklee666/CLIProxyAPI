@@ -17,7 +17,7 @@ func TestDownloadAuthFile_ReturnsFile(t *testing.T) {
 
 	authDir := t.TempDir()
 	fileName := "download-user.json"
-	expected := []byte(`{"type":"codex"}`)
+	expected := []byte(`{"type":"codex","agent_private_key":"private-secret","task_id":"task-secret"}`)
 	if err := os.WriteFile(filepath.Join(authDir, fileName), expected, 0o600); err != nil {
 		t.Fatalf("failed to write auth file: %v", err)
 	}

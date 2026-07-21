@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -88,6 +89,53 @@ func TestListAuthFilesQueryPaginatesAndOmitsHeavyFields(t *testing.T) {
 		if _, ok := file["id_token"]; ok {
 			t.Fatalf("summary included id token claims: %#v", file)
 		}
+	}
+}
+
+func TestListAuthFilesQueryDoesNotExposeAgentIdentitySecrets(t *testing.T) {
+	t.Parallel()
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.json")
+	if err := writeTestJSON(path, `{"type":"codex","agent_private_key":"private-secret","task_id":"task-secret"}`); err != nil {
+		t.Fatalf("write auth file: %v", err)
+	}
+	auth := &coreauth.Auth{
+		ID:       "agent-auth",
+		FileName: "agent.json",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"auth_kind":         "agent_identity",
+			"agent_runtime_id":  "runtime-id",
+			"agent_private_key": "private-secret",
+			"task_id":           "task-secret",
+			"email":             "agent@example.com",
+		},
+		Attributes: map[string]string{"path": path},
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	h := &Handler{authManager: manager}
+	for _, view := range []string{"summary", "detail"} {
+		t.Run(view, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			ctx.Request = httptest.NewRequest(http.MethodGet, "/v0/management/auth-files?view="+view, nil)
+
+			h.ListAuthFiles(ctx)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+			}
+			body := recorder.Body.String()
+			for _, secret := range []string{"private-secret", "task-secret", "AgentAssertion"} {
+				if strings.Contains(body, secret) {
+					t.Fatalf("%s response leaked %q: %s", view, secret, body)
+				}
+			}
+		})
 	}
 }
 

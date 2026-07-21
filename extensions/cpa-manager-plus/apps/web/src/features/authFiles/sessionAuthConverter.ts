@@ -4,7 +4,11 @@ import type {
   AuthJsonInputType,
 } from './authJsonTypes';
 
-export type { AuthJsonConversionResult, AuthJsonDetectionType, AuthJsonInputType } from './authJsonTypes';
+export type {
+  AuthJsonConversionResult,
+  AuthJsonDetectionType,
+  AuthJsonInputType,
+} from './authJsonTypes';
 
 type JsonRecord = Record<string, unknown>;
 type TraversalState = {
@@ -62,6 +66,8 @@ const KNOWN_CREDENTIAL_KEYS = new Set([
   'cookies',
   'authorization',
   'bearer',
+  'agent_private_key',
+  'agentprivatekey',
 ]);
 
 const GENERIC_CREDENTIAL_KEYS = new Set([
@@ -525,6 +531,8 @@ const hasCpaAuthFileShape = (record: JsonRecord) => {
     sessionToken: record.sessionToken,
     apiKey: record.apiKey,
     privateKey: record.privateKey,
+    agent_private_key: record.agent_private_key,
+    agentPrivateKey: record.agentPrivateKey,
     secret: record.secret,
     session_secret: record.session_secret,
     sessionSecret: record.sessionSecret,
@@ -552,7 +560,9 @@ const hasCpaAuthFileShape = (record: JsonRecord) => {
       record.refreshToken,
       record.sessionToken,
       record.apiKey,
-      record.privateKey
+      record.privateKey,
+      record.agent_private_key,
+      record.agentPrivateKey
     )
   );
 
@@ -750,6 +760,28 @@ const readSub2ApiCredentialString = (
   return firstNonEmptyString(...values);
 };
 
+const isSub2ApiAgentIdentityCredentials = (
+  credentials: JsonRecord,
+  extra: JsonRecord | undefined
+) => {
+  const authMode = readSub2ApiCredentialString(
+    credentials,
+    extra,
+    'auth_mode',
+    'authMode',
+    'openai_auth_mode'
+  )
+    ?.replace(/[\s_-]/g, '')
+    .toLowerCase();
+  return (
+    authMode === 'agentidentity' ||
+    Boolean(
+      readSub2ApiCredentialString(credentials, extra, 'agent_private_key', 'agentPrivateKey') &&
+      readSub2ApiCredentialString(credentials, extra, 'agent_runtime_id', 'agentRuntimeId')
+    )
+  );
+};
+
 const convertSub2ApiAccountToCpaAuthJson = (
   account: JsonRecord,
   exportedAt: unknown,
@@ -764,45 +796,80 @@ const convertSub2ApiAccountToCpaAuthJson = (
   }
 
   const extra = isRecord(account.extra) ? account.extra : undefined;
+  const agentIdentity = isSub2ApiAgentIdentityCredentials(credentials, extra);
   const accessToken = firstNonEmptyString(credentials.access_token, credentials.accessToken);
-  if (!accessToken) {
+  if (!agentIdentity && !accessToken) {
     throw new AuthJsonConversionError(
       `sub2api OpenAI OAuth account ${getSub2ApiAccountLabel(account, index)} is missing credentials.access_token`
     );
   }
 
+  const agentPrivateKey = readSub2ApiCredentialString(
+    credentials,
+    extra,
+    'agent_private_key',
+    'agentPrivateKey'
+  );
+  const agentRuntimeId = readSub2ApiCredentialString(
+    credentials,
+    extra,
+    'agent_runtime_id',
+    'agentRuntimeId'
+  );
+  if (agentIdentity && !agentPrivateKey) {
+    throw new AuthJsonConversionError(
+      `sub2api OpenAI Agent Identity account ${getSub2ApiAccountLabel(account, index)} is missing credentials.agent_private_key`
+    );
+  }
+  if (agentIdentity && !agentRuntimeId) {
+    throw new AuthJsonConversionError(
+      `sub2api OpenAI Agent Identity account ${getSub2ApiAccountLabel(account, index)} is missing credentials.agent_runtime_id`
+    );
+  }
+
   const inputIdToken = firstNonEmptyString(credentials.id_token, credentials.idToken);
-  const idToken = isUnsafeIdToken(inputIdToken) ? undefined : firstNonEmptyString(inputIdToken);
-  const email = readSub2ApiCredentialString(
-    credentials,
-    extra,
-    'email',
-    'email_address',
-    'emailAddress'
+  const idPayload = parseJwtPayload(inputIdToken);
+  const idAuth = firstRecord(idPayload?.['https://api.openai.com/auth'], idPayload?.auth);
+  const idProfile = firstRecord(idPayload?.['https://api.openai.com/profile'], idPayload?.profile);
+  const idToken =
+    agentIdentity || isUnsafeIdToken(inputIdToken) ? undefined : firstNonEmptyString(inputIdToken);
+  const email = firstNonEmpty(
+    readSub2ApiCredentialString(credentials, extra, 'email', 'email_address', 'emailAddress'),
+    idProfile?.email,
+    idPayload?.email
   );
-  const accountId = readSub2ApiCredentialString(
-    credentials,
-    extra,
-    'chatgpt_account_id',
-    'chatgptAccountId',
-    'account_id',
-    'accountId'
+  const accountId = firstNonEmpty(
+    readSub2ApiCredentialString(
+      credentials,
+      extra,
+      'chatgpt_account_id',
+      'chatgptAccountId',
+      'account_id',
+      'accountId'
+    ),
+    idAuth?.chatgpt_account_id
   );
-  const userId = readSub2ApiCredentialString(
-    credentials,
-    extra,
-    'chatgpt_user_id',
-    'chatgptUserId',
-    'user_id',
-    'userId'
+  const userId = firstNonEmpty(
+    readSub2ApiCredentialString(
+      credentials,
+      extra,
+      'chatgpt_user_id',
+      'chatgptUserId',
+      'user_id',
+      'userId'
+    ),
+    idAuth?.chatgpt_user_id
   );
-  const planType = readSub2ApiCredentialString(
-    credentials,
-    extra,
-    'plan_type',
-    'planType',
-    'chatgpt_plan_type',
-    'chatgptPlanType'
+  const planType = firstNonEmpty(
+    readSub2ApiCredentialString(
+      credentials,
+      extra,
+      'plan_type',
+      'planType',
+      'chatgpt_plan_type',
+      'chatgptPlanType'
+    ),
+    idAuth?.chatgpt_plan_type
   );
   const organizationId = readSub2ApiCredentialString(
     credentials,
@@ -812,6 +879,19 @@ const convertSub2ApiAccountToCpaAuthJson = (
     'org_id',
     'orgId',
     'poid'
+  );
+  const taskId = readSub2ApiCredentialString(credentials, extra, 'task_id', 'taskId');
+  const workspaceId = readSub2ApiCredentialString(
+    credentials,
+    extra,
+    'workspace_id',
+    'workspaceId'
+  );
+  const fedRamp = firstNonEmpty(
+    credentials.chatgpt_account_is_fedramp,
+    credentials.chatgptAccountIsFedramp,
+    extra?.chatgpt_account_is_fedramp,
+    extra?.chatgptAccountIsFedramp
   );
   const expiresAt = firstNonEmpty(
     normalizeTimestamp(credentials.expires_at),
@@ -831,10 +911,22 @@ const convertSub2ApiAccountToCpaAuthJson = (
       : status && status.toLowerCase() !== 'active'
         ? true
         : undefined;
-  const name = firstNonEmpty(account.name, email, accountId, 'OpenAI OAuth Account');
+  const name = firstNonEmpty(
+    account.name,
+    email,
+    accountId,
+    agentIdentity ? 'OpenAI Agent Identity' : 'OpenAI OAuth Account'
+  );
 
   return stripUnavailable({
     type: 'codex',
+    auth_kind: agentIdentity ? 'agent_identity' : undefined,
+    auth_mode: agentIdentity ? 'agentIdentity' : undefined,
+    agent_private_key: agentIdentity ? agentPrivateKey : undefined,
+    agent_runtime_id: agentIdentity ? agentRuntimeId : undefined,
+    task_id: agentIdentity ? taskId : undefined,
+    workspace_id: agentIdentity ? workspaceId : undefined,
+    chatgpt_account_is_fedramp: agentIdentity ? fedRamp : undefined,
     account_id: accountId,
     chatgpt_account_id: accountId,
     chatgpt_user_id: userId,
@@ -844,9 +936,13 @@ const convertSub2ApiAccountToCpaAuthJson = (
     plan_type: planType,
     chatgpt_plan_type: planType,
     id_token: idToken,
-    access_token: accessToken,
-    refresh_token: firstNonEmptyString(credentials.refresh_token, credentials.refreshToken),
-    client_id: firstNonEmptyString(credentials.client_id, credentials.clientId),
+    access_token: agentIdentity ? undefined : accessToken,
+    refresh_token: agentIdentity
+      ? undefined
+      : firstNonEmptyString(credentials.refresh_token, credentials.refreshToken),
+    client_id: agentIdentity
+      ? undefined
+      : firstNonEmptyString(credentials.client_id, credentials.clientId),
     last_refresh: lastRefresh,
     expired: expiresAt,
     disabled,
@@ -858,7 +954,7 @@ const convertSub2ApiToCpaAuthJson = (value: unknown, now: Date): AuthJsonConvers
   const openAiOauthAccounts = accounts.filter(isSub2ApiOpenAIOAuthAccount);
   if (openAiOauthAccounts.length === 0) {
     throw new AuthJsonConversionError(
-      'No sub2api OpenAI OAuth account with credentials.access_token was found'
+      'No sub2api OpenAI OAuth account with access token or Agent Identity credentials was found'
     );
   }
 
@@ -886,7 +982,42 @@ const sanitizeUnsafeIdTokens = (value: unknown): unknown => {
 };
 
 const normalizeCpaAuthRecord = (record: JsonRecord, label: string): JsonRecord => {
-  const normalized = sanitizeUnsafeIdTokens(record) as JsonRecord;
+  let normalized = sanitizeUnsafeIdTokens(record) as JsonRecord;
+  const authMode = firstNonEmptyString(normalized.auth_mode, normalized.authMode)
+    ?.replace(/[\s_-]/g, '')
+    .toLowerCase();
+  const authKind = firstNonEmptyString(normalized.auth_kind)?.toLowerCase();
+  if (authMode === 'agentidentity' || authKind === 'agent_identity') {
+    const agentPrivateKey = firstNonEmptyString(
+      normalized.agent_private_key,
+      normalized.agentPrivateKey
+    );
+    const agentRuntimeId = firstNonEmptyString(
+      normalized.agent_runtime_id,
+      normalized.agentRuntimeId
+    );
+    if (!agentPrivateKey) {
+      throw new AuthJsonConversionError(`${label} is missing agent_private_key`);
+    }
+    if (!agentRuntimeId) {
+      throw new AuthJsonConversionError(`${label} is missing agent_runtime_id`);
+    }
+    const normalizedAgentIdentity: JsonRecord = {
+      ...normalized,
+      auth_kind: 'agent_identity',
+      auth_mode: 'agentIdentity',
+      agent_private_key: agentPrivateKey,
+      agent_runtime_id: agentRuntimeId,
+    };
+    const taskId = firstNonEmptyString(normalized.task_id, normalized.taskId);
+    if (taskId) normalizedAgentIdentity.task_id = taskId;
+    else delete normalizedAgentIdentity.task_id;
+    normalized = normalizedAgentIdentity;
+    delete normalized.authMode;
+    delete normalized.agentPrivateKey;
+    delete normalized.agentRuntimeId;
+    delete normalized.taskId;
+  }
   if (!hasCpaAuthFileShape(normalized)) {
     throw new AuthJsonConversionError(`${label} is missing required auth fields`);
   }
@@ -920,9 +1051,7 @@ const convertCockpitAccountToCpaAuthJson = (record: JsonRecord, now: Date, index
   const sanitizedRecord = sanitizeUnsafeIdTokens(record) as JsonRecord;
   const accessToken = firstNonEmptyString(record.access_token, record.accessToken);
   if (!accessToken) {
-    throw new AuthJsonConversionError(
-      `Cockpit account #${index + 1} is missing access_token`
-    );
+    throw new AuthJsonConversionError(`Cockpit account #${index + 1} is missing access_token`);
   }
   const inputIdToken = firstNonEmptyString(record.id_token, record.idToken);
   const accessPayload = parseJwtPayload(accessToken);
@@ -1124,9 +1253,12 @@ export const getDefaultSessionAuthFileName = (authJson: JsonRecord) => {
       preserveEmailSymbols: true,
     }
   );
-  const plan = buildSafeFileNameSegment(firstNonEmpty(authJson.plan_type, authJson.chatgpt_plan_type), {
-    maxLength: 32,
-  });
+  const plan = buildSafeFileNameSegment(
+    firstNonEmpty(authJson.plan_type, authJson.chatgpt_plan_type),
+    {
+      maxLength: 32,
+    }
+  );
   const baseName = [provider, id, identity, plan].filter(Boolean).join('-');
 
   return `${baseName}.json`;

@@ -32,6 +32,50 @@ describe('convertAuthJsonInput', () => {
     expect(result).toEqual(input);
   });
 
+  it('accepts a CPA Agent Identity auth JSON object without OAuth tokens', () => {
+    const input = {
+      type: 'codex',
+      auth_kind: 'agent_identity',
+      auth_mode: 'agentIdentity',
+      agent_runtime_id: 'runtime-id',
+      task_id: 'task-id',
+      agent_private_key: 'pkcs8-private-key',
+      account_id: 'account-id',
+      email: 'agent@example.com',
+      plan_type: 'k12',
+    };
+
+    const result = convertAuthJsonInput(JSON.stringify(input), 'cpa');
+
+    expect(result).toEqual(input);
+  });
+
+  it('normalizes camelCase CPA Agent Identity fields for runtime use', () => {
+    const result = convertAuthJsonInput(
+      JSON.stringify({
+        type: 'codex',
+        authMode: 'agentIdentity',
+        agentRuntimeId: 'runtime-id',
+        taskId: 'task-id',
+        agentPrivateKey: 'pkcs8-private-key',
+      }),
+      'cpa'
+    );
+
+    expect(result).toMatchObject({
+      type: 'codex',
+      auth_kind: 'agent_identity',
+      auth_mode: 'agentIdentity',
+      agent_runtime_id: 'runtime-id',
+      task_id: 'task-id',
+      agent_private_key: 'pkcs8-private-key',
+    });
+    expect(result).not.toHaveProperty('authMode');
+    expect(result).not.toHaveProperty('agentRuntimeId');
+    expect(result).not.toHaveProperty('taskId');
+    expect(result).not.toHaveProperty('agentPrivateKey');
+  });
+
   it('converts a ChatGPT session object to CPA Codex auth JSON', () => {
     const accessToken = buildJwt({
       exp: 1_800_000_000,
@@ -1218,6 +1262,185 @@ describe('convertAuthJsonInput', () => {
     });
   });
 
+  it('converts sub2api Agent Identity credentials without an access token', () => {
+    const idToken = buildJwt({
+      email: 'agent@example.com',
+      'https://api.openai.com/auth': {
+        chatgpt_account_id: 'team-account',
+        chatgpt_user_id: 'agent-user',
+        chatgpt_plan_type: 'k12',
+      },
+    });
+    const result = convertAuthJsonInput(
+      JSON.stringify({
+        type: 'sub2api-data',
+        version: 1,
+        exported_at: '2026-07-21T07:09:24.282Z',
+        proxies: [],
+        accounts: [
+          {
+            name: 'K12 Agent',
+            platform: 'openai',
+            type: 'oauth',
+            credentials: {
+              auth_mode: 'agentIdentity',
+              agent_private_key: 'pkcs8-private-key',
+              agent_runtime_id: 'agent-runtime',
+              task_id: 'task-id',
+              workspace_id: 'team-account',
+              id_token: idToken,
+            },
+          },
+        ],
+      }),
+      'sub2api'
+    );
+
+    expect(result).toMatchObject({
+      type: 'codex',
+      auth_kind: 'agent_identity',
+      auth_mode: 'agentIdentity',
+      agent_private_key: 'pkcs8-private-key',
+      agent_runtime_id: 'agent-runtime',
+      task_id: 'task-id',
+      workspace_id: 'team-account',
+      account_id: 'team-account',
+      chatgpt_account_id: 'team-account',
+      chatgpt_user_id: 'agent-user',
+      email: 'agent@example.com',
+      plan_type: 'k12',
+    });
+    expect(result).not.toHaveProperty('access_token');
+    expect(result).not.toHaveProperty('refresh_token');
+    expect(result).not.toHaveProperty('id_token');
+  });
+
+  it('detects sub2api Agent Identity fields stored in account.extra', () => {
+    const result = convertAuthJsonInput(
+      JSON.stringify({
+        accounts: [
+          {
+            name: 'Extra Agent',
+            platform: 'openai',
+            type: 'oauth',
+            credentials: {},
+            extra: {
+              authMode: 'agentIdentity',
+              agentPrivateKey: 'pkcs8-private-key',
+              agentRuntimeId: 'runtime-id',
+              taskId: 'task-id',
+              email: 'agent@example.com',
+            },
+          },
+        ],
+      }),
+      'sub2api'
+    );
+
+    expect(result).toMatchObject({
+      type: 'codex',
+      auth_kind: 'agent_identity',
+      auth_mode: 'agentIdentity',
+      agent_private_key: 'pkcs8-private-key',
+      agent_runtime_id: 'runtime-id',
+      task_id: 'task-id',
+      email: 'agent@example.com',
+    });
+    expect(result).not.toHaveProperty('access_token');
+  });
+
+  it('converts a 50-account Agent Identity export to 50 CPA records', () => {
+    const accounts = Array.from({ length: 50 }, (_, index) => ({
+      name: `K12 Agent ${index + 1}`,
+      platform: 'openai',
+      type: 'oauth',
+      credentials: {
+        auth_mode: 'agentIdentity',
+        agent_private_key: `private-key-${index + 1}`,
+        agent_runtime_id: `runtime-${index + 1}`,
+        task_id: `task-${index + 1}`,
+        chatgpt_account_id: 'team-account',
+        email: `agent-${index + 1}@example.com`,
+        plan_type: 'k12',
+      },
+    }));
+
+    const result = convertAuthJsonInput(
+      JSON.stringify({ type: 'sub2api-data', version: 1, proxies: [], accounts }),
+      'sub2api'
+    );
+    expect(result).toHaveLength(50);
+    expect(result).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ agent_runtime_id: 'runtime-1', auth_kind: 'agent_identity' }),
+        expect.objectContaining({ agent_runtime_id: 'runtime-50', auth_kind: 'agent_identity' }),
+      ])
+    );
+  });
+
+  it('rejects Agent Identity credentials missing their private key', () => {
+    expect(() =>
+      convertAuthJsonInput(
+        JSON.stringify({
+          accounts: [
+            {
+              name: 'Missing Agent Key',
+              platform: 'openai',
+              type: 'oauth',
+              credentials: { auth_mode: 'agentIdentity', agent_runtime_id: 'runtime-id' },
+            },
+          ],
+        }),
+        'sub2api'
+      )
+    ).toThrow('Missing Agent Key" is missing credentials.agent_private_key');
+  });
+
+  it('rejects Agent Identity credentials missing their runtime id', () => {
+    expect(() =>
+      convertAuthJsonInput(
+        JSON.stringify({
+          accounts: [
+            {
+              name: 'Missing Runtime',
+              platform: 'openai',
+              type: 'oauth',
+              credentials: { auth_mode: 'agentIdentity', agent_private_key: 'private-key' },
+            },
+          ],
+        }),
+        'sub2api'
+      )
+    ).toThrow('Missing Runtime" is missing credentials.agent_runtime_id');
+  });
+
+  it('allows Agent Identity credentials without a task id', () => {
+    const result = convertAuthJsonInput(
+      JSON.stringify({
+        accounts: [
+          {
+            name: 'First Registration',
+            platform: 'openai',
+            type: 'oauth',
+            credentials: {
+              auth_mode: 'agentIdentity',
+              agent_private_key: 'private-key',
+              agent_runtime_id: 'runtime-id',
+            },
+          },
+        ],
+      }),
+      'sub2api'
+    );
+
+    expect(result).toMatchObject({
+      auth_kind: 'agent_identity',
+      agent_private_key: 'private-key',
+      agent_runtime_id: 'runtime-id',
+    });
+    expect(result).not.toHaveProperty('task_id');
+  });
+
   it('omits unsafe sub2api id_token values instead of saving them', () => {
     const idToken = buildJwt({ sub: 'unsafe-user' });
     const result = convertAuthJsonInput(
@@ -1265,7 +1488,9 @@ describe('convertAuthJsonInput', () => {
         }),
         'sub2api'
       )
-    ).toThrow('No sub2api OpenAI OAuth account with credentials.access_token was found');
+    ).toThrow(
+      'No sub2api OpenAI OAuth account with access token or Agent Identity credentials was found'
+    );
   });
 
   it('rejects sub2api OpenAI OAuth accounts missing credentials.access_token', () => {

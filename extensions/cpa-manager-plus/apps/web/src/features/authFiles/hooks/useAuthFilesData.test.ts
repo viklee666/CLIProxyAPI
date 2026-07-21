@@ -126,7 +126,11 @@ describe('buildConvertedAuthJsonUploads', () => {
       access_token: 'existing-access-token',
     };
 
-    const result = await buildConvertedAuthJsonUploads('cpa', 'custom-auth.json', JSON.stringify(input));
+    const result = await buildConvertedAuthJsonUploads(
+      'cpa',
+      'custom-auth.json',
+      JSON.stringify(input)
+    );
 
     expect(result).toEqual([{ name: 'custom-auth.json', text: JSON.stringify(input) }]);
   });
@@ -315,9 +319,9 @@ describe('useAuthFilesData savePastedAuthJson', () => {
     hook.unmount();
   });
 
-  it('uploads large multi-account CPA input in sequential file-count batches', async () => {
+  it('uploads 50 converted accounts in 20/20/10 batches', async () => {
     const hook = mountUseAuthFilesData();
-    const accounts = Array.from({ length: 21 }, (_, index) => ({
+    const accounts = Array.from({ length: 50 }, (_, index) => ({
       type: 'codex',
       email: `user-${index + 1}@example.com`,
       access_token: `access-token-${index + 1}`,
@@ -327,11 +331,12 @@ describe('useAuthFilesData savePastedAuthJson', () => {
       .getCurrent()
       .savePastedAuthJson('cpa', 'bulk-accounts.json', JSON.stringify(accounts));
 
-    expect(mocks.uploadJsonTexts).toHaveBeenCalledTimes(2);
+    expect(mocks.uploadJsonTexts).toHaveBeenCalledTimes(3);
     expect(mocks.uploadJsonTexts.mock.calls[0][0]).toHaveLength(20);
-    expect(mocks.uploadJsonTexts.mock.calls[1][0]).toHaveLength(1);
+    expect(mocks.uploadJsonTexts.mock.calls[1][0]).toHaveLength(20);
+    expect(mocks.uploadJsonTexts.mock.calls[2][0]).toHaveLength(10);
     expect(mocks.uploadJsonTexts.mock.calls[0][0][0].name).toBe('bulk-accounts-001.json');
-    expect(mocks.uploadJsonTexts.mock.calls[1][0][0].name).toBe('bulk-accounts-021.json');
+    expect(mocks.uploadJsonTexts.mock.calls[2][0][9].name).toBe('bulk-accounts-050.json');
     hook.unmount();
   });
 
@@ -660,10 +665,9 @@ describe('useAuthFilesData batchPatchFields', () => {
         .batchPatchFields([{ name: 'single-codex.json' }], { websockets: false });
     });
 
-    expect(mocks.patchFieldsBatch).toHaveBeenCalledWith(
-      [{ name: 'single-codex.json' }],
-      { websockets: false }
-    );
+    expect(mocks.patchFieldsBatch).toHaveBeenCalledWith([{ name: 'single-codex.json' }], {
+      websockets: false,
+    });
     expect(mocks.patchFields).not.toHaveBeenCalled();
     expect(mocks.patchFieldsForAuthIndexes).not.toHaveBeenCalled();
     expect(result).toEqual({ success: 1, failed: 0, failedNames: [] });
