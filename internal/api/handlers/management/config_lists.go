@@ -310,14 +310,18 @@ func (h *Handler) PatchGeminiKey(c *gin.Context) {
 }
 
 func (h *Handler) DeleteGeminiKey(c *gin.Context) {
+	liveIndexByID := h.liveAuthIndexByID()
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	authIndices := apiKeyConfigAuthIndices(h.cfg.GeminiKey, "gemini:apikey", liveIndexByID)
 	if val := strings.TrimSpace(c.Query("api-key")); val != "" {
 		if baseRaw, okBase := c.GetQuery("base-url"); okBase {
 			base := strings.TrimSpace(baseRaw)
 			out := make([]config.GeminiKey, 0, len(h.cfg.GeminiKey))
-			for _, v := range h.cfg.GeminiKey {
+			deletedAuthIndices := make([]string, 0, 1)
+			for i, v := range h.cfg.GeminiKey {
 				if strings.TrimSpace(v.APIKey) == val && strings.TrimSpace(v.BaseURL) == base {
+					deletedAuthIndices = append(deletedAuthIndices, authIndices[i])
 					continue
 				}
 				out = append(out, v)
@@ -325,7 +329,7 @@ func (h *Handler) DeleteGeminiKey(c *gin.Context) {
 			if len(out) != len(h.cfg.GeminiKey) {
 				h.cfg.GeminiKey = out
 				h.cfg.SanitizeGeminiKeys()
-				h.persistLocked(c)
+				h.persistLockedWithDeletedAuthIndices(c, deletedAuthIndices)
 			} else {
 				c.JSON(404, gin.H{"error": "item not found"})
 			}
@@ -352,7 +356,7 @@ func (h *Handler) DeleteGeminiKey(c *gin.Context) {
 		}
 		h.cfg.GeminiKey = append(h.cfg.GeminiKey[:matchIndex], h.cfg.GeminiKey[matchIndex+1:]...)
 		h.cfg.SanitizeGeminiKeys()
-		h.persistLocked(c)
+		h.persistLockedWithDeletedAuthIndices(c, []string{authIndices[matchIndex]})
 		return
 	}
 	if idxStr := c.Query("index"); idxStr != "" {
@@ -360,7 +364,7 @@ func (h *Handler) DeleteGeminiKey(c *gin.Context) {
 		if _, err := fmt.Sscanf(idxStr, "%d", &idx); err == nil && idx >= 0 && idx < len(h.cfg.GeminiKey) {
 			h.cfg.GeminiKey = append(h.cfg.GeminiKey[:idx], h.cfg.GeminiKey[idx+1:]...)
 			h.cfg.SanitizeGeminiKeys()
-			h.persistLocked(c)
+			h.persistLockedWithDeletedAuthIndices(c, []string{authIndices[idx]})
 			return
 		}
 	}
@@ -499,14 +503,18 @@ func (h *Handler) PatchInteractionsKey(c *gin.Context) {
 }
 
 func (h *Handler) DeleteInteractionsKey(c *gin.Context) {
+	liveIndexByID := h.liveAuthIndexByID()
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	authIndices := apiKeyConfigAuthIndices(h.cfg.InteractionsKey, "gemini-interactions:apikey", liveIndexByID)
 	if val := strings.TrimSpace(c.Query("api-key")); val != "" {
 		if baseRaw, okBase := c.GetQuery("base-url"); okBase {
 			base := strings.TrimSpace(baseRaw)
 			out := make([]config.GeminiKey, 0, len(h.cfg.InteractionsKey))
-			for _, v := range h.cfg.InteractionsKey {
+			deletedAuthIndices := make([]string, 0, 1)
+			for i, v := range h.cfg.InteractionsKey {
 				if strings.TrimSpace(v.APIKey) == val && strings.TrimSpace(v.BaseURL) == base {
+					deletedAuthIndices = append(deletedAuthIndices, authIndices[i])
 					continue
 				}
 				out = append(out, v)
@@ -514,7 +522,7 @@ func (h *Handler) DeleteInteractionsKey(c *gin.Context) {
 			if len(out) != len(h.cfg.InteractionsKey) {
 				h.cfg.InteractionsKey = out
 				h.cfg.SanitizeInteractionsKeys()
-				h.persistLocked(c)
+				h.persistLockedWithDeletedAuthIndices(c, deletedAuthIndices)
 			} else {
 				c.JSON(404, gin.H{"error": "item not found"})
 			}
@@ -541,7 +549,7 @@ func (h *Handler) DeleteInteractionsKey(c *gin.Context) {
 		}
 		h.cfg.InteractionsKey = append(h.cfg.InteractionsKey[:matchIndex], h.cfg.InteractionsKey[matchIndex+1:]...)
 		h.cfg.SanitizeInteractionsKeys()
-		h.persistLocked(c)
+		h.persistLockedWithDeletedAuthIndices(c, []string{authIndices[matchIndex]})
 		return
 	}
 	if idxStr := c.Query("index"); idxStr != "" {
@@ -550,7 +558,7 @@ func (h *Handler) DeleteInteractionsKey(c *gin.Context) {
 		if errScan == nil && idx >= 0 && idx < len(h.cfg.InteractionsKey) {
 			h.cfg.InteractionsKey = append(h.cfg.InteractionsKey[:idx], h.cfg.InteractionsKey[idx+1:]...)
 			h.cfg.SanitizeInteractionsKeys()
-			h.persistLocked(c)
+			h.persistLockedWithDeletedAuthIndices(c, []string{authIndices[idx]})
 			return
 		}
 	}
@@ -703,21 +711,25 @@ func (h *Handler) PatchClaudeKey(c *gin.Context) {
 }
 
 func (h *Handler) DeleteClaudeKey(c *gin.Context) {
+	liveIndexByID := h.liveAuthIndexByID()
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	authIndices := apiKeyConfigAuthIndices(h.cfg.ClaudeKey, "claude:apikey", liveIndexByID)
 	if val := strings.TrimSpace(c.Query("api-key")); val != "" {
 		if baseRaw, okBase := c.GetQuery("base-url"); okBase {
 			base := strings.TrimSpace(baseRaw)
 			out := make([]config.ClaudeKey, 0, len(h.cfg.ClaudeKey))
-			for _, v := range h.cfg.ClaudeKey {
+			deletedAuthIndices := make([]string, 0, 1)
+			for i, v := range h.cfg.ClaudeKey {
 				if strings.TrimSpace(v.APIKey) == val && strings.TrimSpace(v.BaseURL) == base {
+					deletedAuthIndices = append(deletedAuthIndices, authIndices[i])
 					continue
 				}
 				out = append(out, v)
 			}
 			h.cfg.ClaudeKey = out
 			h.cfg.SanitizeClaudeKeys()
-			h.persistLocked(c)
+			h.persistLockedWithDeletedAuthIndices(c, deletedAuthIndices)
 			return
 		}
 
@@ -739,7 +751,11 @@ func (h *Handler) DeleteClaudeKey(c *gin.Context) {
 			h.cfg.ClaudeKey = append(h.cfg.ClaudeKey[:matchIndex], h.cfg.ClaudeKey[matchIndex+1:]...)
 		}
 		h.cfg.SanitizeClaudeKeys()
-		h.persistLocked(c)
+		deletedAuthIndices := []string(nil)
+		if matchIndex != -1 {
+			deletedAuthIndices = []string{authIndices[matchIndex]}
+		}
+		h.persistLockedWithDeletedAuthIndices(c, deletedAuthIndices)
 		return
 	}
 	if idxStr := c.Query("index"); idxStr != "" {
@@ -748,7 +764,7 @@ func (h *Handler) DeleteClaudeKey(c *gin.Context) {
 		if err == nil && idx >= 0 && idx < len(h.cfg.ClaudeKey) {
 			h.cfg.ClaudeKey = append(h.cfg.ClaudeKey[:idx], h.cfg.ClaudeKey[idx+1:]...)
 			h.cfg.SanitizeClaudeKeys()
-			h.persistLocked(c)
+			h.persistLockedWithDeletedAuthIndices(c, []string{authIndices[idx]})
 			return
 		}
 	}
@@ -878,18 +894,23 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 }
 
 func (h *Handler) DeleteOpenAICompat(c *gin.Context) {
+	liveIndexByID := h.liveAuthIndexByID()
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	authIndexSets := openAICompatibilityAuthIndexSets(h.cfg.OpenAICompatibility, liveIndexByID)
 	if name := c.Query("name"); name != "" {
 		out := make([]config.OpenAICompatibility, 0, len(h.cfg.OpenAICompatibility))
-		for _, v := range h.cfg.OpenAICompatibility {
+		deletedAuthIndices := make([]string, 0)
+		for i, v := range h.cfg.OpenAICompatibility {
 			if v.Name != name {
 				out = append(out, v)
+				continue
 			}
+			deletedAuthIndices = append(deletedAuthIndices, authIndexSets[i].all()...)
 		}
 		h.cfg.OpenAICompatibility = out
 		h.cfg.SanitizeOpenAICompatibility()
-		h.persistLocked(c)
+		h.persistLockedWithDeletedAuthIndices(c, deletedAuthIndices)
 		return
 	}
 	if idxStr := c.Query("index"); idxStr != "" {
@@ -898,7 +919,7 @@ func (h *Handler) DeleteOpenAICompat(c *gin.Context) {
 		if err == nil && idx >= 0 && idx < len(h.cfg.OpenAICompatibility) {
 			h.cfg.OpenAICompatibility = append(h.cfg.OpenAICompatibility[:idx], h.cfg.OpenAICompatibility[idx+1:]...)
 			h.cfg.SanitizeOpenAICompatibility()
-			h.persistLocked(c)
+			h.persistLockedWithDeletedAuthIndices(c, authIndexSets[idx].all())
 			return
 		}
 	}
@@ -1046,21 +1067,25 @@ func (h *Handler) PatchVertexCompatKey(c *gin.Context) {
 }
 
 func (h *Handler) DeleteVertexCompatKey(c *gin.Context) {
+	liveIndexByID := h.liveAuthIndexByID()
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	authIndices := vertexConfigAuthIndices(h.cfg.VertexCompatAPIKey, liveIndexByID)
 	if val := strings.TrimSpace(c.Query("api-key")); val != "" {
 		if baseRaw, okBase := c.GetQuery("base-url"); okBase {
 			base := strings.TrimSpace(baseRaw)
 			out := make([]config.VertexCompatKey, 0, len(h.cfg.VertexCompatAPIKey))
-			for _, v := range h.cfg.VertexCompatAPIKey {
+			deletedAuthIndices := make([]string, 0, 1)
+			for i, v := range h.cfg.VertexCompatAPIKey {
 				if strings.TrimSpace(v.APIKey) == val && strings.TrimSpace(v.BaseURL) == base {
+					deletedAuthIndices = append(deletedAuthIndices, authIndices[i])
 					continue
 				}
 				out = append(out, v)
 			}
 			h.cfg.VertexCompatAPIKey = out
 			h.cfg.SanitizeVertexCompatKeys()
-			h.persistLocked(c)
+			h.persistLockedWithDeletedAuthIndices(c, deletedAuthIndices)
 			return
 		}
 
@@ -1082,7 +1107,11 @@ func (h *Handler) DeleteVertexCompatKey(c *gin.Context) {
 			h.cfg.VertexCompatAPIKey = append(h.cfg.VertexCompatAPIKey[:matchIndex], h.cfg.VertexCompatAPIKey[matchIndex+1:]...)
 		}
 		h.cfg.SanitizeVertexCompatKeys()
-		h.persistLocked(c)
+		deletedAuthIndices := []string(nil)
+		if matchIndex != -1 {
+			deletedAuthIndices = []string{authIndices[matchIndex]}
+		}
+		h.persistLockedWithDeletedAuthIndices(c, deletedAuthIndices)
 		return
 	}
 	if idxStr := c.Query("index"); idxStr != "" {
@@ -1091,7 +1120,7 @@ func (h *Handler) DeleteVertexCompatKey(c *gin.Context) {
 		if errScan == nil && idx >= 0 && idx < len(h.cfg.VertexCompatAPIKey) {
 			h.cfg.VertexCompatAPIKey = append(h.cfg.VertexCompatAPIKey[:idx], h.cfg.VertexCompatAPIKey[idx+1:]...)
 			h.cfg.SanitizeVertexCompatKeys()
-			h.persistLocked(c)
+			h.persistLockedWithDeletedAuthIndices(c, []string{authIndices[idx]})
 			return
 		}
 	}
@@ -1540,21 +1569,25 @@ func (h *Handler) PatchCodexKey(c *gin.Context) {
 }
 
 func (h *Handler) DeleteCodexKey(c *gin.Context) {
+	liveIndexByID := h.liveAuthIndexByID()
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	authIndices := apiKeyConfigAuthIndices(h.cfg.CodexKey, "codex:apikey", liveIndexByID)
 	if val := strings.TrimSpace(c.Query("api-key")); val != "" {
 		if baseRaw, okBase := c.GetQuery("base-url"); okBase {
 			base := strings.TrimSpace(baseRaw)
 			out := make([]config.CodexKey, 0, len(h.cfg.CodexKey))
-			for _, v := range h.cfg.CodexKey {
+			deletedAuthIndices := make([]string, 0, 1)
+			for i, v := range h.cfg.CodexKey {
 				if strings.TrimSpace(v.APIKey) == val && strings.TrimSpace(v.BaseURL) == base {
+					deletedAuthIndices = append(deletedAuthIndices, authIndices[i])
 					continue
 				}
 				out = append(out, v)
 			}
 			h.cfg.CodexKey = out
 			h.cfg.SanitizeCodexKeys()
-			h.persistLocked(c)
+			h.persistLockedWithDeletedAuthIndices(c, deletedAuthIndices)
 			return
 		}
 
@@ -1576,7 +1609,11 @@ func (h *Handler) DeleteCodexKey(c *gin.Context) {
 			h.cfg.CodexKey = append(h.cfg.CodexKey[:matchIndex], h.cfg.CodexKey[matchIndex+1:]...)
 		}
 		h.cfg.SanitizeCodexKeys()
-		h.persistLocked(c)
+		deletedAuthIndices := []string(nil)
+		if matchIndex != -1 {
+			deletedAuthIndices = []string{authIndices[matchIndex]}
+		}
+		h.persistLockedWithDeletedAuthIndices(c, deletedAuthIndices)
 		return
 	}
 	if idxStr := c.Query("index"); idxStr != "" {
@@ -1585,7 +1622,7 @@ func (h *Handler) DeleteCodexKey(c *gin.Context) {
 		if err == nil && idx >= 0 && idx < len(h.cfg.CodexKey) {
 			h.cfg.CodexKey = append(h.cfg.CodexKey[:idx], h.cfg.CodexKey[idx+1:]...)
 			h.cfg.SanitizeCodexKeys()
-			h.persistLocked(c)
+			h.persistLockedWithDeletedAuthIndices(c, []string{authIndices[idx]})
 			return
 		}
 	}
@@ -1732,21 +1769,25 @@ func (h *Handler) PatchXAIKey(c *gin.Context) {
 }
 
 func (h *Handler) DeleteXAIKey(c *gin.Context) {
+	liveIndexByID := h.liveAuthIndexByID()
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	authIndices := apiKeyConfigAuthIndices(h.cfg.XAIKey, "xai:apikey", liveIndexByID)
 	if val := strings.TrimSpace(c.Query("api-key")); val != "" {
 		if baseRaw, okBase := c.GetQuery("base-url"); okBase {
 			base := strings.TrimSpace(baseRaw)
 			out := make([]config.XAIKey, 0, len(h.cfg.XAIKey))
-			for _, entry := range h.cfg.XAIKey {
+			deletedAuthIndices := make([]string, 0, 1)
+			for i, entry := range h.cfg.XAIKey {
 				if strings.TrimSpace(entry.APIKey) == val && strings.TrimSpace(entry.BaseURL) == base {
+					deletedAuthIndices = append(deletedAuthIndices, authIndices[i])
 					continue
 				}
 				out = append(out, entry)
 			}
 			h.cfg.XAIKey = out
 			h.cfg.SanitizeXAIKeys()
-			h.persistLocked(c)
+			h.persistLockedWithDeletedAuthIndices(c, deletedAuthIndices)
 			return
 		}
 
@@ -1768,7 +1809,11 @@ func (h *Handler) DeleteXAIKey(c *gin.Context) {
 			h.cfg.XAIKey = append(h.cfg.XAIKey[:matchIndex], h.cfg.XAIKey[matchIndex+1:]...)
 		}
 		h.cfg.SanitizeXAIKeys()
-		h.persistLocked(c)
+		deletedAuthIndices := []string(nil)
+		if matchIndex != -1 {
+			deletedAuthIndices = []string{authIndices[matchIndex]}
+		}
+		h.persistLockedWithDeletedAuthIndices(c, deletedAuthIndices)
 		return
 	}
 	if idxStr := c.Query("index"); idxStr != "" {
@@ -1777,7 +1822,7 @@ func (h *Handler) DeleteXAIKey(c *gin.Context) {
 		if errScan == nil && idx >= 0 && idx < len(h.cfg.XAIKey) {
 			h.cfg.XAIKey = append(h.cfg.XAIKey[:idx], h.cfg.XAIKey[idx+1:]...)
 			h.cfg.SanitizeXAIKeys()
-			h.persistLocked(c)
+			h.persistLockedWithDeletedAuthIndices(c, []string{authIndices[idx]})
 			return
 		}
 	}

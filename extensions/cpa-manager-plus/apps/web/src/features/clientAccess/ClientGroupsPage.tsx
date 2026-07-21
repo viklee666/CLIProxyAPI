@@ -13,6 +13,7 @@ import styles from './ClientAccessPage.module.scss';
 
 type GroupForm = { name: string; description: string; enabled: boolean };
 type GroupResourceSummary = {
+  credentialCount: number;
   credentials: string[];
   providers: Array<{ name: string; count: number }>;
   priorities: number[];
@@ -61,12 +62,18 @@ export function ClientGroupsPage() {
         if (authIndex) fileByAuthIndex.set(authIndex, file);
       }
       const credentialsByGroup = new Map<number, string[]>();
+      const credentialCountByGroup = new Map<number, number>();
       const providersByGroup = new Map<number, Map<string, number>>();
       const prioritiesByGroup = new Map<number, Set<number>>();
       for (const binding of bindings) {
         const file = fileByAuthIndex.get(binding.auth_index);
-        const credentialName = file?.name || binding.auth_index;
-        const providerName = String(file?.provider ?? file?.type ?? 'Unknown').trim() || 'Unknown';
+        if (!file) continue;
+        const credentialName = file.name || binding.auth_index;
+        const providerName = String(file.provider ?? file.type ?? 'Unknown').trim() || 'Unknown';
+        credentialCountByGroup.set(
+          binding.group_id,
+          (credentialCountByGroup.get(binding.group_id) ?? 0) + 1
+        );
         credentialsByGroup.set(binding.group_id, [
           ...(credentialsByGroup.get(binding.group_id) ?? []),
           credentialName,
@@ -81,6 +88,7 @@ export function ClientGroupsPage() {
       const next: Record<number, GroupResourceSummary> = {};
       for (const group of groups) {
         next[group.id] = {
+          credentialCount: credentialCountByGroup.get(group.id) ?? 0,
           credentials: Array.from(new Set(credentialsByGroup.get(group.id) ?? [])).sort(),
           providers: Array.from(providersByGroup.get(group.id)?.entries() ?? [])
             .map(([name, count]) => ({ name, count }))
@@ -204,11 +212,11 @@ export function ClientGroupsPage() {
             <tbody>
               {items.map((group) => {
                 const summary = resourceSummaries[group.id];
+                const credentialCount = summary?.credentialCount ?? group.credential_count;
                 const visibleCredentials = summary?.credentials.slice(0, 3) ?? [];
                 const remainingCredentials = Math.max(
                   0,
-                  (summary?.credentials.length ?? group.credential_count) -
-                    visibleCredentials.length
+                  credentialCount - visibleCredentials.length
                 );
                 return (
                   <tr key={group.id}>
@@ -229,7 +237,7 @@ export function ClientGroupsPage() {
                     <td>
                       {summaryLoading && !summary ? (
                         <span className={styles.muted}>{t('common.loading')}</span>
-                      ) : group.credential_count === 0 ? (
+                      ) : credentialCount === 0 ? (
                         <span className={styles.resourceEmpty}>
                           {t('client_access.no_assigned_resources', {
                             defaultValue: 'No resources assigned',
@@ -240,8 +248,8 @@ export function ClientGroupsPage() {
                           <div className={styles.resourceSummaryTop}>
                             <b>
                               {t('client_access.credential_count', {
-                                count: group.credential_count,
-                                defaultValue: `${group.credential_count} credentials`,
+                                count: credentialCount,
+                                defaultValue: `${credentialCount} credentials`,
                               })}
                             </b>
                             {summary?.priorities.length ? (

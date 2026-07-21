@@ -1,6 +1,7 @@
 package management
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"net/http"
@@ -18,6 +19,17 @@ func (h *Handler) clientAccessService() *clientaccess.Service {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.clientAccess
+}
+
+func (h *Handler) deleteClientAccessCredentialBindings(ctx context.Context, authIndices []string) error {
+	return deleteClientAccessCredentialBindings(ctx, h.clientAccessService(), authIndices)
+}
+
+func deleteClientAccessCredentialBindings(ctx context.Context, service *clientaccess.Service, authIndices []string) error {
+	if service == nil || len(authIndices) == 0 {
+		return nil
+	}
+	return service.DeleteCredentialBindings(ctx, authIndices)
 }
 
 func requireClientAccess(c *gin.Context, h *Handler) *clientaccess.Service {

@@ -546,6 +546,47 @@ func TestServiceCredentialBindingsReplaceClearDisableAndCascade(t *testing.T) {
 	}
 }
 
+func TestServiceDeleteCredentialBindingsPreservesOtherCredentials(t *testing.T) {
+	service := newTestService(t)
+	ctx := context.Background()
+	group, errGroup := service.CreateGroup(ctx, GroupCreate{Name: "primary"})
+	if errGroup != nil {
+		t.Fatalf("CreateGroup() error = %v", errGroup)
+	}
+	if errReplace := service.ReplaceCredentialBindings(ctx, CredentialBindingBatch{
+		AuthIndices: []string{"auth-delete", "auth-keep"},
+		Groups:      []CredentialGroupInput{{GroupID: group.ID, Priority: 20}},
+	}); errReplace != nil {
+		t.Fatalf("ReplaceCredentialBindings() error = %v", errReplace)
+	}
+
+	if errDelete := service.DeleteCredentialBindings(ctx, []string{"auth-delete", "auth-delete", ""}); errDelete != nil {
+		t.Fatalf("DeleteCredentialBindings() error = %v", errDelete)
+	}
+	page, errList := service.ListCredentialBindings(ctx, ListOptions{Page: 1, PageSize: 20})
+	if errList != nil {
+		t.Fatalf("ListCredentialBindings() error = %v", errList)
+	}
+	if page.Total != 1 || len(page.Items) != 1 || page.Items[0].AuthIndex != "auth-keep" {
+		t.Fatalf("remaining bindings = %+v", page)
+	}
+	groups, errGroups := service.ListGroups(ctx, ListOptions{Page: 1, PageSize: 20})
+	if errGroups != nil {
+		t.Fatalf("ListGroups() error = %v", errGroups)
+	}
+	if len(groups.Items) != 1 || groups.Items[0].CredentialCount != 1 {
+		t.Fatalf("groups after delete = %+v", groups)
+	}
+	allowed, priority, overridden := service.ResolveCredentialAccess("auth-delete", []int64{group.ID}, false, false)
+	if allowed || priority != 0 || overridden {
+		t.Fatalf("deleted credential still resolved: (%v, %d, %v)", allowed, priority, overridden)
+	}
+	allowed, priority, overridden = service.ResolveCredentialAccess("auth-keep", []int64{group.ID}, false, false)
+	if !allowed || priority != 20 || !overridden {
+		t.Fatalf("preserved credential resolution = (%v, %d, %v)", allowed, priority, overridden)
+	}
+}
+
 func TestServiceReplaceGroupCredentialBindingsPreservesOtherGroups(t *testing.T) {
 	service := newTestService(t)
 	ctx := context.Background()

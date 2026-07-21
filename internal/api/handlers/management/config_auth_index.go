@@ -6,6 +6,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/synthesizer"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
 type geminiKeyWithAuthIndex struct {
@@ -88,6 +89,115 @@ type apiKeyConfigIdentity interface {
 	GetBaseURL() string
 }
 
+func apiKeyConfigAuthIndices[T apiKeyConfigIdentity](entries []T, kind string, liveIndexByID map[string]string) []string {
+	indices := make([]string, len(entries))
+	idGen := synthesizer.NewStableIDGenerator()
+	provider := strings.TrimSuffix(kind, ":apikey")
+	for i := range entries {
+		key := strings.TrimSpace(entries[i].GetAPIKey())
+		if key == "" {
+			continue
+		}
+		id, _ := idGen.Next(kind, key, entries[i].GetBaseURL())
+		indices[i] = configAuthIndex(liveIndexByID, &coreauth.Auth{
+			ID:       id,
+			Provider: provider,
+			Attributes: map[string]string{
+				"api_key":  key,
+				"base_url": strings.TrimSpace(entries[i].GetBaseURL()),
+			},
+		})
+	}
+	return indices
+}
+
+func vertexConfigAuthIndices(entries []config.VertexCompatKey, liveIndexByID map[string]string) []string {
+	indices := make([]string, len(entries))
+	idGen := synthesizer.NewStableIDGenerator()
+	for i := range entries {
+		entry := entries[i]
+		id, _ := idGen.Next("vertex:apikey", entry.APIKey, entry.BaseURL, entry.ProxyURL)
+		indices[i] = configAuthIndex(liveIndexByID, &coreauth.Auth{
+			ID:       id,
+			Provider: "vertex",
+			Attributes: map[string]string{
+				"api_key":  strings.TrimSpace(entry.APIKey),
+				"base_url": strings.TrimSpace(entry.BaseURL),
+			},
+		})
+	}
+	return indices
+}
+
+func configAuthIndex(liveIndexByID map[string]string, auth *coreauth.Auth) string {
+	if auth == nil {
+		return ""
+	}
+	if authIndex := strings.TrimSpace(liveIndexByID[auth.ID]); authIndex != "" {
+		return authIndex
+	}
+	return strings.TrimSpace(auth.EnsureIndex())
+}
+
+type openAICompatibilityAuthIndexSet struct {
+	AuthIndex     string
+	APIKeyIndices []string
+}
+
+func openAICompatibilityAuthIndexSets(entries []config.OpenAICompatibility, liveIndexByID map[string]string) []openAICompatibilityAuthIndexSet {
+	normalized := normalizedOpenAICompatibilityEntries(entries)
+	sets := make([]openAICompatibilityAuthIndexSet, len(normalized))
+	idGen := synthesizer.NewStableIDGenerator()
+	for i := range normalized {
+		entry := normalized[i]
+		providerName := strings.ToLower(strings.TrimSpace(entry.Name))
+		if providerName == "" {
+			providerName = "openai-compatibility"
+		}
+		idKind := fmt.Sprintf("openai-compatibility:%s", providerName)
+		if len(entry.APIKeyEntries) == 0 {
+			id, _ := idGen.Next(idKind, entry.BaseURL)
+			sets[i].AuthIndex = configAuthIndex(liveIndexByID, &coreauth.Auth{
+				ID:       id,
+				Provider: "openai-compatibility",
+				Attributes: map[string]string{
+					"base_url":    strings.TrimSpace(entry.BaseURL),
+					"compat_name": entry.Name,
+				},
+			})
+			continue
+		}
+		sets[i].APIKeyIndices = make([]string, len(entry.APIKeyEntries))
+		for j := range entry.APIKeyEntries {
+			apiKeyEntry := entry.APIKeyEntries[j]
+			id, _ := idGen.Next(idKind, apiKeyEntry.APIKey, entry.BaseURL, apiKeyEntry.ProxyURL)
+			sets[i].APIKeyIndices[j] = configAuthIndex(liveIndexByID, &coreauth.Auth{
+				ID:       id,
+				Provider: "openai-compatibility",
+				Attributes: map[string]string{
+					"api_key":     strings.TrimSpace(apiKeyEntry.APIKey),
+					"base_url":    strings.TrimSpace(entry.BaseURL),
+					"compat_name": entry.Name,
+				},
+			})
+		}
+	}
+	return sets
+}
+
+func (s openAICompatibilityAuthIndexSet) all() []string {
+	out := make([]string, 0, len(s.APIKeyIndices)+1)
+	if s.AuthIndex != "" {
+		out = append(out, s.AuthIndex)
+	}
+	for _, authIndex := range s.APIKeyIndices {
+		if authIndex != "" {
+			out = append(out, authIndex)
+		}
+	}
+	return out
+}
+
 func findAPIKeyConfigIndexByAuthIndex[T apiKeyConfigIdentity](entries []T, kind string, target string, liveIndexByID map[string]string) int {
 	target = strings.TrimSpace(target)
 	if target == "" || len(entries) == 0 || len(liveIndexByID) == 0 {
@@ -135,18 +245,13 @@ func (h *Handler) geminiKeysWithAuthIndex() []geminiKeyWithAuthIndex {
 		return nil
 	}
 
-	idGen := synthesizer.NewStableIDGenerator()
+	authIndices := apiKeyConfigAuthIndices(h.cfg.GeminiKey, "gemini:apikey", liveIndexByID)
 	out := make([]geminiKeyWithAuthIndex, len(h.cfg.GeminiKey))
 	for i := range h.cfg.GeminiKey {
 		entry := h.cfg.GeminiKey[i]
-		authIndex := ""
-		if key := strings.TrimSpace(entry.APIKey); key != "" {
-			id, _ := idGen.Next("gemini:apikey", key, entry.BaseURL)
-			authIndex = liveIndexByID[id]
-		}
 		out[i] = geminiKeyWithAuthIndex{
 			GeminiKey: entry,
-			AuthIndex: authIndex,
+			AuthIndex: authIndices[i],
 		}
 	}
 	return out
@@ -164,18 +269,13 @@ func (h *Handler) interactionsKeysWithAuthIndex() []geminiKeyWithAuthIndex {
 		return nil
 	}
 
-	idGen := synthesizer.NewStableIDGenerator()
+	authIndices := apiKeyConfigAuthIndices(h.cfg.InteractionsKey, "gemini-interactions:apikey", liveIndexByID)
 	out := make([]geminiKeyWithAuthIndex, len(h.cfg.InteractionsKey))
 	for i := range h.cfg.InteractionsKey {
 		entry := h.cfg.InteractionsKey[i]
-		authIndex := ""
-		if key := strings.TrimSpace(entry.APIKey); key != "" {
-			id, _ := idGen.Next("gemini-interactions:apikey", key, entry.BaseURL)
-			authIndex = liveIndexByID[id]
-		}
 		out[i] = geminiKeyWithAuthIndex{
 			GeminiKey: entry,
-			AuthIndex: authIndex,
+			AuthIndex: authIndices[i],
 		}
 	}
 	return out
@@ -193,18 +293,13 @@ func (h *Handler) claudeKeysWithAuthIndex() []claudeKeyWithAuthIndex {
 		return nil
 	}
 
-	idGen := synthesizer.NewStableIDGenerator()
+	authIndices := apiKeyConfigAuthIndices(h.cfg.ClaudeKey, "claude:apikey", liveIndexByID)
 	out := make([]claudeKeyWithAuthIndex, len(h.cfg.ClaudeKey))
 	for i := range h.cfg.ClaudeKey {
 		entry := h.cfg.ClaudeKey[i]
-		authIndex := ""
-		if key := strings.TrimSpace(entry.APIKey); key != "" {
-			id, _ := idGen.Next("claude:apikey", key, entry.BaseURL)
-			authIndex = liveIndexByID[id]
-		}
 		out[i] = claudeKeyWithAuthIndex{
 			ClaudeKey: entry,
-			AuthIndex: authIndex,
+			AuthIndex: authIndices[i],
 		}
 	}
 	return out
@@ -222,18 +317,13 @@ func (h *Handler) codexKeysWithAuthIndex() []codexKeyWithAuthIndex {
 		return nil
 	}
 
-	idGen := synthesizer.NewStableIDGenerator()
+	authIndices := apiKeyConfigAuthIndices(h.cfg.CodexKey, "codex:apikey", liveIndexByID)
 	out := make([]codexKeyWithAuthIndex, len(h.cfg.CodexKey))
 	for i := range h.cfg.CodexKey {
 		entry := h.cfg.CodexKey[i]
-		authIndex := ""
-		if key := strings.TrimSpace(entry.APIKey); key != "" {
-			id, _ := idGen.Next("codex:apikey", key, entry.BaseURL)
-			authIndex = liveIndexByID[id]
-		}
 		out[i] = codexKeyWithAuthIndex{
 			CodexKey:  entry,
-			AuthIndex: authIndex,
+			AuthIndex: authIndices[i],
 		}
 	}
 	return out
@@ -251,18 +341,13 @@ func (h *Handler) xaiKeysWithAuthIndex() []xaiKeyWithAuthIndex {
 		return nil
 	}
 
-	idGen := synthesizer.NewStableIDGenerator()
+	authIndices := apiKeyConfigAuthIndices(h.cfg.XAIKey, "xai:apikey", liveIndexByID)
 	out := make([]xaiKeyWithAuthIndex, len(h.cfg.XAIKey))
 	for i := range h.cfg.XAIKey {
 		entry := h.cfg.XAIKey[i]
-		authIndex := ""
-		if key := strings.TrimSpace(entry.APIKey); key != "" {
-			id, _ := idGen.Next("xai:apikey", key, entry.BaseURL)
-			authIndex = liveIndexByID[id]
-		}
 		out[i] = xaiKeyWithAuthIndex{
 			XAIKey:    entry,
-			AuthIndex: authIndex,
+			AuthIndex: authIndices[i],
 		}
 	}
 	return out
@@ -280,15 +365,13 @@ func (h *Handler) vertexCompatKeysWithAuthIndex() []vertexCompatKeyWithAuthIndex
 		return nil
 	}
 
-	idGen := synthesizer.NewStableIDGenerator()
+	authIndices := vertexConfigAuthIndices(h.cfg.VertexCompatAPIKey, liveIndexByID)
 	out := make([]vertexCompatKeyWithAuthIndex, len(h.cfg.VertexCompatAPIKey))
 	for i := range h.cfg.VertexCompatAPIKey {
 		entry := h.cfg.VertexCompatAPIKey[i]
-		id, _ := idGen.Next("vertex:apikey", entry.APIKey, entry.BaseURL, entry.ProxyURL)
-		authIndex := liveIndexByID[id]
 		out[i] = vertexCompatKeyWithAuthIndex{
 			VertexCompatKey: entry,
-			AuthIndex:       authIndex,
+			AuthIndex:       authIndices[i],
 		}
 	}
 	return out
@@ -307,15 +390,10 @@ func (h *Handler) openAICompatibilityWithAuthIndex() []openAICompatibilityWithAu
 	}
 
 	normalized := normalizedOpenAICompatibilityEntries(h.cfg.OpenAICompatibility)
+	authIndexSets := openAICompatibilityAuthIndexSets(normalized, liveIndexByID)
 	out := make([]openAICompatibilityWithAuthIndex, len(normalized))
-	idGen := synthesizer.NewStableIDGenerator()
 	for i := range normalized {
 		entry := normalized[i]
-		providerName := strings.ToLower(strings.TrimSpace(entry.Name))
-		if providerName == "" {
-			providerName = "openai-compatibility"
-		}
-		idKind := fmt.Sprintf("openai-compatibility:%s", providerName)
 
 		response := openAICompatibilityWithAuthIndex{
 			Name:           entry.Name,
@@ -326,19 +404,15 @@ func (h *Handler) openAICompatibilityWithAuthIndex() []openAICompatibilityWithAu
 			Models:         entry.Models,
 			Headers:        entry.Headers,
 			DisableCooling: entry.DisableCooling,
-			AuthIndex:      "",
+			AuthIndex:      authIndexSets[i].AuthIndex,
 		}
-		if len(entry.APIKeyEntries) == 0 {
-			id, _ := idGen.Next(idKind, entry.BaseURL)
-			response.AuthIndex = liveIndexByID[id]
-		} else {
+		if len(entry.APIKeyEntries) > 0 {
 			response.APIKeyEntries = make([]openAICompatibilityAPIKeyWithAuthIndex, len(entry.APIKeyEntries))
 			for j := range entry.APIKeyEntries {
 				apiKeyEntry := entry.APIKeyEntries[j]
-				id, _ := idGen.Next(idKind, apiKeyEntry.APIKey, entry.BaseURL, apiKeyEntry.ProxyURL)
 				response.APIKeyEntries[j] = openAICompatibilityAPIKeyWithAuthIndex{
 					OpenAICompatibilityAPIKey: apiKeyEntry,
-					AuthIndex:                 liveIndexByID[id],
+					AuthIndex:                 authIndexSets[i].APIKeyIndices[j],
 				}
 			}
 		}

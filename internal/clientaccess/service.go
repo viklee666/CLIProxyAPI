@@ -472,6 +472,12 @@ func (s *Service) ReplaceCredentialBindingsWithStats(ctx context.Context, input 
 	return stats, nil
 }
 
+// DeleteCredentialBindings removes all client group memberships for the auth indices.
+func (s *Service) DeleteCredentialBindings(ctx context.Context, authIndices []string) error {
+	_, errDelete := s.ReplaceCredentialBindingsWithStats(ctx, CredentialBindingBatch{AuthIndices: authIndices})
+	return errDelete
+}
+
 func (s *Service) ReplaceGroupCredentialBindings(ctx context.Context, groupID int64, input GroupCredentialBindingBatch) (CredentialBindingChangeStats, error) {
 	stats, errReplace := s.store.ReplaceGroupCredentialBindings(ctx, groupID, input.AuthIndices, input.Priority)
 	if errReplace != nil {

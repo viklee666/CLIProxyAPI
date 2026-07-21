@@ -422,17 +422,28 @@ func (h *Handler) persist(c *gin.Context) bool {
 // persistLocked saves the current in-memory config to disk.
 // It expects the caller to hold h.mu.
 func (h *Handler) persistLocked(c *gin.Context) bool {
+	return h.persistLockedWithDeletedAuthIndices(c, nil)
+}
+
+// persistLockedWithDeletedAuthIndices persists config and removes client-group bindings
+// for provider auth records deleted by the same management operation.
+func (h *Handler) persistLockedWithDeletedAuthIndices(c *gin.Context, authIndices []string) bool {
 	// Preserve comments when writing
 	if err := config.SaveConfigPreserveComments(h.configFilePath, h.cfg); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", err)})
 		return false
 	}
 	snapshot := h.reloadSnapshotConfigLocked()
-	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	var reqCtx context.Context
 	if c != nil && c.Request != nil {
 		reqCtx = c.Request.Context()
 	}
+	if errDelete := deleteClientAccessCredentialBindings(reqCtx, h.clientAccess, authIndices); errDelete != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to remove client access credential bindings: %v", errDelete)})
+		h.reloadConfigAfterManagementSaveAsync(reqCtx, snapshot)
+		return false
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	h.reloadConfigAfterManagementSaveAsync(reqCtx, snapshot)
 	return true
 }

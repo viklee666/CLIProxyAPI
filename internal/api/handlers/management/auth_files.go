@@ -866,13 +866,18 @@ func (h *Handler) DeleteAuthFile(c *gin.Context) {
 					full = abs
 				}
 			}
+			authIndices := h.authIndicesForPath(full, "")
 			if err = os.Remove(full); err == nil {
 				if errDel := h.deleteTokenRecord(ctx, full); errDel != nil {
 					c.JSON(500, gin.H{"error": errDel.Error()})
 					return
 				}
+				h.removeAuthsForPath(ctx, full, "")
+				if errBindings := h.deleteClientAccessCredentialBindings(ctx, authIndices); errBindings != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to remove client access credential bindings: %v", errBindings)})
+					return
+				}
 				deleted++
-				h.removeAuth(ctx, full)
 			}
 		}
 		c.JSON(200, gin.H{"status": "ok", "deleted": deleted})
@@ -1077,6 +1082,7 @@ func (h *Handler) deleteAuthFileByName(ctx context.Context, name string) (string
 			targetPath = abs
 		}
 	}
+	authIndices := h.authIndicesForPath(targetPath, targetID)
 	if errRemove := os.Remove(targetPath); errRemove != nil {
 		if os.IsNotExist(errRemove) {
 			return filepath.Base(name), http.StatusNotFound, errAuthFileNotFound
@@ -1087,6 +1093,9 @@ func (h *Handler) deleteAuthFileByName(ctx context.Context, name string) (string
 		return filepath.Base(name), http.StatusInternalServerError, errDeleteRecord
 	}
 	h.removeAuthsForPath(ctx, targetPath, targetID)
+	if errBindings := h.deleteClientAccessCredentialBindings(ctx, authIndices); errBindings != nil {
+		return filepath.Base(name), http.StatusInternalServerError, fmt.Errorf("failed to remove client access credential bindings: %w", errBindings)
+	}
 	return filepath.Base(name), http.StatusOK, nil
 }
 
@@ -1128,6 +1137,58 @@ func (h *Handler) findAuthForDelete(name string) *coreauth.Auth {
 		}
 	}
 	return nil
+}
+
+func (h *Handler) authIndicesForPath(path string, fallbackID string) []string {
+	if h == nil {
+		return nil
+	}
+	h.mu.Lock()
+	manager := h.authManager
+	h.mu.Unlock()
+	if manager == nil {
+		return nil
+	}
+
+	seen := make(map[string]struct{})
+	out := make([]string, 0, 1)
+	add := func(auth *coreauth.Auth) {
+		if auth == nil {
+			return
+		}
+		authIndex := strings.TrimSpace(auth.Index)
+		if authIndex == "" {
+			authIndex = strings.TrimSpace(auth.EnsureIndex())
+		}
+		if authIndex == "" {
+			return
+		}
+		if _, ok := seen[authIndex]; ok {
+			return
+		}
+		seen[authIndex] = struct{}{}
+		out = append(out, authIndex)
+	}
+
+	for _, auth := range manager.List() {
+		if auth == nil {
+			continue
+		}
+		if sameAuthFilePath(authAttribute(auth, "path"), path) || sameAuthFilePath(authAttribute(auth, coreauth.AttributeVirtualSource), path) {
+			add(auth)
+		}
+	}
+	if len(out) == 0 && strings.TrimSpace(fallbackID) != "" {
+		if auth, ok := manager.GetByID(strings.TrimSpace(fallbackID)); ok {
+			add(auth)
+		}
+	}
+	if len(out) == 0 {
+		if auth, errBuild := h.buildAuthFromFileData(path, nil); errBuild == nil {
+			add(auth)
+		}
+	}
+	return out
 }
 
 func (h *Handler) authIDForPath(path string) string {
