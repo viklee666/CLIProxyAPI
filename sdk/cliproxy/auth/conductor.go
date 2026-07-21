@@ -57,6 +57,21 @@ type RequestAuthPreparer interface {
 	PrepareRequestAuth(ctx context.Context, auth *Auth) (*Auth, error)
 }
 
+// RequestAuthRecoverer lets an executor repair request-scoped auth metadata
+// after an upstream authentication failure. Manager serializes recovery per
+// auth ID, persists returned updates, and retries the request at most once.
+type RequestAuthRecoverer interface {
+	ShouldRecoverRequestAuth(auth *Auth, execErr error) bool
+	RequestAuthRecoveryState(auth *Auth) string
+	RecoverRequestAuth(ctx context.Context, auth *Auth, execErr error) (*Auth, error)
+}
+
+// RequestAuthRecoveryObserver is notified after recovered auth metadata has
+// been persisted so executors can invalidate stale runtime resources.
+type RequestAuthRecoveryObserver interface {
+	RequestAuthRecovered(auth *Auth)
+}
+
 // ExecutionSessionCloser allows executors to release per-session runtime resources.
 type ExecutionSessionCloser interface {
 	CloseExecutionSession(sessionID string)
@@ -2109,6 +2124,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 	ctx = contextWithRequestedModelAlias(ctx, opts, routeModel)
 	var lastErr error
 	didRefreshOnUnauthorized := false
+	didRecoverRequestAuth := false
 	for idx, execModel := range execModels {
 		resultModel := m.stateModelForExecution(auth, routeModel, execModel, pooled)
 		execReq := req
@@ -2123,13 +2139,24 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			if errCtx := ctx.Err(); errCtx != nil {
 				return nil, errCtx
 			}
-			if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(ctx, auth, errStream, didRefreshOnUnauthorized); okRefresh {
-				auth = refreshed
-				didRefreshOnUnauthorized = true
-				streamResult, errStream = executor.ExecuteStream(ctx, auth, execReq, execOpts)
-				if errStream != nil {
-					if errCtx := ctx.Err(); errCtx != nil {
-						return nil, errCtx
+			if recovered, okRecover, errRecover := m.tryRecoverRequestAuth(ctx, executor, auth, errStream, didRecoverRequestAuth); okRecover {
+				didRecoverRequestAuth = true
+				if errRecover != nil {
+					errStream = errRecover
+				} else {
+					auth = recovered
+					streamResult, errStream = executor.ExecuteStream(ctx, auth, execReq, execOpts)
+				}
+			}
+			if errStream != nil {
+				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(ctx, auth, errStream, didRefreshOnUnauthorized); okRefresh {
+					auth = refreshed
+					didRefreshOnUnauthorized = true
+					streamResult, errStream = executor.ExecuteStream(ctx, auth, execReq, execOpts)
+					if errStream != nil {
+						if errCtx := ctx.Err(); errCtx != nil {
+							return nil, errCtx
+						}
 					}
 				}
 			}
@@ -2152,20 +2179,40 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				discardStreamChunks(streamResult.Chunks)
 				return nil, errCtx
 			}
-			if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(ctx, auth, bootstrapErr, didRefreshOnUnauthorized); okRefresh {
+			if recovered, okRecover, errRecover := m.tryRecoverRequestAuth(ctx, executor, auth, bootstrapErr, didRecoverRequestAuth); okRecover {
 				discardStreamChunks(streamResult.Chunks)
-				auth = refreshed
-				didRefreshOnUnauthorized = true
-				retryStream, retryErr := executor.ExecuteStream(ctx, auth, execReq, execOpts)
-				if retryErr != nil {
-					if errCtx := ctx.Err(); errCtx != nil {
-						return nil, errCtx
-					}
-					bootstrapErr = retryErr
+				didRecoverRequestAuth = true
+				if errRecover != nil {
+					bootstrapErr = errRecover
 					streamResult = &cliproxyexecutor.StreamResult{}
 				} else {
-					streamResult = retryStream
-					buffered, closed, bootstrapErr = readStreamBootstrap(ctx, streamResult.Chunks)
+					auth = recovered
+					retryStream, retryErr := executor.ExecuteStream(ctx, auth, execReq, execOpts)
+					if retryErr != nil {
+						bootstrapErr = retryErr
+						streamResult = &cliproxyexecutor.StreamResult{}
+					} else {
+						streamResult = retryStream
+						buffered, closed, bootstrapErr = readStreamBootstrap(ctx, streamResult.Chunks)
+					}
+				}
+			}
+			if bootstrapErr != nil {
+				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(ctx, auth, bootstrapErr, didRefreshOnUnauthorized); okRefresh {
+					discardStreamChunks(streamResult.Chunks)
+					auth = refreshed
+					didRefreshOnUnauthorized = true
+					retryStream, retryErr := executor.ExecuteStream(ctx, auth, execReq, execOpts)
+					if retryErr != nil {
+						if errCtx := ctx.Err(); errCtx != nil {
+							return nil, errCtx
+						}
+						bootstrapErr = retryErr
+						streamResult = &cliproxyexecutor.StreamResult{}
+					} else {
+						streamResult = retryStream
+						buffered, closed, bootstrapErr = readStreamBootstrap(ctx, streamResult.Chunks)
+					}
 				}
 			}
 		}
@@ -2847,6 +2894,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		}
 		var authErr error
 		didRefreshOnUnauthorized := false
+		didRecoverRequestAuth := false
 		for _, upstreamModel := range models {
 			resultModel := m.stateModelForExecution(auth, routeModel, upstreamModel, pooled)
 			execReq := req
@@ -2862,14 +2910,25 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					finishAttempt()
 					return cliproxyexecutor.Response{}, errCtx
 				}
-				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(execCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
-					auth = refreshed
-					didRefreshOnUnauthorized = true
-					resp, errExec = executor.Execute(execCtx, auth, execReq, execOpts)
-					if errExec != nil {
-						if errCtx := execCtx.Err(); errCtx != nil {
-							finishAttempt()
-							return cliproxyexecutor.Response{}, errCtx
+				if recovered, okRecover, errRecover := m.tryRecoverRequestAuth(execCtx, executor, auth, errExec, didRecoverRequestAuth); okRecover {
+					didRecoverRequestAuth = true
+					if errRecover != nil {
+						errExec = errRecover
+					} else {
+						auth = recovered
+						resp, errExec = executor.Execute(execCtx, auth, execReq, execOpts)
+					}
+				}
+				if errExec != nil {
+					if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(execCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
+						auth = refreshed
+						didRefreshOnUnauthorized = true
+						resp, errExec = executor.Execute(execCtx, auth, execReq, execOpts)
+						if errExec != nil {
+							if errCtx := execCtx.Err(); errCtx != nil {
+								finishAttempt()
+								return cliproxyexecutor.Response{}, errCtx
+							}
 						}
 					}
 				}
@@ -2968,6 +3027,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		}
 		var authErr error
 		didRefreshOnUnauthorized := false
+		didRecoverRequestAuth := false
 		for _, upstreamModel := range models {
 			resultModel := m.stateModelForExecution(auth, routeModel, upstreamModel, pooled)
 			execReq := req
@@ -2983,14 +3043,25 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 					finishAttempt()
 					return cliproxyexecutor.Response{}, errCtx
 				}
-				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(execCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
-					auth = refreshed
-					didRefreshOnUnauthorized = true
-					resp, errExec = executor.CountTokens(execCtx, auth, execReq, execOpts)
-					if errExec != nil {
-						if errCtx := execCtx.Err(); errCtx != nil {
-							finishAttempt()
-							return cliproxyexecutor.Response{}, errCtx
+				if recovered, okRecover, errRecover := m.tryRecoverRequestAuth(execCtx, executor, auth, errExec, didRecoverRequestAuth); okRecover {
+					didRecoverRequestAuth = true
+					if errRecover != nil {
+						errExec = errRecover
+					} else {
+						auth = recovered
+						resp, errExec = executor.CountTokens(execCtx, auth, execReq, execOpts)
+					}
+				}
+				if errExec != nil {
+					if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(execCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
+						auth = refreshed
+						didRefreshOnUnauthorized = true
+						resp, errExec = executor.CountTokens(execCtx, auth, execReq, execOpts)
+						if errExec != nil {
+							if errCtx := execCtx.Err(); errCtx != nil {
+								finishAttempt()
+								return cliproxyexecutor.Response{}, errCtx
+							}
 						}
 					}
 				}
@@ -3289,6 +3360,67 @@ func (m *Manager) prepareRequestAuth(ctx context.Context, executor ProviderExecu
 		return saved, nil
 	}
 	return updated, nil
+}
+
+func (m *Manager) tryRecoverRequestAuth(ctx context.Context, executor ProviderExecutor, auth *Auth, execErr error, alreadyTried bool) (*Auth, bool, error) {
+	if m == nil || executor == nil || auth == nil || execErr == nil || alreadyTried {
+		return auth, false, nil
+	}
+	recoverer, ok := executor.(RequestAuthRecoverer)
+	if !ok || recoverer == nil || !recoverer.ShouldRecoverRequestAuth(auth, execErr) {
+		return auth, false, nil
+	}
+
+	id := strings.TrimSpace(auth.ID)
+	failedState := recoverer.RequestAuthRecoveryState(auth)
+	if id == "" {
+		updated, errRecover := recoverer.RecoverRequestAuth(ctx, auth.Clone(), execErr)
+		return updated, true, errRecover
+	}
+
+	lockValue, _ := m.requestPrepareLocks.LoadOrStore(id, &requestAuthPrepareLock{})
+	lock, ok := lockValue.(*requestAuthPrepareLock)
+	if !ok || lock == nil {
+		updated, errRecover := recoverer.RecoverRequestAuth(ctx, auth.Clone(), execErr)
+		return updated, true, errRecover
+	}
+
+	lock.mu.Lock()
+	defer lock.mu.Unlock()
+
+	target := auth.Clone()
+	m.mu.RLock()
+	if current := m.auths[id]; current != nil {
+		target = current.Clone()
+	}
+	m.mu.RUnlock()
+
+	if currentState := recoverer.RequestAuthRecoveryState(target); currentState != failedState {
+		return target, true, nil
+	}
+	if !recoverer.ShouldRecoverRequestAuth(target, execErr) {
+		return target, false, nil
+	}
+
+	updated, errRecover := recoverer.RecoverRequestAuth(ctx, target, execErr)
+	if errRecover != nil {
+		return auth, true, errRecover
+	}
+	if updated == nil {
+		return target, true, nil
+	}
+
+	saved, errUpdate := m.Update(ctx, updated)
+	if errUpdate != nil {
+		return updated, true, errUpdate
+	}
+	if saved == nil {
+		saved = updated
+	}
+	if observer, okObserver := executor.(RequestAuthRecoveryObserver); okObserver && observer != nil {
+		observer.RequestAuthRecovered(saved.Clone())
+	}
+	return saved, true, nil
 }
 
 func contextWithRequestedModelAlias(ctx context.Context, opts cliproxyexecutor.Options, fallback string) context.Context {

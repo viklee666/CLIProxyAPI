@@ -17,6 +17,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	"github.com/tidwall/gjson"
 )
 
 func agentIdentityTestAuth(t *testing.T, keyName string) (*cliproxyauth.Auth, ed25519.PublicKey) {
@@ -365,5 +366,78 @@ func TestApplyCodexWebsocketHeadersReturnsAssertionError(t *testing.T) {
 	}
 	if headers != nil {
 		t.Fatalf("headers = %#v, want nil on failure", headers)
+	}
+}
+
+func TestCodexPrepareRequestAuthRegistersMissingTask(t *testing.T) {
+	auth, publicKey := agentIdentityTestAuth(t, "agent_private_key")
+	auth.ID = "agent-auth"
+	auth.Metadata["auth_kind"] = "agent_identity"
+	delete(auth.Metadata, "task_id")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/agent/agent-test/task/register" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		var payload map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode registration request: %v", err)
+		}
+		signature, err := base64.StdEncoding.DecodeString(payload["signature"])
+		if err != nil {
+			t.Fatalf("decode registration signature: %v", err)
+		}
+		if !ed25519.Verify(publicKey, []byte("agent-test:"+payload["timestamp"]), signature) {
+			t.Fatal("registration signature does not verify")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"task_id":"task-new"}`))
+	}))
+	defer server.Close()
+
+	previousBaseURL := agentIdentityAuthBaseURL
+	agentIdentityAuthBaseURL = server.URL
+	t.Cleanup(func() { agentIdentityAuthBaseURL = previousBaseURL })
+
+	executor := NewCodexExecutor(nil)
+	if !executor.ShouldPrepareRequestAuth(auth) {
+		t.Fatal("ShouldPrepareRequestAuth() = false, want true")
+	}
+	updated, err := executor.PrepareRequestAuth(context.Background(), auth)
+	if err != nil {
+		t.Fatalf("PrepareRequestAuth() error = %v", err)
+	}
+	if got := agentIdentityMetadataString(updated, "task_id"); got != "task-new" {
+		t.Fatalf("task_id = %q, want task-new", got)
+	}
+	if got := agentIdentityMetadataString(auth, "task_id"); got != "" {
+		t.Fatalf("original task_id = %q, want unchanged empty value", got)
+	}
+}
+
+func TestCodexRecoverRequestAuthRecognizesInvalidTask(t *testing.T) {
+	auth, _ := agentIdentityTestAuth(t, "agent_private_key")
+	executor := NewCodexExecutor(nil)
+	errInvalid := statusErr{code: http.StatusUnauthorized, msg: `{"error":{"code":"invalid_task_id"}}`}
+	if !executor.ShouldRecoverRequestAuth(auth, errInvalid) {
+		t.Fatal("ShouldRecoverRequestAuth(invalid_task_id) = false, want true")
+	}
+	errUnauthorized := statusErr{code: http.StatusUnauthorized, msg: `{"error":{"code":"auth_unavailable"}}`}
+	if executor.ShouldRecoverRequestAuth(auth, errUnauthorized) {
+		t.Fatal("ShouldRecoverRequestAuth(auth_unavailable) = true, want false")
+	}
+	errWrongStatus := statusErr{code: http.StatusBadRequest, msg: `{"error":{"code":"invalid_task_id"}}`}
+	if executor.ShouldRecoverRequestAuth(auth, errWrongStatus) {
+		t.Fatal("ShouldRecoverRequestAuth(400 invalid_task_id) = true, want false")
+	}
+}
+
+func TestCodexStatusClassificationPreservesInvalidTaskCode(t *testing.T) {
+	err := newCodexStatusErr(http.StatusUnauthorized, []byte(`{"error":{"code":"invalid_task_id","message":"task expired"}}`))
+	if !isAgentIdentityTaskInvalidError(err) {
+		t.Fatalf("classified error = %v, want invalid task marker", err)
+	}
+	if got := gjson.Get(err.Error(), "error.code").String(); got != "invalid_task_id" {
+		t.Fatalf("error.code = %q, want invalid_task_id", got)
 	}
 }

@@ -3,9 +3,9 @@ package auth
 import "strings"
 
 const (
-	AuthKindAPIKey         = "apikey"
-	AuthKindOAuth          = "oauth"
-	AuthKindAgentIdentity  = "agent_identity"
+	AuthKindAPIKey        = "apikey"
+	AuthKindOAuth         = "oauth"
+	AuthKindAgentIdentity = "agent_identity"
 
 	AuthSourceConfig      = "config"
 	AuthSourceFile        = "file"
@@ -111,7 +111,6 @@ func normalizeAuthSourceKind(source string) string {
 	}
 }
 
-
 // IsAgentIdentityAuth reports whether the auth carries Codex Agent Identity material.
 // Detection prefers explicit auth_kind/type, then required signing fields.
 func IsAgentIdentityAuth(auth *Auth) bool {
@@ -122,6 +121,9 @@ func IsAgentIdentityAuth(auth *Auth) bool {
 		return true
 	}
 	if kind := normalizeAuthKind(authMetadataString(auth, AttributeAuthKind)); kind == AuthKindAgentIdentity {
+		return true
+	}
+	if strings.EqualFold(authMetadataString(auth, "auth_mode"), "agentIdentity") || strings.EqualFold(authMetadataString(auth, "authMode"), "agentIdentity") {
 		return true
 	}
 	if strings.EqualFold(authMetadataString(auth, "type"), AuthKindAgentIdentity) {
