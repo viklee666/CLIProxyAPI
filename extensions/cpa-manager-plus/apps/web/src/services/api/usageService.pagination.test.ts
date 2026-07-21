@@ -1,12 +1,21 @@
 import axios from 'axios';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { usageServiceApi } from './usageService';
+import { monitoringAnalyticsApi, usageServiceApi } from './usageService';
 
 beforeEach(() => {
   vi.restoreAllMocks();
 });
 
 describe('usageServiceApi bounded Manager lists', () => {
+  it('uses a small recent window for header snapshots by default', async () => {
+    const get = vi.spyOn(axios, 'get').mockResolvedValue({ data: { items: [] } });
+
+    await monitoringAnalyticsApi.getHeaderSnapshots('http://manager.local', 'key');
+
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(get.mock.calls[0]?.[1]?.params).toEqual({ days: 1, limit: 30 });
+  });
+
   it('merges bounded model-price and API-key-alias pages', async () => {
     const get = vi
       .spyOn(axios, 'get')

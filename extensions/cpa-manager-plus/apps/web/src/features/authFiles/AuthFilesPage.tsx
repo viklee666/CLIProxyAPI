@@ -745,11 +745,7 @@ export function AuthFilesPage() {
     try {
       const response = await monitoringAnalyticsApi.getHeaderSnapshots(
         managerServiceBase,
-        managementKey,
-        {
-          days: 30,
-          limit: 1000,
-        }
+        managementKey
       );
       if (id !== headerSnapshotReqId.current) return;
       const generatedAtMs =

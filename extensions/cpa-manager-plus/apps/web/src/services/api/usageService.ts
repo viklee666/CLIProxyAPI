@@ -1313,6 +1313,10 @@ export interface MonitoringAnalyticsResponse {
 const USAGE_SERVICE_TIMEOUT_MS = 30 * 1000;
 const USAGE_SERVICE_TRANSFER_TIMEOUT_MS = 60 * 1000;
 const CODEX_INSPECTION_RUN_TIMEOUT_MS = 10 * 60 * 1000;
+export const DEFAULT_HEADER_SNAPSHOT_QUERY = Object.freeze({
+  days: 1,
+  limit: 30,
+});
 export const USAGE_SERVICE_ID = 'cpa-manager-plus';
 export const LEGACY_USAGE_SERVICE_ID = 'cpa-manager';
 export const LEGACY_USAGE_SERVICE_IDS = [LEGACY_USAGE_SERVICE_ID, 'cpa-usage-service'] as const;
@@ -2337,7 +2341,7 @@ export const monitoringAnalyticsApi = {
   getHeaderSnapshots: async (
     base: string,
     managementKey: string | undefined,
-    params: { days?: number; limit?: number } = {}
+    params: { days?: number; limit?: number } = DEFAULT_HEADER_SNAPSHOT_QUERY
   ): Promise<UsageHeaderSnapshotsResponse> => {
     if (__DEMO_SITE__ && isDemoMode()) {
       return getDemoHeaderSnapshots();

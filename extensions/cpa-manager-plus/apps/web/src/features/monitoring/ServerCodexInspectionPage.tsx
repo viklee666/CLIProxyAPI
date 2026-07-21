@@ -745,7 +745,7 @@ export function ServerCodexInspectionPage() {
         RUNS_LIMIT
       );
       const snapshotsResponse = await monitoringAnalyticsApi
-        .getHeaderSnapshots(resolvedBase, managementKey, { days: 30, limit: 1000 })
+        .getHeaderSnapshots(resolvedBase, managementKey)
         .catch(() => ({ items: [] as UsageHeaderSnapshot[] }));
       setHeaderSnapshots(snapshotsResponse.items ?? []);
       setRuns(runsResponse.items);

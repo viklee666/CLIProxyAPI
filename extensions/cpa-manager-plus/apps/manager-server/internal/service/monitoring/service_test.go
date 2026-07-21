@@ -14,6 +14,47 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
+func TestHeaderSnapshotsUsesRecentBoundedDefaults(t *testing.T) {
+	db := newMonitoringTestStore(t)
+	ctx := context.Background()
+	nowMS := time.Now().UnixMilli()
+	events := make([]usage.Event, 0, 31)
+	for index := 0; index < 31; index++ {
+		authIndex := fmt.Sprintf("auth-%03d", index)
+		event := monitoringEvent(
+			fmt.Sprintf("header-snapshot-%03d", index),
+			nowMS-int64(index)*1000,
+			"gpt-5",
+			authIndex,
+			fmt.Sprintf("source-%03d", index),
+			false,
+			1,
+			1,
+			0,
+			0,
+			2,
+			nil,
+		)
+		event.AuthFileSnapshot = fmt.Sprintf("account-%03d.json", index)
+		event.HeaderQuotaPlanType = "pro"
+		events = append(events, event)
+	}
+	if _, err := db.InsertEvents(ctx, events); err != nil {
+		t.Fatalf("insert events: %v", err)
+	}
+
+	response, err := New(db).HeaderSnapshots(ctx, HeaderSnapshotsRequest{})
+	if err != nil {
+		t.Fatalf("header snapshots: %v", err)
+	}
+	if got := response.ToMS - response.FromMS; got != 24*time.Hour.Milliseconds() {
+		t.Fatalf("default range = %dms, want %dms", got, 24*time.Hour.Milliseconds())
+	}
+	if got := len(response.Items); got != 30 {
+		t.Fatalf("default item count = %d, want 30", got)
+	}
+}
+
 func TestAnalyticsBuildsIncludedSections(t *testing.T) {
 	db := newMonitoringTestStore(t)
 	ctx := context.Background()

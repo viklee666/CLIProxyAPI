@@ -124,7 +124,6 @@ export { AccountExpandedDetails, AccountOverviewCard };
 
 const DEFAULT_ACCOUNT_PAGE_SIZE = ACCOUNT_OVERVIEW_TABLE_PAGE_SIZE_OPTIONS[0];
 const MAX_USAGE_IMPORT_FILE_SIZE = 64 * 1024 * 1024;
-const MONITORING_HEADER_SNAPSHOT_LIMIT = 200;
 const EMPTY_STATUS_BAR_DATA: StatusBarData = {
   blocks: [],
   blockDetails: [],
@@ -402,8 +401,7 @@ export function MonitoringCenterPage() {
     try {
       const response = await monitoringAnalyticsApi.getHeaderSnapshots(
         requestMonitoringAvailability.serviceBase,
-        managementKey,
-        { days: 30, limit: MONITORING_HEADER_SNAPSHOT_LIMIT }
+        managementKey
       );
       setHeaderSnapshots(response.items ?? []);
     } catch {

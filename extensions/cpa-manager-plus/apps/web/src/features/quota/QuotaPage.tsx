@@ -112,10 +112,10 @@ export function QuotaPage() {
       return;
     }
     try {
-      const response = await monitoringAnalyticsApi.getHeaderSnapshots(managerServiceBase, managementKey, {
-        days: 30,
-        limit: 1000,
-      });
+      const response = await monitoringAnalyticsApi.getHeaderSnapshots(
+        managerServiceBase,
+        managementKey
+      );
       setHeaderSnapshots(response.items ?? []);
     } catch {
       setHeaderSnapshots((current) => current);
@@ -123,16 +123,15 @@ export function QuotaPage() {
   }, [managementKey, managerServiceBase]);
 
   const handleHeaderRefresh = useCallback(async () => {
-    await Promise.all([loadConfig(), loadFiles(), loadHeaderSnapshots()]);
+    await Promise.all([loadConfig(), loadFiles()]);
+    void loadHeaderSnapshots();
   }, [loadConfig, loadFiles, loadHeaderSnapshots]);
 
   useHeaderRefresh(handleHeaderRefresh);
 
   useEffect(() => {
-    loadFiles();
-    loadConfig();
-    loadHeaderSnapshots();
-  }, [loadFiles, loadConfig, loadHeaderSnapshots]);
+    void handleHeaderRefresh();
+  }, [handleHeaderRefresh]);
 
   const headerSnapshotLookup = useMemo(
     () => buildUsageHeaderSnapshotLookup(headerSnapshots),

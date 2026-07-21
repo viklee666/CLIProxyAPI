@@ -18,8 +18,8 @@ const (
 	defaultEventsLimit         = 100
 	defaultDrilldownLimit      = 20
 	defaultAggregatePageLimit  = 50
-	defaultHeaderSnapshotDays  = 30
-	defaultHeaderSnapshotLimit = 1000
+	defaultHeaderSnapshotDays  = 1
+	defaultHeaderSnapshotLimit = 30
 	maxEventsLimit             = 50000
 	maxDrilldownLimit          = 100
 	MaxAggregatePageLimit      = 200
