@@ -52,6 +52,7 @@ type TestStatus = 'idle' | 'loading' | 'success' | 'error';
 const CODEX_TEST_TIMEOUT_MS = 20_000;
 
 const buildEmptyForm = (): ProviderFormState => ({
+  name: '',
   apiKey: '',
   priority: undefined,
   prefix: '',
@@ -76,6 +77,7 @@ const normalizeModelEntries = (entries: ProviderFormState['modelEntries']) =>
   }, []);
 
 const buildCodexBaseline = (form: ProviderFormState) => ({
+  name: String(form.name ?? '').trim(),
   apiKey: String(form.apiKey ?? '').trim(),
   authIndex: normalizeAuthIndex(form.authIndex) ?? '',
   priority:
@@ -197,6 +199,7 @@ export function CodexEditDrawer({
         ? Math.trunc(form.priority)
         : null;
     return (
+      baseline.name !== String(form.name ?? '').trim() ||
       baseline.apiKey !== form.apiKey.trim() ||
       baseline.authIndex !== (normalizeAuthIndex(form.authIndex) ?? '') ||
       baseline.priority !== normalizedPriority ||
@@ -224,11 +227,7 @@ export function CodexEditDrawer({
 
   const configuredModelNames = useMemo(
     () =>
-      new Set(
-        form.modelEntries
-          .map((entry) => entry.name.trim().toLowerCase())
-          .filter(Boolean)
-      ),
+      new Set(form.modelEntries.map((entry) => entry.name.trim().toLowerCase()).filter(Boolean)),
     [form.modelEntries]
   );
 
@@ -464,6 +463,7 @@ export function CodexEditDrawer({
     setError('');
     try {
       const payload: ProviderKeyConfig = {
+        name: form.name?.trim() || undefined,
         apiKey: form.apiKey.trim(),
         priority: form.priority !== undefined ? Math.trunc(form.priority) : undefined,
         prefix: form.prefix?.trim() || undefined,
@@ -482,11 +482,13 @@ export function CodexEditDrawer({
       } else {
         await providersApi.createCodexConfig(payload);
       }
-      const syncedList = await providersApi.getCodexConfigs().catch(() =>
-        editIndex !== null
-          ? configs.map((item, index) => (index === editIndex ? payload : item))
-          : [...configs, payload]
-      );
+      const syncedList = await providersApi
+        .getCodexConfigs()
+        .catch(() =>
+          editIndex !== null
+            ? configs.map((item, index) => (index === editIndex ? payload : item))
+            : [...configs, payload]
+        );
       updateConfigValue('codex-api-key', syncedList);
       clearCache('codex-api-key');
       showNotification(
@@ -533,7 +535,9 @@ export function CodexEditDrawer({
   }, [modelDiscoveryOpen, fetchModelDiscovery]);
 
   useEffect(() => {
-    const availableNames = new Set(discoveredModels.map((model) => String(model.name ?? '').trim()));
+    const availableNames = new Set(
+      discoveredModels.map((model) => String(model.name ?? '').trim())
+    );
     setModelDiscoverySelected((prev) => {
       let changed = false;
       const next = new Set<string>();
@@ -597,6 +601,14 @@ export function CodexEditDrawer({
         {invalidIndex && <div className="hint">{t('common.invalid_provider_index')}</div>}
         {!loading && !invalidIndex && (
           <>
+            <Input
+              label={t('ai_providers.remark_name_label')}
+              placeholder={t('ai_providers.remark_name_placeholder')}
+              hint={t('ai_providers.remark_name_hint')}
+              value={form.name ?? ''}
+              onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
+              disabled={disabled || saving}
+            />
             <Input
               label={t('ai_providers.codex_add_modal_key_label')}
               value={form.apiKey}

@@ -1,3 +1,5 @@
+import { maskApiKey } from '@/utils/format';
+
 export type ProviderResource = { key: string; label: string; authIndices: string[] };
 
 export type ProviderLabels = {
@@ -10,7 +12,12 @@ export type ProviderLabels = {
   openAICompatible: string;
 };
 
-type ProviderConfigWithAuthIndex = { baseUrl?: string; authIndex?: string };
+type ProviderConfigWithAuthIndex = {
+  name?: string;
+  apiKey?: string;
+  baseUrl?: string;
+  authIndex?: string;
+};
 
 const uniqueAuthIndices = (values: Array<string | null | undefined>) =>
   Array.from(new Set(values.map((value) => String(value ?? '').trim()).filter(Boolean)));
@@ -52,7 +59,13 @@ export const buildProviderResources = (
   for (const provider of fixedProviders) {
     for (const config of provider.configs) {
       const domain = providerDomain(config.baseUrl, labels.defaultEndpoint);
-      add(`${provider.type}\u0000${domain.toLowerCase()}`, `${labels[provider.type]} · ${domain}`, [
+      const name = String(config.name ?? '').trim();
+      const maskedKey = maskApiKey(String(config.apiKey ?? ''));
+      const identity =
+        String(config.authIndex ?? '').trim() ||
+        `${domain.toLowerCase()}\u0000${String(config.apiKey ?? '').trim()}`;
+      const detail = name || [domain, maskedKey].filter(Boolean).join(' · ');
+      add(`${provider.type}\u0000${identity}`, `${labels[provider.type]} · ${detail}`, [
         config.authIndex,
       ]);
     }

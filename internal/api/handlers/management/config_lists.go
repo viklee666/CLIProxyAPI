@@ -211,6 +211,7 @@ func (h *Handler) PutGeminiKeys(c *gin.Context) {
 }
 func (h *Handler) PatchGeminiKey(c *gin.Context) {
 	type geminiKeyPatch struct {
+		Name           *string               `json:"name"`
 		APIKey         *string               `json:"api-key"`
 		Priority       *int                  `json:"priority"`
 		Prefix         *string               `json:"prefix"`
@@ -266,6 +267,9 @@ func (h *Handler) PatchGeminiKey(c *gin.Context) {
 	}
 
 	entry := h.cfg.GeminiKey[targetIndex]
+	if body.Value.Name != nil {
+		entry.Name = strings.TrimSpace(*body.Value.Name)
+	}
 	if body.Value.APIKey != nil {
 		trimmed := strings.TrimSpace(*body.Value.APIKey)
 		if trimmed == "" {
@@ -396,6 +400,7 @@ func (h *Handler) PutInteractionsKeys(c *gin.Context) {
 }
 func (h *Handler) PatchInteractionsKey(c *gin.Context) {
 	type geminiKeyPatch struct {
+		Name           *string               `json:"name"`
 		APIKey         *string               `json:"api-key"`
 		Priority       *int                  `json:"priority"`
 		Prefix         *string               `json:"prefix"`
@@ -451,6 +456,9 @@ func (h *Handler) PatchInteractionsKey(c *gin.Context) {
 	}
 
 	entry := h.cfg.InteractionsKey[targetIndex]
+	if body.Value.Name != nil {
+		entry.Name = strings.TrimSpace(*body.Value.Name)
+	}
 	if body.Value.APIKey != nil {
 		trimmed := strings.TrimSpace(*body.Value.APIKey)
 		if trimmed == "" {
@@ -583,6 +591,7 @@ func (h *Handler) PutClaudeKeys(c *gin.Context) {
 }
 func (h *Handler) PatchClaudeKey(c *gin.Context) {
 	type claudeKeyPatch struct {
+		Name                    *string               `json:"name"`
 		APIKey                  *string               `json:"api-key"`
 		Priority                *int                  `json:"priority"`
 		Prefix                  *string               `json:"prefix"`
@@ -639,6 +648,9 @@ func (h *Handler) PatchClaudeKey(c *gin.Context) {
 	}
 
 	entry := h.cfg.ClaudeKey[targetIndex]
+	if body.Value.Name != nil {
+		entry.Name = strings.TrimSpace(*body.Value.Name)
+	}
 	if body.Value.APIKey != nil {
 		entry.APIKey = strings.TrimSpace(*body.Value.APIKey)
 	}
@@ -931,6 +943,7 @@ func (h *Handler) PutVertexCompatKeys(c *gin.Context) {
 }
 func (h *Handler) PatchVertexCompatKey(c *gin.Context) {
 	type vertexCompatPatch struct {
+		Name           *string                     `json:"name"`
 		APIKey         *string                     `json:"api-key"`
 		Priority       *int                        `json:"priority"`
 		Prefix         *string                     `json:"prefix"`
@@ -985,6 +998,9 @@ func (h *Handler) PatchVertexCompatKey(c *gin.Context) {
 	}
 
 	entry := h.cfg.VertexCompatAPIKey[targetIndex]
+	if body.Value.Name != nil {
+		entry.Name = strings.TrimSpace(*body.Value.Name)
+	}
 	if body.Value.APIKey != nil {
 		trimmed := strings.TrimSpace(*body.Value.APIKey)
 		if trimmed == "" {
@@ -1422,6 +1438,7 @@ func (h *Handler) PutCodexKeys(c *gin.Context) {
 }
 func (h *Handler) PatchCodexKey(c *gin.Context) {
 	type codexKeyPatch struct {
+		Name           *string              `json:"name"`
 		APIKey         *string              `json:"api-key"`
 		Priority       *int                 `json:"priority"`
 		Prefix         *string              `json:"prefix"`
@@ -1476,6 +1493,9 @@ func (h *Handler) PatchCodexKey(c *gin.Context) {
 	}
 
 	entry := h.cfg.CodexKey[targetIndex]
+	if body.Value.Name != nil {
+		entry.Name = strings.TrimSpace(*body.Value.Name)
+	}
 	if body.Value.APIKey != nil {
 		entry.APIKey = strings.TrimSpace(*body.Value.APIKey)
 	}
@@ -1801,6 +1821,7 @@ func normalizeClaudeKey(entry *config.ClaudeKey) {
 	if entry == nil {
 		return
 	}
+	entry.Name = strings.TrimSpace(entry.Name)
 	entry.APIKey = strings.TrimSpace(entry.APIKey)
 	entry.BaseURL = strings.TrimSpace(entry.BaseURL)
 	entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
@@ -1826,6 +1847,7 @@ func normalizeCodexKey(entry *config.CodexKey) {
 	if entry == nil {
 		return
 	}
+	entry.Name = strings.TrimSpace(entry.Name)
 	entry.APIKey = strings.TrimSpace(entry.APIKey)
 	entry.Prefix = strings.TrimSpace(entry.Prefix)
 	entry.BaseURL = strings.TrimSpace(entry.BaseURL)
@@ -1852,6 +1874,7 @@ func normalizeVertexCompatKey(entry *config.VertexCompatKey) {
 	if entry == nil {
 		return
 	}
+	entry.Name = strings.TrimSpace(entry.Name)
 	entry.APIKey = strings.TrimSpace(entry.APIKey)
 	entry.Prefix = strings.TrimSpace(entry.Prefix)
 	entry.BaseURL = strings.TrimSpace(entry.BaseURL)

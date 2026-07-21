@@ -25,10 +25,7 @@ import {
   buildClaudeMessagesEndpoint,
   parseTextList,
 } from '@/components/providers/utils';
-import {
-  createDiscoveredModelEntry,
-  modelsToEntries,
-} from '@/components/ui/modelInputListUtils';
+import { createDiscoveredModelEntry, modelsToEntries } from '@/components/ui/modelInputListUtils';
 import type { ProviderFormState } from '@/components/providers';
 import type { ModelInfo } from '@/utils/models';
 import styles from '@/features/aiProviders/AiProvidersPage.module.scss';
@@ -47,6 +44,7 @@ const CLAUDE_TEST_TIMEOUT_MS = 30_000;
 const DEFAULT_ANTHROPIC_VERSION = '2023-06-01';
 
 const buildEmptyForm = (): ProviderFormState => ({
+  name: '',
   apiKey: '',
   authIndex: '',
   priority: undefined,
@@ -96,6 +94,7 @@ const areCloakConfigsEqual = (
 };
 
 const buildClaudeBaseline = (form: ProviderFormState) => ({
+  name: String(form.name ?? '').trim(),
   apiKey: String(form.apiKey ?? '').trim(),
   authIndex: normalizeAuthIndex(form.authIndex) ?? '',
   priority:
@@ -241,6 +240,7 @@ export function ClaudeEditDrawer({
         ? Math.trunc(form.priority)
         : null;
     return (
+      baseline.name !== String(form.name ?? '').trim() ||
       baseline.apiKey !== form.apiKey.trim() ||
       baseline.authIndex !== (normalizeAuthIndex(form.authIndex) ?? '') ||
       baseline.priority !== normalizedPriority ||
@@ -289,11 +289,7 @@ export function ClaudeEditDrawer({
 
   const configuredModelNames = useMemo(
     () =>
-      new Set(
-        form.modelEntries
-          .map((entry) => entry.name.trim().toLowerCase())
-          .filter(Boolean)
-      ),
+      new Set(form.modelEntries.map((entry) => entry.name.trim().toLowerCase()).filter(Boolean)),
     [form.modelEntries]
   );
 
@@ -397,9 +393,7 @@ export function ClaudeEditDrawer({
             hasCustomXApiKey ? 'yes' : 'no'
           }, customAuthorization=${hasAuthorization ? 'yes' : 'no'}]`
         : '';
-      setModelDiscoveryError(
-        `${t('ai_providers.claude_models_fetch_error')}: ${message}${diag}`
-      );
+      setModelDiscoveryError(`${t('ai_providers.claude_models_fetch_error')}: ${message}${diag}`);
     } finally {
       setModelDiscoveryFetching(false);
     }
@@ -430,15 +424,18 @@ export function ClaudeEditDrawer({
     });
   }, [configuredModelNames, discoveredModels]);
 
-  const toggleModelDiscoverySelection = useCallback((name: string) => {
-    if (configuredModelNames.has(name.toLowerCase())) return;
-    setModelDiscoverySelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(name)) next.delete(name);
-      else next.add(name);
-      return next;
-    });
-  }, [configuredModelNames]);
+  const toggleModelDiscoverySelection = useCallback(
+    (name: string) => {
+      if (configuredModelNames.has(name.toLowerCase())) return;
+      setModelDiscoverySelected((prev) => {
+        const next = new Set(prev);
+        if (next.has(name)) next.delete(name);
+        else next.add(name);
+        return next;
+      });
+    },
+    [configuredModelNames]
+  );
 
   const handleSelectVisibleModels = useCallback(() => {
     setModelDiscoverySelected((prev) => {
@@ -566,6 +563,7 @@ export function ClaudeEditDrawer({
     setSaving(true);
     try {
       const payload: ProviderKeyConfig = {
+        name: form.name?.trim() || undefined,
         apiKey: form.apiKey.trim(),
         priority: form.priority !== undefined ? Math.trunc(form.priority) : undefined,
         prefix: form.prefix?.trim() || undefined,
@@ -592,11 +590,13 @@ export function ClaudeEditDrawer({
       } else {
         await providersApi.createClaudeConfig(payload);
       }
-      const syncedList = await providersApi.getClaudeConfigs().catch(() =>
-        editIndex !== null
-          ? configs.map((item, index) => (index === editIndex ? payload : item))
-          : [...configs, payload]
-      );
+      const syncedList = await providersApi
+        .getClaudeConfigs()
+        .catch(() =>
+          editIndex !== null
+            ? configs.map((item, index) => (index === editIndex ? payload : item))
+            : [...configs, payload]
+        );
       updateConfigValue('claude-api-key', syncedList);
       clearCache('claude-api-key');
       showNotification(
@@ -652,6 +652,14 @@ export function ClaudeEditDrawer({
         )}
         {!loading && !invalidIndex && (
           <>
+            <Input
+              label={t('ai_providers.remark_name_label')}
+              placeholder={t('ai_providers.remark_name_placeholder')}
+              hint={t('ai_providers.remark_name_hint')}
+              value={form.name ?? ''}
+              onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
+              disabled={saving || disabled || isTesting}
+            />
             <Input
               label={t('ai_providers.claude_add_modal_key_label')}
               value={form.apiKey}
@@ -716,9 +724,7 @@ export function ClaudeEditDrawer({
                 disabled={saving || disabled || isTesting}
                 ariaLabel={t('ai_providers.rebuild_mid_system_message_label')}
               />
-              <div className="hint">
-                {t('ai_providers.rebuild_mid_system_message_hint')}
-              </div>
+              <div className="hint">{t('ai_providers.rebuild_mid_system_message_hint')}</div>
             </div>
             <HeaderInputList
               entries={form.headers}
@@ -1001,9 +1007,7 @@ export function ClaudeEditDrawer({
                                 )}
                               </div>
                               {model.description && (
-                                <div className={styles.modelDiscoveryDesc}>
-                                  {model.description}
-                                </div>
+                                <div className={styles.modelDiscoveryDesc}>{model.description}</div>
                               )}
                             </div>
                           }

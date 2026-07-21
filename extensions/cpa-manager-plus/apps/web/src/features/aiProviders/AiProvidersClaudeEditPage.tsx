@@ -311,6 +311,14 @@ export function AiProvidersClaudeEditPage() {
         ) : (
           <div className={styles.openaiEditForm}>
             <Input
+              label={t('ai_providers.remark_name_label')}
+              placeholder={t('ai_providers.remark_name_placeholder')}
+              hint={t('ai_providers.remark_name_hint')}
+              value={form.name ?? ''}
+              onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
+              disabled={saving || disableControls || isTesting}
+            />
+            <Input
               label={t('ai_providers.claude_add_modal_key_label')}
               value={form.apiKey}
               onChange={(e) => setForm((prev) => ({ ...prev, apiKey: e.target.value }))}
@@ -510,9 +518,7 @@ export function AiProvidersClaudeEditPage() {
                 disabled={saving || disableControls || isTesting}
                 ariaLabel={t('ai_providers.rebuild_mid_system_message_label')}
               />
-              <div className="hint">
-                {t('ai_providers.rebuild_mid_system_message_hint')}
-              </div>
+              <div className="hint">{t('ai_providers.rebuild_mid_system_message_hint')}</div>
             </div>
 
             <div className={styles.modelConfigSection}>

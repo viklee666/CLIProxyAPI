@@ -505,6 +505,9 @@
   },
   "ai_providers": {
     "title": "AI 提供商配置",
+    "remark_name_label": "备注名称 (可选)",
+    "remark_name_placeholder": "例如: 主线路",
+    "remark_name_hint": "仅用于区分配置，不影响请求路由。",
     "gemini_title": "Gemini API 密钥",
     "gemini_add_button": "添加密钥",
     "gemini_empty_title": "暂无Gemini密钥",

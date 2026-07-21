@@ -14,13 +14,7 @@ import {
   type ProviderRecentUsageMap,
 } from '../utils';
 
-export type ProviderKind =
-  | 'gemini'
-  | 'interactions'
-  | 'codex'
-  | 'claude'
-  | 'vertex'
-  | 'openai';
+export type ProviderKind = 'gemini' | 'interactions' | 'codex' | 'claude' | 'vertex' | 'openai';
 
 export const PROVIDER_KINDS: readonly ProviderKind[] = [
   'gemini',
@@ -37,9 +31,9 @@ interface ProviderRowBase {
   kind: ProviderKind;
   /** 在所属 provider 原始数组中的索引，编辑/删除/启停回调使用 */
   originalIndex: number;
-  /** 表格标识列：OpenAI 为名称，其余为掩码密钥 */
+  /** 表格标识列：优先显示配置名称，否则显示掩码密钥 */
   label: string;
-  /** 名称排序依据：OpenAI 为名称，其余沿用 prefix/baseUrl/proxyUrl/authIndex 首个非空值 */
+  /** 名称排序依据：优先显示配置名称，其余沿用 prefix/baseUrl/proxyUrl/authIndex */
   sortName: string;
   baseUrl: string;
   priority?: number;
@@ -77,12 +71,16 @@ const collectModelNames = (models?: { name: string }[]): string[] =>
 
 const buildHaystack = (parts: Array<string | undefined>): string =>
   parts
-    .map((part) => String(part ?? '').trim().toLowerCase())
+    .map((part) =>
+      String(part ?? '')
+        .trim()
+        .toLowerCase()
+    )
     .filter(Boolean)
     .join('\n');
 
 const getKeyConfigSortName = (config: GeminiKeyConfig | ProviderKeyConfig): string =>
-  [config.prefix, config.baseUrl, config.proxyUrl, config.authIndex]
+  [config.name, config.prefix, config.baseUrl, config.proxyUrl, config.authIndex]
     .map((value) => String(value ?? '').trim())
     .find(Boolean) ?? '';
 
@@ -93,11 +91,12 @@ function buildKeyConfigRow(
   usageByProvider: ProviderRecentUsageMap
 ): ProviderRow {
   const modelNames = collectModelNames(config.models);
+  const name = String(config.name ?? '').trim();
   return {
     key: `${kind}:${getProviderConfigKey(config, originalIndex)}`,
     kind,
     originalIndex,
-    label: maskApiKey(config.apiKey),
+    label: name || maskApiKey(config.apiKey),
     sortName: getKeyConfigSortName(config),
     baseUrl: config.baseUrl ?? '',
     priority: config.priority,
@@ -114,6 +113,7 @@ function buildKeyConfigRow(
     ).success,
     statusData: getProviderRecentStatusData(usageByProvider, kind, config.apiKey, config.baseUrl),
     haystack: buildHaystack([
+      config.name,
       config.apiKey,
       config.prefix,
       config.baseUrl,

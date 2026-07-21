@@ -153,8 +153,11 @@ func boundedConfigCollectionLength(total int) int {
 	return total
 }
 
-func projectProviderConfigIdentity(apiKey, prefix, baseURL string, excludedModels []string, disableCooling bool) gin.H {
+func projectProviderConfigIdentity(name, apiKey, prefix, baseURL string, excludedModels []string, disableCooling bool) gin.H {
 	item := gin.H{"api-key": apiKey}
+	if name != "" {
+		item["name"] = name
+	}
 	if prefix != "" {
 		item["prefix"] = prefix
 	}
@@ -175,7 +178,7 @@ func projectGeminiConfigIdentities(items []config.GeminiKey) []gin.H {
 	out := make([]gin.H, 0, len(items))
 	for i := range items {
 		item := items[i]
-		out = append(out, projectProviderConfigIdentity(item.APIKey, item.Prefix, item.BaseURL, item.ExcludedModels, item.DisableCooling))
+		out = append(out, projectProviderConfigIdentity(item.Name, item.APIKey, item.Prefix, item.BaseURL, item.ExcludedModels, item.DisableCooling))
 	}
 	return out
 }
@@ -185,7 +188,7 @@ func projectCodexConfigIdentities(items []config.CodexKey) []gin.H {
 	out := make([]gin.H, 0, len(items))
 	for i := range items {
 		item := items[i]
-		out = append(out, projectProviderConfigIdentity(item.APIKey, item.Prefix, item.BaseURL, item.ExcludedModels, item.DisableCooling))
+		out = append(out, projectProviderConfigIdentity(item.Name, item.APIKey, item.Prefix, item.BaseURL, item.ExcludedModels, item.DisableCooling))
 	}
 	return out
 }
@@ -195,7 +198,7 @@ func projectClaudeConfigIdentities(items []config.ClaudeKey) []gin.H {
 	out := make([]gin.H, 0, len(items))
 	for i := range items {
 		item := items[i]
-		out = append(out, projectProviderConfigIdentity(item.APIKey, item.Prefix, item.BaseURL, item.ExcludedModels, item.DisableCooling))
+		out = append(out, projectProviderConfigIdentity(item.Name, item.APIKey, item.Prefix, item.BaseURL, item.ExcludedModels, item.DisableCooling))
 	}
 	return out
 }
@@ -205,7 +208,7 @@ func projectVertexConfigIdentities(items []config.VertexCompatKey) []gin.H {
 	out := make([]gin.H, 0, len(items))
 	for i := range items {
 		item := items[i]
-		out = append(out, projectProviderConfigIdentity(item.APIKey, item.Prefix, item.BaseURL, item.ExcludedModels, false))
+		out = append(out, projectProviderConfigIdentity(item.Name, item.APIKey, item.Prefix, item.BaseURL, item.ExcludedModels, false))
 	}
 	return out
 }

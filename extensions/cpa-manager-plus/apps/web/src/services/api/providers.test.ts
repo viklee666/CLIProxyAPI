@@ -28,6 +28,23 @@ beforeEach(() => {
 });
 
 describe('providersApi auth-index preservation', () => {
+  it('normalizes provider remark names from management responses', async () => {
+    mocks.get
+      .mockResolvedValueOnce({
+        'gemini-api-key': [{ name: '  Gemini primary  ', 'api-key': 'gemini-1' }],
+      })
+      .mockResolvedValueOnce({
+        'codex-api-key': [{ name: '  Codex backup  ', 'api-key': 'codex-1' }],
+      });
+
+    await expect(providersApi.getGeminiKeys()).resolves.toEqual([
+      expect.objectContaining({ name: 'Gemini primary', apiKey: 'gemini-1' }),
+    ]);
+    await expect(providersApi.getCodexConfigs()).resolves.toEqual([
+      expect.objectContaining({ name: 'Codex backup', apiKey: 'codex-1' }),
+    ]);
+  });
+
   it('continues bounded provider pages returned by the management API', async () => {
     mocks.get
       .mockResolvedValueOnce({
@@ -637,9 +654,12 @@ describe('providersApi record-level provider mutations', () => {
   it('creates one Gemini record without downloading or replacing the provider list', async () => {
     mocks.post.mockResolvedValue({});
 
-    await providersApi.createGeminiKey({ apiKey: 'new-key' });
+    await providersApi.createGeminiKey({ name: '  Primary  ', apiKey: 'new-key' });
 
-    expect(mocks.post).toHaveBeenCalledWith('/gemini-api-key', { 'api-key': 'new-key' });
+    expect(mocks.post).toHaveBeenCalledWith('/gemini-api-key', {
+      name: 'Primary',
+      'api-key': 'new-key',
+    });
     expect(mocks.get).not.toHaveBeenCalled();
     expect(mocks.put).not.toHaveBeenCalled();
   });
@@ -653,6 +673,7 @@ describe('providersApi record-level provider mutations', () => {
         apiKey: '',
         authIndex: 'auth-1',
         baseUrl: 'https://codex.example/v1',
+        name: '  Backup  ',
         prefix: 'updated',
       }
     );
@@ -663,6 +684,7 @@ describe('providersApi record-level provider mutations', () => {
       'match-auth-index': 'auth-1',
       value: expect.objectContaining({
         'auth-index': 'auth-1',
+        name: 'Backup',
         prefix: 'updated',
         'base-url': 'https://codex.example/v1',
       }),

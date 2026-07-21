@@ -12,15 +12,24 @@ const labels: ProviderLabels = {
 };
 
 describe('buildProviderResources', () => {
-  it('groups fixed providers by type and upstream domain', () => {
+  it('keeps same-domain fixed provider credentials separate by auth index', () => {
     const resources = buildProviderResources(
       [
         {
           type: 'codex',
           configs: [
-            { baseUrl: 'https://example.com/v1', authIndex: 'auth-1' },
-            { baseUrl: 'https://example.com/other', authIndex: 'auth-2' },
-            { baseUrl: 'https://second.example.com/v1', authIndex: 'auth-3' },
+            { apiKey: 'sk-example-key-01', baseUrl: 'https://example.com/v1', authIndex: 'auth-1' },
+            {
+              apiKey: 'sk-example-key-02',
+              baseUrl: 'https://example.com/other',
+              authIndex: 'auth-2',
+            },
+            {
+              name: 'Secondary route',
+              apiKey: 'sk-second-key',
+              baseUrl: 'https://second.example.com/v1',
+              authIndex: 'auth-3',
+            },
           ],
         },
       ],
@@ -30,13 +39,18 @@ describe('buildProviderResources', () => {
 
     expect(resources).toEqual([
       {
-        key: 'codex\u0000example.com',
-        label: 'Codex · example.com',
-        authIndices: ['auth-1', 'auth-2'],
+        key: 'codex\u0000auth-1',
+        label: 'Codex · example.com · sk******01',
+        authIndices: ['auth-1'],
       },
       {
-        key: 'codex\u0000second.example.com',
-        label: 'Codex · second.example.com',
+        key: 'codex\u0000auth-2',
+        label: 'Codex · example.com · sk******02',
+        authIndices: ['auth-2'],
+      },
+      {
+        key: 'codex\u0000auth-3',
+        label: 'Codex · Secondary route',
         authIndices: ['auth-3'],
       },
     ]);

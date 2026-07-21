@@ -45,6 +45,19 @@ describe('buildProviderRows', () => {
     expect(rows[1].originalIndex).toBe(1);
   });
 
+  it('uses a configured remark for key-based labels, search, and name sorting', () => {
+    const codex: ProviderKeyConfig[] = [
+      { name: '  备用线路  ', apiKey: 'sk-backup', baseUrl: 'https://same.example/v1' },
+      { name: '主线路', apiKey: 'sk-primary', baseUrl: 'https://same.example/v1' },
+    ];
+
+    const rows = buildProviderRows({ ...emptyInput, codex });
+
+    expect(rows.map((row) => row.label)).toEqual(['备用线路', '主线路']);
+    expect(rows[0].sortName).toBe('备用线路');
+    expect(rows[0].haystack).toContain('备用线路');
+  });
+
   it('maps openai providers with name label, key count and disabled flag', () => {
     const openai: OpenAIProviderConfig[] = [
       {

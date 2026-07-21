@@ -40,6 +40,7 @@ interface GeminiEditDrawerProps {
 type GeminiFormBaseline = ReturnType<typeof buildGeminiBaseline>;
 
 const buildEmptyForm = (): GeminiFormState => ({
+  name: '',
   apiKey: '',
   priority: undefined,
   prefix: '',
@@ -67,6 +68,7 @@ const normalizeModelEntries = (entries: Array<{ name: string; alias: string }>) 
   }, []);
 
 const buildGeminiBaseline = (form: GeminiFormState) => ({
+  name: String(form.name ?? '').trim(),
   apiKey: String(form.apiKey ?? '').trim(),
   authIndex: normalizeAuthIndex(form.authIndex) ?? '',
   priority:
@@ -197,6 +199,7 @@ export function GeminiEditDrawer({
         ? Math.trunc(form.priority)
         : null;
     return (
+      baseline.name !== String(form.name ?? '').trim() ||
       baseline.apiKey !== form.apiKey.trim() ||
       baseline.authIndex !== (normalizeAuthIndex(form.authIndex) ?? '') ||
       baseline.priority !== normalizedPriority ||
@@ -325,6 +328,7 @@ export function GeminiEditDrawer({
         name: stripGeminiModelResourceName(entry.name),
       }));
       const payload: GeminiKeyConfig = {
+        name: form.name?.trim() || undefined,
         apiKey,
         priority: form.priority !== undefined ? Math.trunc(form.priority) : undefined,
         prefix: form.prefix?.trim() || undefined,
@@ -350,16 +354,20 @@ export function GeminiEditDrawer({
         }
       }
       const syncedList = isInteractions
-        ? await providersApi.getInteractionsKeys().catch(() =>
-            editIndex !== null
-              ? configs.map((item, index) => (index === editIndex ? payload : item))
-              : [...configs, payload]
-          )
-        : await providersApi.getGeminiKeys().catch(() =>
-            editIndex !== null
-              ? configs.map((item, index) => (index === editIndex ? payload : item))
-              : [...configs, payload]
-          );
+        ? await providersApi
+            .getInteractionsKeys()
+            .catch(() =>
+              editIndex !== null
+                ? configs.map((item, index) => (index === editIndex ? payload : item))
+                : [...configs, payload]
+            )
+        : await providersApi
+            .getGeminiKeys()
+            .catch(() =>
+              editIndex !== null
+                ? configs.map((item, index) => (index === editIndex ? payload : item))
+                : [...configs, payload]
+            );
       updateConfigValue(configSection, syncedList);
       clearCache(configSection);
       showNotification(
@@ -479,6 +487,14 @@ export function GeminiEditDrawer({
         {invalidIndex && <div className="hint">{t('common.invalid_provider_index')}</div>}
         {!loading && !invalidIndex && (
           <>
+            <Input
+              label={t('ai_providers.remark_name_label')}
+              placeholder={t('ai_providers.remark_name_placeholder')}
+              hint={t('ai_providers.remark_name_hint')}
+              value={form.name ?? ''}
+              onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
+              disabled={disabled || saving}
+            />
             <Input
               label={t(
                 isInteractions

@@ -505,6 +505,9 @@
   },
   "ai_providers": {
     "title": "AI 供應商設定",
+    "remark_name_label": "備註名稱 (可選)",
+    "remark_name_placeholder": "例如: 主要線路",
+    "remark_name_hint": "僅用於區分設定，不影響請求路由。",
     "gemini_title": "Gemini API 金鑰",
     "gemini_add_button": "新增金鑰",
     "gemini_empty_title": "暫無 Gemini 金鑰",

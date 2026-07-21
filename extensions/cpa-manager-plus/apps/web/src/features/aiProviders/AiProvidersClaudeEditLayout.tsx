@@ -21,10 +21,7 @@ import {
   areStringArraysEqual,
 } from '@/utils/compare';
 import { excludedModelsToText, parseExcludedModels } from '@/components/providers/utils';
-import {
-  createDiscoveredModelEntry,
-  modelsToEntries,
-} from '@/components/ui/modelInputListUtils';
+import { createDiscoveredModelEntry, modelsToEntries } from '@/components/ui/modelInputListUtils';
 import {
   buildProviderDraftKey,
   parseProviderIndexParam,
@@ -58,6 +55,7 @@ export type ClaudeEditOutletContext = {
 };
 
 const buildEmptyForm = (): ProviderFormState => ({
+  name: '',
   apiKey: '',
   authIndex: '',
   priority: undefined,
@@ -107,6 +105,7 @@ const normalizeCloakConfig = (cloak: ProviderFormState['cloak']) => {
 };
 
 const buildClaudeBaseline = (form: ProviderFormState): ClaudeEditBaseline => ({
+  name: String(form.name ?? '').trim(),
   apiKey: String(form.apiKey ?? '').trim(),
   authIndex: normalizeAuthIndex(form.authIndex) ?? '',
   priority:
@@ -327,7 +326,8 @@ export function AiProvidersClaudeEditLayout() {
   const isDirty =
     Boolean(draft?.initialized) &&
     baseline !== null &&
-    (baseline.apiKey !== form.apiKey.trim() ||
+    (baseline.name !== String(form.name ?? '').trim() ||
+      baseline.apiKey !== form.apiKey.trim() ||
       baseline.authIndex !== (normalizeAuthIndex(form.authIndex) ?? '') ||
       baseline.priority !== normalizedPriority ||
       baseline.prefix !== String(form.prefix ?? '').trim() ||
@@ -427,6 +427,7 @@ export function AiProvidersClaudeEditLayout() {
     setSaving(true);
     try {
       const payload: ProviderKeyConfig = {
+        name: form.name?.trim() || undefined,
         apiKey: form.apiKey.trim(),
         priority: form.priority !== undefined ? Math.trunc(form.priority) : undefined,
         prefix: form.prefix?.trim() || undefined,
@@ -454,11 +455,13 @@ export function AiProvidersClaudeEditLayout() {
       } else {
         await providersApi.createClaudeConfig(payload);
       }
-      const syncedList = await providersApi.getClaudeConfigs().catch(() =>
-        editIndex !== null
-          ? configs.map((item, index) => (index === editIndex ? payload : item))
-          : [...configs, payload]
-      );
+      const syncedList = await providersApi
+        .getClaudeConfigs()
+        .catch(() =>
+          editIndex !== null
+            ? configs.map((item, index) => (index === editIndex ? payload : item))
+            : [...configs, payload]
+        );
       setConfigs(syncedList);
       updateConfigValue('claude-api-key', syncedList);
       clearCache('claude-api-key');

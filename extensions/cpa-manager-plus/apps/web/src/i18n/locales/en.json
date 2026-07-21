@@ -505,6 +505,9 @@
   },
   "ai_providers": {
     "title": "AI Providers Configuration",
+    "remark_name_label": "Remark name (optional)",
+    "remark_name_placeholder": "For example: Primary route",
+    "remark_name_hint": "Used only to distinguish configurations; it does not affect request routing.",
     "gemini_title": "Gemini API Keys",
     "gemini_add_button": "Add Key",
     "gemini_empty_title": "No Gemini Keys",

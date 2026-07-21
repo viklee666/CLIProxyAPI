@@ -505,6 +505,9 @@
   },
   "ai_providers": {
     "title": "Конфигурация AI-провайдеров",
+    "remark_name_label": "Название заметки (необязательно)",
+    "remark_name_placeholder": "Например: Основной маршрут",
+    "remark_name_hint": "Используется только для различения конфигураций и не влияет на маршрутизацию запросов.",
     "gemini_title": "API-ключи Gemini",
     "gemini_add_button": "Добавить ключ",
     "gemini_empty_title": "Ключи Gemini отсутствуют",

@@ -26,6 +26,7 @@ const AUTH_INDEX_FIELDS = ['auth-index', 'authIndex', 'auth_index'] as const;
 const DISABLE_COOLING_FIELDS = ['disable-cooling', 'disableCooling', 'disable_cooling'] as const;
 
 const COMMON_PROVIDER_KEY_FIELDS = [
+  'name',
   'api-key',
   'apiKey',
   ...AUTH_INDEX_FIELDS,
@@ -475,6 +476,8 @@ const serializeApiKeyEntry = (entry: ApiKeyEntry) => {
 
 const serializeProviderKey = (config: ProviderKeyConfig) => {
   const payload: Record<string, unknown> = {};
+  const name = config.name?.trim();
+  if (name) payload.name = name;
   const apiKey = config.apiKey?.trim();
   if (apiKey) payload['api-key'] = apiKey;
   const authIndex = serializeAuthIndex(config.authIndex);
@@ -531,6 +534,8 @@ const serializeVertexModelAliases = (models?: ModelAlias[]) =>
 
 const serializeVertexKey = (config: ProviderKeyConfig) => {
   const payload: Record<string, unknown> = {};
+  const name = config.name?.trim();
+  if (name) payload.name = name;
   const apiKey = config.apiKey?.trim();
   if (apiKey) payload['api-key'] = apiKey;
   const authIndex = serializeAuthIndex(config.authIndex);
@@ -551,6 +556,8 @@ const serializeVertexKey = (config: ProviderKeyConfig) => {
 
 const serializeGeminiKey = (config: GeminiKeyConfig) => {
   const payload: Record<string, unknown> = {};
+  const name = config.name?.trim();
+  if (name) payload.name = name;
   const apiKey = config.apiKey?.trim();
   if (!apiKey) {
     throw new Error('API key is required for Gemini and Interactions providers');
@@ -573,6 +580,7 @@ const serializeGeminiKey = (config: GeminiKeyConfig) => {
 
 const serializeGeminiKeyPatch = (config: GeminiKeyConfig) => ({
   ...serializeGeminiKey(config),
+  name: config.name?.trim() ?? '',
   priority: config.priority ?? 0,
   prefix: config.prefix?.trim() ?? '',
   'base-url': config.baseUrl ?? '',
@@ -585,6 +593,7 @@ const serializeGeminiKeyPatch = (config: GeminiKeyConfig) => ({
 
 const serializeProviderKeyPatch = (config: ProviderKeyConfig) => ({
   ...serializeProviderKey(config),
+  name: config.name?.trim() ?? '',
   priority: config.priority ?? 0,
   prefix: config.prefix?.trim() ?? '',
   'base-url': config.baseUrl ?? '',
@@ -601,6 +610,7 @@ const serializeProviderKeyPatch = (config: ProviderKeyConfig) => ({
 
 const serializeVertexKeyPatch = (config: ProviderKeyConfig) => ({
   ...serializeVertexKey(config),
+  name: config.name?.trim() ?? '',
   priority: config.priority ?? 0,
   prefix: config.prefix?.trim() ?? '',
   'base-url': config.baseUrl ?? '',

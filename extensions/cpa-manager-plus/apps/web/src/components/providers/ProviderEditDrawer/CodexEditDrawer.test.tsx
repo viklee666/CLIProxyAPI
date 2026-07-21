@@ -1,6 +1,7 @@
 import { act, type ReactNode } from 'react';
 import { create, type ReactTestRenderer } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { Input } from '@/components/ui/Input';
 import { ModelInputList } from '@/components/ui/ModelInputList';
 import { CodexEditDrawer } from './CodexEditDrawer';
 
@@ -49,6 +50,7 @@ describe('CodexEditDrawer', () => {
   it('loads full provider records so saved custom models are shown when reopened', async () => {
     mocks.getCodexConfigs.mockResolvedValue([
       {
+        name: 'Primary route',
         apiKey: 'codex-key',
         baseUrl: 'https://codex.example/v1',
         models: [{ name: 'gpt-5.5-custom', alias: 'custom-codex' }],
@@ -58,18 +60,17 @@ describe('CodexEditDrawer', () => {
     let renderer!: ReactTestRenderer;
     await act(async () => {
       renderer = create(
-        <CodexEditDrawer
-          open
-          editIndex={0}
-          disabled={false}
-          onClose={vi.fn()}
-          onSaved={vi.fn()}
-        />
+        <CodexEditDrawer open editIndex={0} disabled={false} onClose={vi.fn()} onSaved={vi.fn()} />
       );
       await Promise.resolve();
     });
 
     expect(mocks.getCodexConfigs).toHaveBeenCalledTimes(1);
+    expect(
+      renderer.root
+        .findAllByType(Input)
+        .find((input) => input.props.label === 'ai_providers.remark_name_label')?.props.value
+    ).toBe('Primary route');
     expect(renderer.root.findByType(ModelInputList).props.entries).toEqual([
       { name: 'gpt-5.5-custom', alias: 'custom-codex' },
     ]);

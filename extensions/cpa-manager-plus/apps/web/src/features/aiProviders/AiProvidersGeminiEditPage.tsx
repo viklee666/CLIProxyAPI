@@ -37,6 +37,7 @@ import styles from './AiProvidersPage.module.scss';
 type LocationState = { fromAiProviders?: boolean } | null;
 
 const buildEmptyForm = (): GeminiFormState => ({
+  name: '',
   apiKey: '',
   priority: undefined,
   prefix: '',
@@ -67,6 +68,7 @@ const normalizeModelEntries = (entries: Array<{ name: string; alias: string }>) 
   }, []);
 
 type GeminiFormBaseline = {
+  name: string;
   apiKey: string;
   authIndex: string;
   priority: number | null;
@@ -80,6 +82,7 @@ type GeminiFormBaseline = {
 };
 
 const buildGeminiBaseline = (form: GeminiFormState): GeminiFormBaseline => ({
+  name: String(form.name ?? '').trim(),
   apiKey: String(form.apiKey ?? '').trim(),
   authIndex: normalizeAuthIndex(form.authIndex) ?? '',
   priority:
@@ -238,10 +241,7 @@ export function AiProvidersGeminiEditPage() {
     });
   }, [discoveredModels, modelDiscoverySearch]);
   const configuredModelNames = useMemo(
-    () =>
-      new Set(
-        normalizedModels.map((entry) => entry.name.trim().toLowerCase()).filter(Boolean)
-      ),
+    () => new Set(normalizedModels.map((entry) => entry.name.trim().toLowerCase()).filter(Boolean)),
     [normalizedModels]
   );
   const visibleDiscoveredModelNames = useMemo(
@@ -446,6 +446,7 @@ export function AiProvidersGeminiEditPage() {
     [baseline.excludedModels, normalizedExcludedModels]
   );
   const isDirty =
+    baseline.name !== String(form.name ?? '').trim() ||
     baseline.apiKey !== form.apiKey.trim() ||
     baseline.authIndex !== (normalizeAuthIndex(form.authIndex) ?? '') ||
     baseline.priority !== normalizedPriority ||
@@ -483,6 +484,7 @@ export function AiProvidersGeminiEditPage() {
       }));
 
       const payload: GeminiKeyConfig = {
+        name: form.name?.trim() || undefined,
         apiKey: form.apiKey.trim(),
         priority: form.priority !== undefined ? Math.trunc(form.priority) : undefined,
         prefix: form.prefix?.trim() || undefined,
@@ -500,11 +502,13 @@ export function AiProvidersGeminiEditPage() {
       } else {
         await providersApi.createGeminiKey(payload);
       }
-      const syncedList = await providersApi.getGeminiKeys().catch(() =>
-        editIndex !== null
-          ? configs.map((item, index) => (index === editIndex ? payload : item))
-          : [...configs, payload]
-      );
+      const syncedList = await providersApi
+        .getGeminiKeys()
+        .catch(() =>
+          editIndex !== null
+            ? configs.map((item, index) => (index === editIndex ? payload : item))
+            : [...configs, payload]
+        );
       updateConfigValue('gemini-api-key', syncedList);
       clearCache('gemini-api-key');
       showNotification(
@@ -581,6 +585,14 @@ export function AiProvidersGeminiEditPage() {
           <div className="hint">{t('common.invalid_provider_index')}</div>
         ) : (
           <>
+            <Input
+              label={t('ai_providers.remark_name_label')}
+              placeholder={t('ai_providers.remark_name_placeholder')}
+              hint={t('ai_providers.remark_name_hint')}
+              value={form.name ?? ''}
+              onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
+              disabled={disableControls || saving}
+            />
             <Input
               label={t('ai_providers.gemini_add_modal_key_label')}
               placeholder={t('ai_providers.gemini_add_modal_key_placeholder')}
