@@ -158,6 +158,12 @@ func (h *Handler) ListPluginStore(c *gin.Context) {
 		return
 	}
 	pluginsEnabled, pluginsDir, proxyURL, sourceConfigs, storeAuth, configs, host := h.pluginStoreSnapshot()
+	resolvedPluginsDir, errResolvePluginsDir := config.ResolvePluginsDir(pluginsDir)
+	if errResolvePluginsDir != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "plugin_directory_invalid", "message": errResolvePluginsDir.Error()})
+		return
+	}
+	pluginsDir = resolvedPluginsDir
 	sources, errSources := h.pluginStoreSources(sourceConfigs)
 	if errSources != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "plugin_store_source_invalid", "message": errSources.Error()})
@@ -293,6 +299,12 @@ func (h *Handler) installPluginFromStore(c *gin.Context, goos, goarch string) {
 	}
 	installCtx := c.Request.Context()
 	pluginsEnabled, pluginsDir, proxyURL, sourceConfigs, storeAuth, configs, host := h.pluginStoreSnapshot()
+	resolvedPluginsDir, errResolvePluginsDir := config.ResolvePluginsDir(pluginsDir)
+	if errResolvePluginsDir != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "plugin_directory_invalid", "message": errResolvePluginsDir.Error()})
+		return
+	}
+	pluginsDir = resolvedPluginsDir
 	sources, errSources := h.pluginStoreSources(sourceConfigs)
 	if errSources != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "plugin_store_source_invalid", "message": errSources.Error()})
