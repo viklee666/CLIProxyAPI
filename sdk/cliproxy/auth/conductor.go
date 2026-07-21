@@ -6945,6 +6945,9 @@ func (m *Manager) HttpRequest(ctx context.Context, auth *Auth, req *http.Request
 	if req == nil {
 		return nil, &Error{Code: "invalid_request", Message: "http request is nil"}
 	}
+	if ctx == nil {
+		ctx = req.Context()
+	}
 	providerKey := executorKeyFromAuth(auth)
 	if providerKey == "" {
 		return nil, &Error{Code: "provider_not_found", Message: "auth provider is empty"}
@@ -6953,5 +6956,102 @@ func (m *Manager) HttpRequest(ctx context.Context, auth *Auth, req *http.Request
 	if exec == nil {
 		return nil, &Error{Code: "provider_not_found", Message: "executor not registered for provider: " + providerKey}
 	}
-	return exec.HttpRequest(ctx, auth, req)
+	preparedAuth, errPrepare := m.prepareRequestAuth(ctx, exec, auth)
+	if errPrepare != nil {
+		return nil, errPrepare
+	}
+	if preparedAuth != nil {
+		auth = preparedAuth
+	}
+
+	if errReplayable := makeHTTPRequestReplayable(req); errReplayable != nil {
+		return nil, errReplayable
+	}
+
+	recoveryTried := false
+	for {
+		attemptReq, errClone := cloneHTTPRequestForAttempt(ctx, req)
+		if errClone != nil {
+			return nil, errClone
+		}
+		resp, errDo := exec.HttpRequest(ctx, auth, attemptReq)
+		recoveryErr := errDo
+		if recoveryErr == nil {
+			recoveryErr = httpResponseRequestAuthError(resp)
+		}
+
+		updatedAuth, recovered, errRecover := m.tryRecoverRequestAuth(ctx, exec, auth, recoveryErr, recoveryTried)
+		if !recovered {
+			return resp, errDo
+		}
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		if errRecover != nil {
+			return nil, errRecover
+		}
+		if updatedAuth != nil {
+			auth = updatedAuth
+		}
+		recoveryTried = true
+	}
+}
+
+func makeHTTPRequestReplayable(req *http.Request) error {
+	if req == nil || req.Body == nil || req.Body == http.NoBody || req.GetBody != nil {
+		return nil
+	}
+	body, errRead := io.ReadAll(req.Body)
+	if errClose := req.Body.Close(); errRead == nil && errClose != nil {
+		errRead = errClose
+	}
+	if errRead != nil {
+		return fmt.Errorf("read http request body for auth recovery: %w", errRead)
+	}
+	req.Body = io.NopCloser(bytes.NewReader(body))
+	req.ContentLength = int64(len(body))
+	req.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(body)), nil
+	}
+	return nil
+}
+
+func cloneHTTPRequestForAttempt(ctx context.Context, req *http.Request) (*http.Request, error) {
+	if req == nil {
+		return nil, &Error{Code: "invalid_request", Message: "http request is nil"}
+	}
+	if ctx == nil {
+		ctx = req.Context()
+	}
+	attemptReq := req.Clone(ctx)
+	attemptReq.Header = req.Header.Clone()
+	if req.Body == nil || req.Body == http.NoBody {
+		return attemptReq, nil
+	}
+	if req.GetBody == nil {
+		return nil, &Error{Code: "invalid_request", Message: "http request body is not replayable"}
+	}
+	body, errGetBody := req.GetBody()
+	if errGetBody != nil {
+		return nil, fmt.Errorf("clone http request body for auth recovery: %w", errGetBody)
+	}
+	attemptReq.Body = body
+	return attemptReq, nil
+}
+
+func httpResponseRequestAuthError(resp *http.Response) error {
+	if resp == nil || resp.StatusCode != http.StatusUnauthorized || resp.Body == nil {
+		return nil
+	}
+	body, errRead := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	if errRead != nil {
+		return nil
+	}
+	return &Error{
+		Code:       requestScopedErrorCode,
+		Message:    string(body),
+		HTTPStatus: resp.StatusCode,
+	}
 }

@@ -2011,6 +2011,42 @@ func (e *CodexAutoExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.
 	return e.httpExec.HttpRequest(ctx, auth, req)
 }
 
+func (e *CodexAutoExecutor) ShouldPrepareRequestAuth(auth *cliproxyauth.Auth) bool {
+	return e != nil && e.httpExec != nil && e.httpExec.ShouldPrepareRequestAuth(auth)
+}
+
+func (e *CodexAutoExecutor) PrepareRequestAuth(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
+	if e == nil || e.httpExec == nil {
+		return nil, fmt.Errorf("codex auto executor: http executor is nil")
+	}
+	return e.httpExec.PrepareRequestAuth(ctx, auth)
+}
+
+func (e *CodexAutoExecutor) ShouldRecoverRequestAuth(auth *cliproxyauth.Auth, execErr error) bool {
+	return e != nil && e.httpExec != nil && e.httpExec.ShouldRecoverRequestAuth(auth, execErr)
+}
+
+func (e *CodexAutoExecutor) RequestAuthRecoveryState(auth *cliproxyauth.Auth) string {
+	if e == nil || e.httpExec == nil {
+		return ""
+	}
+	return e.httpExec.RequestAuthRecoveryState(auth)
+}
+
+func (e *CodexAutoExecutor) RecoverRequestAuth(ctx context.Context, auth *cliproxyauth.Auth, execErr error) (*cliproxyauth.Auth, error) {
+	if e == nil || e.httpExec == nil {
+		return nil, fmt.Errorf("codex auto executor: http executor is nil")
+	}
+	return e.httpExec.RecoverRequestAuth(ctx, auth, execErr)
+}
+
+func (e *CodexAutoExecutor) RequestAuthRecovered(auth *cliproxyauth.Auth) {
+	if e == nil || e.httpExec == nil {
+		return
+	}
+	e.httpExec.RequestAuthRecovered(auth)
+}
+
 func (e *CodexAutoExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	if e == nil || e.httpExec == nil || e.wsExec == nil {
 		return cliproxyexecutor.Response{}, fmt.Errorf("codex auto executor: executor is nil")

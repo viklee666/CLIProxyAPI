@@ -23,6 +23,12 @@ import (
 	"golang.org/x/crypto/nacl/box"
 )
 
+var (
+	_ cliproxyauth.RequestAuthPreparer         = (*CodexAutoExecutor)(nil)
+	_ cliproxyauth.RequestAuthRecoverer        = (*CodexAutoExecutor)(nil)
+	_ cliproxyauth.RequestAuthRecoveryObserver = (*CodexAutoExecutor)(nil)
+)
+
 func agentIdentityTestAuth(t *testing.T, keyName string) (*cliproxyauth.Auth, ed25519.PublicKey) {
 	t.Helper()
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
@@ -502,5 +508,25 @@ func TestCodexStatusClassificationPreservesInvalidTaskCode(t *testing.T) {
 	}
 	if got := gjson.Get(err.Error(), "error.message").String(); got != "agent identity task is invalid or expired" {
 		t.Fatalf("error.message = %q", got)
+	}
+}
+
+func TestCodexAutoExecutorDelegatesAgentIdentityLifecycle(t *testing.T) {
+	auth, _ := agentIdentityTestAuth(t, "agent_private_key")
+	auth.ID = "auto-agent-auth"
+	auth.Metadata["auth_kind"] = cliproxyauth.AuthKindAgentIdentity
+	autoExecutor := NewCodexAutoExecutor(nil)
+
+	delete(auth.Metadata, "task_id")
+	if !autoExecutor.ShouldPrepareRequestAuth(auth) {
+		t.Fatal("ShouldPrepareRequestAuth() = false, want true")
+	}
+	auth.Metadata["task_id"] = "task-old"
+	errInvalid := statusErr{code: http.StatusUnauthorized, msg: `{"error":{"code":"invalid_task_id"}}`}
+	if !autoExecutor.ShouldRecoverRequestAuth(auth, errInvalid) {
+		t.Fatal("ShouldRecoverRequestAuth() = false, want true")
+	}
+	if got := autoExecutor.RequestAuthRecoveryState(auth); got != "task-old" {
+		t.Fatalf("RequestAuthRecoveryState() = %q, want task-old", got)
 	}
 }

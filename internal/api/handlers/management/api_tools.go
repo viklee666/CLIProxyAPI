@@ -118,6 +118,7 @@ func (h *Handler) APICall(c *gin.Context) {
 
 	authIndex := firstNonEmptyString(body.AuthIndexSnake, body.AuthIndexCamel, body.AuthIndexPascal)
 	auth := h.authByIndex(authIndex)
+	agentIdentity := auth != nil && auth.AuthKind() == coreauth.AuthKindAgentIdentity
 
 	reqHeaders := body.Header
 	if reqHeaders == nil {
@@ -130,6 +131,19 @@ func (h *Handler) APICall(c *gin.Context) {
 	var tokenErr error
 	for key, value := range reqHeaders {
 		if !strings.Contains(value, "$TOKEN$") {
+			continue
+		}
+		if agentIdentity {
+			if strings.EqualFold(key, "authorization") {
+				delete(reqHeaders, key)
+				continue
+			}
+			replaced := strings.TrimSpace(strings.ReplaceAll(value, "$TOKEN$", ""))
+			if replaced == "" {
+				delete(reqHeaders, key)
+			} else {
+				reqHeaders[key] = replaced
+			}
 			continue
 		}
 		if !tokenResolved {
@@ -155,7 +169,9 @@ func (h *Handler) APICall(c *gin.Context) {
 		requestBody = strings.NewReader(body.Data)
 	}
 
-	req, errNewRequest := http.NewRequestWithContext(c.Request.Context(), method, urlStr, requestBody)
+	requestCtx, cancelRequest := context.WithTimeout(c.Request.Context(), defaultAPICallTimeout)
+	defer cancelRequest()
+	req, errNewRequest := http.NewRequestWithContext(requestCtx, method, urlStr, requestBody)
 	if errNewRequest != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to build request"})
 		return
@@ -172,12 +188,21 @@ func (h *Handler) APICall(c *gin.Context) {
 		req.Host = hostOverride
 	}
 
-	httpClient := &http.Client{
-		Timeout: defaultAPICallTimeout,
+	var resp *http.Response
+	var errDo error
+	if agentIdentity {
+		if h == nil || h.authManager == nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "auth manager unavailable"})
+			return
+		}
+		resp, errDo = h.authManager.HttpRequest(requestCtx, auth, req)
+	} else {
+		httpClient := &http.Client{
+			Timeout:   defaultAPICallTimeout,
+			Transport: h.apiCallTransport(auth),
+		}
+		resp, errDo = httpClient.Do(req)
 	}
-	httpClient.Transport = h.apiCallTransport(auth)
-
-	resp, errDo := httpClient.Do(req)
 	if errDo != nil {
 		log.WithError(errDo).Debug("management APICall request failed")
 		c.JSON(http.StatusBadGateway, gin.H{"error": "request failed"})
@@ -194,12 +219,67 @@ func (h *Handler) APICall(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to read response"})
 		return
 	}
+	responseHeader := resp.Header
+	if agentIdentity {
+		respBody = redactAgentIdentityAPICallBytes(auth, respBody)
+		responseHeader = redactAgentIdentityAPICallHeader(auth, resp.Header)
+		if currentAuth, ok := h.authManager.GetByID(auth.ID); ok && currentAuth != nil {
+			respBody = redactAgentIdentityAPICallBytes(currentAuth, respBody)
+			responseHeader = redactAgentIdentityAPICallHeader(currentAuth, responseHeader)
+		}
+	}
 
 	c.JSON(http.StatusOK, apiCallResponse{
 		StatusCode: resp.StatusCode,
-		Header:     resp.Header,
+		Header:     responseHeader,
 		Body:       string(respBody),
 	})
+}
+
+func redactAgentIdentityAPICallHeader(auth *coreauth.Auth, header http.Header) http.Header {
+	if header == nil {
+		return nil
+	}
+	redacted := header.Clone()
+	for key, values := range redacted {
+		for i, value := range values {
+			values[i] = string(redactAgentIdentityAPICallBytes(auth, []byte(value)))
+		}
+		redacted[key] = values
+	}
+	return redacted
+}
+
+func redactAgentIdentityAPICallBytes(auth *coreauth.Auth, body []byte) []byte {
+	if auth == nil || len(body) == 0 {
+		return body
+	}
+	redacted := string(body)
+	for _, key := range []string{"agent_private_key", "private_key_pkcs8_base64", "private_key", "task_id"} {
+		if value := stringValue(auth.Metadata, key); value != "" {
+			redacted = strings.ReplaceAll(redacted, value, "[redacted]")
+		}
+	}
+	searchFrom := 0
+	for searchFrom < len(redacted) {
+		relativeStart := strings.Index(redacted[searchFrom:], "AgentAssertion ")
+		if relativeStart < 0 {
+			break
+		}
+		start := searchFrom + relativeStart
+		tokenStart := start + len("AgentAssertion ")
+		if strings.HasPrefix(redacted[tokenStart:], "[redacted]") {
+			searchFrom = tokenStart + len("[redacted]")
+			continue
+		}
+		end := tokenStart
+		for end < len(redacted) && !strings.ContainsRune(" \t\r\n\"',}", rune(redacted[end])) {
+			end++
+		}
+		redacted = redacted[:start] + "AgentAssertion [redacted]" + redacted[end:]
+		searchFrom = start + len("AgentAssertion [redacted]")
+	}
+	return []byte(redacted)
 }
 
 func firstNonEmptyString(values ...*string) string {

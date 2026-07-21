@@ -2,7 +2,9 @@ package auth
 
 import (
 	"context"
+	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -41,10 +43,13 @@ type requestAuthRecoveryExecutor struct {
 
 	executeCalls  int
 	streamCalls   int
+	httpCalls     int
+	prepareCalls  int
 	recoverCalls  int
 	refreshCalls  int
 	observed      int
 	alwaysInvalid bool
+	httpBodies    []string
 }
 
 func (e *requestAuthRecoveryExecutor) Identifier() string { return "codex" }
@@ -98,8 +103,45 @@ func (e *requestAuthRecoveryExecutor) CountTokens(ctx context.Context, auth *Aut
 	return e.Execute(ctx, auth, req, opts)
 }
 
-func (e *requestAuthRecoveryExecutor) HttpRequest(context.Context, *Auth, *http.Request) (*http.Response, error) {
-	return nil, nil
+func (e *requestAuthRecoveryExecutor) HttpRequest(_ context.Context, auth *Auth, req *http.Request) (*http.Response, error) {
+	var body []byte
+	if req != nil && req.Body != nil {
+		body, _ = io.ReadAll(req.Body)
+		_ = req.Body.Close()
+	}
+	e.mu.Lock()
+	e.httpCalls++
+	e.httpBodies = append(e.httpBodies, string(body))
+	alwaysInvalid := e.alwaysInvalid
+	e.mu.Unlock()
+	if alwaysInvalid || requestAuthTask(auth) != "task-new" {
+		return &http.Response{
+			StatusCode: http.StatusUnauthorized,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"code":"invalid_task_id"}}`)),
+		}, nil
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader("task-new")),
+	}, nil
+}
+
+func (e *requestAuthRecoveryExecutor) ShouldPrepareRequestAuth(auth *Auth) bool {
+	return requestAuthTask(auth) == ""
+}
+
+func (e *requestAuthRecoveryExecutor) PrepareRequestAuth(_ context.Context, auth *Auth) (*Auth, error) {
+	e.mu.Lock()
+	e.prepareCalls++
+	e.mu.Unlock()
+	updated := auth.Clone()
+	if updated.Metadata == nil {
+		updated.Metadata = make(map[string]any)
+	}
+	updated.Metadata["task_id"] = "task-new"
+	return updated, nil
 }
 
 func (e *requestAuthRecoveryExecutor) ShouldRecoverRequestAuth(_ *Auth, execErr error) bool {
@@ -133,6 +175,12 @@ func (e *requestAuthRecoveryExecutor) counts() (execute, stream, recover, refres
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.executeCalls, e.streamCalls, e.recoverCalls, e.refreshCalls, e.observed
+}
+
+func (e *requestAuthRecoveryExecutor) httpCounts() (httpCalls, prepareCalls int, bodies []string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.httpCalls, e.prepareCalls, append([]string(nil), e.httpBodies...)
 }
 
 func newRequestAuthRecoveryFixture(t *testing.T, alwaysInvalid bool) (*Manager, *requestAuthRecoveryExecutor, *requestAuthRecoveryStore, *Auth, string) {
@@ -242,5 +290,85 @@ func TestManagerRecoverRequestAuthCoalescesConcurrentCalls(t *testing.T) {
 	_, _, recover, _, observed := executor.counts()
 	if recover != 1 || observed != 1 {
 		t.Fatalf("counts recover=%d observed=%d, want 1 and 1", recover, observed)
+	}
+}
+
+func TestManagerHttpRequestPreparesAndPersistsMissingRequestAuth(t *testing.T) {
+	manager, executor, store, auth, _ := newRequestAuthRecoveryFixture(t, false)
+	missingTask := auth.Clone()
+	delete(missingTask.Metadata, "task_id")
+	if _, errUpdate := manager.Update(context.Background(), missingTask); errUpdate != nil {
+		t.Fatalf("Update() error = %v", errUpdate)
+	}
+
+	req, errRequest := http.NewRequest(http.MethodPost, "https://example.test/usage", strings.NewReader("request-body"))
+	if errRequest != nil {
+		t.Fatalf("http.NewRequest() error = %v", errRequest)
+	}
+	resp, errDo := manager.HttpRequest(context.Background(), missingTask, req)
+	if errDo != nil {
+		t.Fatalf("HttpRequest() error = %v", errDo)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	httpCalls, prepareCalls, bodies := executor.httpCounts()
+	if httpCalls != 1 || prepareCalls != 1 {
+		t.Fatalf("http calls=%d prepare calls=%d, want 1 and 1", httpCalls, prepareCalls)
+	}
+	if len(bodies) != 1 || bodies[0] != "request-body" {
+		t.Fatalf("request bodies = %#v, want one replayable body", bodies)
+	}
+	if got := requestAuthTask(store.latest()); got != "task-new" {
+		t.Fatalf("persisted task_id = %q, want task-new", got)
+	}
+}
+
+func TestManagerHttpRequestRecoversInvalidTaskAndReplaysBodyOnce(t *testing.T) {
+	manager, executor, store, auth, _ := newRequestAuthRecoveryFixture(t, false)
+	req, errRequest := http.NewRequest(http.MethodPost, "https://example.test/usage", strings.NewReader("request-body"))
+	if errRequest != nil {
+		t.Fatalf("http.NewRequest() error = %v", errRequest)
+	}
+	resp, errDo := manager.HttpRequest(context.Background(), auth, req)
+	if errDo != nil {
+		t.Fatalf("HttpRequest() error = %v", errDo)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	httpCalls, prepareCalls, bodies := executor.httpCounts()
+	_, _, recoverCalls, refreshCalls, observed := executor.counts()
+	if httpCalls != 2 || prepareCalls != 0 || recoverCalls != 1 || refreshCalls != 0 || observed != 1 {
+		t.Fatalf("http=%d prepare=%d recover=%d refresh=%d observed=%d", httpCalls, prepareCalls, recoverCalls, refreshCalls, observed)
+	}
+	if len(bodies) != 2 || bodies[0] != "request-body" || bodies[1] != "request-body" {
+		t.Fatalf("request bodies = %#v, want body replayed exactly once", bodies)
+	}
+	if got := requestAuthTask(store.latest()); got != "task-new" {
+		t.Fatalf("persisted task_id = %q, want task-new", got)
+	}
+}
+
+func TestManagerHttpRequestRecoversInvalidTaskAtMostOnce(t *testing.T) {
+	manager, executor, _, auth, _ := newRequestAuthRecoveryFixture(t, true)
+	req, errRequest := http.NewRequest(http.MethodGet, "https://example.test/usage", nil)
+	if errRequest != nil {
+		t.Fatalf("http.NewRequest() error = %v", errRequest)
+	}
+	resp, errDo := manager.HttpRequest(context.Background(), auth, req)
+	if errDo != nil {
+		t.Fatalf("HttpRequest() error = %v", errDo)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", resp.StatusCode)
+	}
+	httpCalls, _, _ := executor.httpCounts()
+	_, _, recoverCalls, _, _ := executor.counts()
+	if httpCalls != 2 || recoverCalls != 1 {
+		t.Fatalf("http calls=%d recover calls=%d, want 2 and 1", httpCalls, recoverCalls)
 	}
 }
