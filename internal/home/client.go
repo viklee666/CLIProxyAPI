@@ -53,6 +53,10 @@ var (
 	ErrConfigNotFound        = errors.New("home config not found")
 	ErrModelsNotFound        = errors.New("home models not found")
 	ErrPluginSyncUnsupported = errors.New("home plugin sync is unsupported")
+
+	// ErrCompareAndSwapUnsupported reports that the Home backend cannot perform
+	// an atomic compare-and-swap for replay state.
+	ErrCompareAndSwapUnsupported = errors.New("home compare-and-swap is unsupported")
 )
 
 type clusterNode struct {

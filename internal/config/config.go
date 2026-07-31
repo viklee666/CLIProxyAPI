@@ -134,6 +134,9 @@ type Config struct {
 	// Codex configures provider-wide Codex request behavior.
 	Codex CodexConfig `yaml:"codex" json:"codex"`
 
+	// XAI configures provider-wide xAI request behavior.
+	XAI XAIConfig `yaml:"xai" json:"xai"`
+
 	// CodexHeaderDefaults configures fallback headers for Codex OAuth model requests.
 	// These are used only when the client does not send its own headers.
 	CodexHeaderDefaults CodexHeaderDefaults `yaml:"codex-header-defaults" json:"codex-header-defaults"`
@@ -294,9 +297,17 @@ type CodexHeaderDefaults struct {
 	BetaFeatures string `yaml:"beta-features" json:"beta-features"`
 }
 
+// XAIConfig configures provider-wide xAI request behavior.
+type XAIConfig struct {
+	// InjectXSearch injects xAI's native x_search tool when the request does not declare it.
+	InjectXSearch bool `yaml:"inject-x-search" json:"inject-x-search"`
+}
+
 // CodexConfig configures provider-wide Codex request behavior.
 type CodexConfig struct {
 	IdentityConfuse bool `yaml:"identity-confuse" json:"identity-confuse"`
+	// OptimizeMultiAgentV2 optimizes official Codex multi-agent requests.
+	OptimizeMultiAgentV2 bool `yaml:"optimize-multi-agent-v2" json:"optimize-multi-agent-v2"`
 }
 
 // TLSConfig holds HTTPS server settings.
