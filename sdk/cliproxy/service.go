@@ -22,6 +22,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/tenant"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/diff"
@@ -101,7 +102,9 @@ type Service struct {
 	// pluginHost owns dynamic plugin lifecycle and runtime capability adapters.
 	pluginHost *pluginhost.Host
 
-	clientAccess *clientaccess.Service
+	clientAccess     *clientaccess.Service
+	tenant           *tenant.Service
+	tenantAuthSyncMu sync.Mutex
 
 	// shutdownOnce ensures shutdown is called only once.
 	shutdownOnce sync.Once
@@ -1638,6 +1641,9 @@ func (s *Service) Run(ctx context.Context) error {
 			log.Warnf("failed to load auth store: %v", errLoad)
 		}
 		s.registerConfigAPIKeyAuths(coreauth.WithSkipPersist(ctx), s.cfg)
+		if errSyncTenant := s.syncTenantAuths(ctx); errSyncTenant != nil {
+			return fmt.Errorf("cliproxy: synchronize tenant providers: %w", errSyncTenant)
+		}
 		if s.cfg.SaveCooldownStatus {
 			if errRestoreCooldown := s.coreManager.RestoreCooldownStates(ctx); errRestoreCooldown != nil {
 				log.Warnf("failed to restore cooldown state: %v", errRestoreCooldown)
@@ -1864,6 +1870,15 @@ func (s *Service) Shutdown(ctx context.Context) error {
 				}
 			}
 			s.clientAccess = nil
+		}
+		if s.tenant != nil {
+			if errClose := s.tenant.Close(); errClose != nil {
+				log.Errorf("failed to close tenant database: %v", errClose)
+				if shutdownErr == nil {
+					shutdownErr = errClose
+				}
+			}
+			s.tenant = nil
 		}
 
 		if s.pluginHost != nil {

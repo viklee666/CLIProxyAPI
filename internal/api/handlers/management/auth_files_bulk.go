@@ -77,6 +77,9 @@ func (h *Handler) patchAuthFileStatusTarget(ctx context.Context, name, authIndex
 	if targetAuth == nil {
 		return nil, http.StatusNotFound, fmt.Errorf("auth file not found")
 	}
+	if isTenantRuntimeAuth(targetAuth) {
+		return nil, http.StatusNotFound, fmt.Errorf("auth file not found")
+	}
 
 	if coreauth.IsPluginVirtualAuth(targetAuth) {
 		if !isPluginVirtualSourceDelete(name, targetAuth) {
@@ -226,6 +229,9 @@ func (h *Handler) patchAuthFileFieldsTarget(ctx context.Context, name, authIndex
 		}
 	}
 	if targetAuth == nil {
+		return nil, http.StatusNotFound, fmt.Errorf("auth file not found")
+	}
+	if isTenantRuntimeAuth(targetAuth) {
 		return nil, http.StatusNotFound, fmt.Errorf("auth file not found")
 	}
 	if coreauth.IsPluginVirtualAuth(targetAuth) {

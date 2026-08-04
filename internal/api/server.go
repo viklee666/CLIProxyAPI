@@ -26,6 +26,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/access"
 	managementHandlers "github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/management"
+	tenantHandlers "github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/tenant"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/middleware"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/clientaccess"
@@ -38,6 +39,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/safemode"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/tenant"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
@@ -87,6 +89,8 @@ type serverOptionConfig struct {
 	pluginHost            *pluginhost.Host
 	configReloadHook      func(context.Context, *config.Config)
 	clientAccessService   *clientaccess.Service
+	tenantService         *tenant.Service
+	tenantAuthSync        func(context.Context) error
 	exampleAPIKeySafeMode bool
 }
 
@@ -195,6 +199,14 @@ func WithClientAccessService(service *clientaccess.Service) ServerOption {
 	}
 }
 
+// WithTenantService attaches the isolated tenant control-plane services.
+func WithTenantService(service *tenant.Service, syncAuths func(context.Context) error) ServerOption {
+	return func(cfg *serverOptionConfig) {
+		cfg.tenantService = service
+		cfg.tenantAuthSync = syncAuths
+	}
+}
+
 // WithExampleAPIKeySafeMode blocks proxy API endpoints while template API keys remain configured.
 func WithExampleAPIKeySafeMode() ServerOption {
 	return func(cfg *serverOptionConfig) {
@@ -247,7 +259,8 @@ type Server struct {
 	wsAuthEnabled atomic.Bool
 
 	// management handler
-	mgmt *managementHandlers.Handler
+	mgmt   *managementHandlers.Handler
+	tenant *tenantHandlers.Handler
 
 	// pluginHost owns dynamic plugin Management API route dispatch.
 	pluginHost *pluginhost.Host
@@ -370,6 +383,8 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	// Initialize management handler
 	s.mgmt = managementHandlers.NewHandler(cfg, configFilePath, authManager)
 	s.mgmt.SetClientAccessService(optionState.clientAccessService)
+	s.mgmt.SetTenantService(optionState.tenantService, optionState.tenantAuthSync)
+	s.tenant = tenantHandlers.NewHandler(optionState.tenantService, optionState.clientAccessService, optionState.tenantAuthSync)
 	s.mgmt.SetPluginHost(optionState.pluginHost)
 	s.mgmt.SetConfigReloadHook(optionState.configReloadHook)
 	if optionState.localPassword != "" {
@@ -392,6 +407,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 
 	// Setup routes
 	s.setupRoutes()
+	s.tenant.Register(engine)
 
 	// Apply additional router configurators from options
 	if optionState.routerConfigurator != nil {
@@ -430,7 +446,7 @@ func (s *Server) homeHeartbeatMiddleware() gin.HandlerFunc {
 		}
 		if c != nil && c.Request != nil {
 			path := c.Request.URL.Path
-			if strings.HasPrefix(path, "/v0/management/") || path == "/v0/management" || strings.HasPrefix(path, "/v0/resource/plugins/") || path == "/management.html" {
+			if strings.HasPrefix(path, "/v0/management/") || path == "/v0/management" || strings.HasPrefix(path, "/v0/resource/plugins/") || path == "/management.html" || path == "/user" {
 				c.Next()
 				return
 			}
@@ -524,6 +540,7 @@ func (s *Server) setupRoutes() {
 	s.engine.HEAD("/healthz", healthzHandler)
 
 	s.engine.GET("/management.html", s.serveManagementControlPanel)
+	s.engine.GET("/user", s.serveManagementControlPanel)
 	openaiHandlers := openai.NewOpenAIAPIHandler(s.handlers)
 	geminiHandlers := gemini.NewGeminiAPIHandler(s.handlers)
 	claudeCodeHandlers := claude.NewClaudeCodeAPIHandler(s.handlers)
@@ -897,6 +914,14 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/client-access/credential-bindings", s.mgmt.ListClientAccessCredentialBindings)
 		mgmt.PUT("/client-access/credential-bindings", s.mgmt.ReplaceClientAccessCredentialBindings)
 		mgmt.POST("/client-access/credential-bindings/bulk", s.mgmt.BulkReplaceClientAccessCredentialBindings)
+
+		mgmt.GET("/tenants", s.mgmt.ListTenants)
+		mgmt.POST("/tenants", s.mgmt.CreateTenant)
+		mgmt.PATCH("/tenants/:id", s.mgmt.UpdateTenant)
+		mgmt.POST("/tenants/:id/reset-password", s.mgmt.ResetTenantPassword)
+		mgmt.DELETE("/tenants/:id", s.mgmt.DeleteTenant)
+		mgmt.GET("/tenants/:id/providers", s.mgmt.ListTenantProviders)
+		mgmt.GET("/tenant-providers", s.mgmt.ListAllTenantProviders)
 
 		mgmt.GET("/gemini-api-key", s.mgmt.GetGeminiKeys)
 		mgmt.POST("/gemini-api-key", s.mgmt.PostGeminiKey)

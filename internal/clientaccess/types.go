@@ -9,6 +9,7 @@ const (
 
 const (
 	MetadataKeyID             = "client_key_id"
+	MetadataKeyTenantID       = "client_tenant_id"
 	MetadataKeyHash           = "client_key_hash"
 	MetadataKeyGroupIDs       = "client_group_ids"
 	MetadataKeyAllowAllGroups = "client_allow_all_groups"
@@ -18,6 +19,7 @@ const (
 
 type Group struct {
 	ID              int64     `json:"id"`
+	TenantID        int64     `json:"tenant_id,omitempty"`
 	Name            string    `json:"name"`
 	Description     string    `json:"description,omitempty"`
 	Enabled         bool      `json:"enabled"`
@@ -29,6 +31,7 @@ type Group struct {
 
 type Key struct {
 	ID                 int64      `json:"id"`
+	TenantID           int64      `json:"tenant_id,omitempty"`
 	Name               string     `json:"name"`
 	Secret             string     `json:"secret,omitempty"`
 	KeyPrefix          string     `json:"key_prefix"`
@@ -104,6 +107,7 @@ type CredentialBindingChangeStats struct {
 }
 
 type GroupCreate struct {
+	TenantID    int64  `json:"-"`
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	Enabled     *bool  `json:"enabled,omitempty"`
@@ -116,6 +120,7 @@ type GroupUpdate struct {
 }
 
 type KeyCreate struct {
+	TenantID          int64      `json:"-"`
 	Name              string     `json:"name"`
 	CustomSecret      string     `json:"secret,omitempty"`
 	Enabled           *bool      `json:"enabled,omitempty"`
@@ -164,6 +169,10 @@ type ListOptions struct {
 	Enabled     *bool
 	AuthIndices []string
 	GroupIDs    []int64
+	// TenantID scopes a query to one tenant. A nil value intentionally leaves
+	// the query unscoped for existing administrative callers; zero targets the
+	// legacy administrator-owned rows whose tenant_id is NULL.
+	TenantID *int64 `json:"-"`
 }
 
 type Page[T any] struct {

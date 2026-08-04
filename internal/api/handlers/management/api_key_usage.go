@@ -178,6 +178,12 @@ func (h *Handler) GetAPIKeyUsage(c *gin.Context) {
 		if auth == nil {
 			continue
 		}
+		// Tenant runtime credentials are intentionally visible only through the
+		// dedicated masked tenant-provider views. The legacy usage payload uses
+		// a composite value containing the raw upstream API key.
+		if isTenantRuntimeAuth(auth) {
+			continue
+		}
 		kind, apiKey := auth.AccountInfo()
 		if !strings.EqualFold(strings.TrimSpace(kind), "api_key") {
 			continue

@@ -4,6 +4,7 @@
  */
 
 export type AuthSessionMode = 'manager_embedded' | 'external_panel';
+export type PanelRole = 'admin' | 'tenant';
 
 // 登录凭据
 export interface LoginCredentials {
@@ -24,6 +25,7 @@ export type RestoreSessionResult = LoginResult | false;
 
 // 认证状态
 export interface AuthState {
+	role: PanelRole;
   isAuthenticated: boolean;
   apiBase: string;
   managementKey: string;

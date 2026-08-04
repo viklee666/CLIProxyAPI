@@ -195,7 +195,9 @@
     "system_info": "System Info",
     "system_info_short": "System",
     "adaptive_routing": "Adaptive Routing",
-    "adaptive_routing_short": "Adaptive"
+    "adaptive_routing_short": "Adaptive",
+    "tenant_management": "Tenant Management",
+    "tenant_management_short": "Tenants"
   },
   "client_access": {
     "groups_title": "Client Groups",

@@ -303,6 +303,7 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 				if accessMetadata, okMetadata := rawAccessMetadata.(map[string]string); okMetadata {
 					for _, metadataKey := range []string{
 						coreexecutor.ClientKeyIDMetadataKey,
+						coreexecutor.ClientTenantIDMetadataKey,
 						coreexecutor.ClientGroupIDsMetadataKey,
 						coreexecutor.ClientAllowAllGroupsMetadataKey,
 						coreexecutor.ClientAllowUngroupedMetadataKey,

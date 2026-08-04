@@ -17,6 +17,7 @@ export function AppLifecycle() {
   const connectionStatus = useAuthStore((state) => state.connectionStatus);
   const apiBase = useAuthStore((state) => state.apiBase);
   const managementKey = useAuthStore((state) => state.managementKey);
+  const panelRole = useAuthStore((state) => state.role);
 
   useEffect(() => {
     const cleanupTheme = initializeTheme();
@@ -37,7 +38,7 @@ export function AppLifecycle() {
   }, [language]);
 
   useEffect(() => {
-    if (connectionStatus !== 'connected' || !apiBase || !managementKey) {
+    if (panelRole === 'tenant' || connectionStatus !== 'connected' || !apiBase || !managementKey) {
       clearCredentialStatusSync();
       return;
     }
@@ -59,7 +60,7 @@ export function AppLifecycle() {
       window.removeEventListener('focus', refreshVisible);
       document.removeEventListener('visibilitychange', refreshVisible);
     };
-  }, [apiBase, connectionStatus, managementKey]);
+  }, [apiBase, connectionStatus, managementKey, panelRole]);
 
   return null;
 }

@@ -21,6 +21,11 @@ func TestBuilderBuildInjectsPluginHostScheduler(t *testing.T) {
 	if errBuild != nil {
 		t.Fatalf("Build() error = %v", errBuild)
 	}
+	t.Cleanup(func() {
+		if errShutdown := service.Shutdown(context.Background()); errShutdown != nil {
+			t.Fatalf("Shutdown() error = %v", errShutdown)
+		}
+	})
 
 	got := pluginSchedulerFromManager(t, service.coreManager)
 	if got != host {

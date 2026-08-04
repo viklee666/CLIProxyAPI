@@ -198,6 +198,13 @@ type CredentialGroupResolver interface {
 	ResolveCredentialAccess(authIndex string, allowedGroupIDs []int64, allowAllGroups, allowUngrouped bool) (allowed bool, priority int, priorityOverride bool)
 }
 
+// CredentialOwnershipResolver identifies credentials that belong to a tenant.
+// A non-zero owner must match the tenant identity attached to the caller.
+type CredentialOwnershipResolver interface {
+	OwnerOf(authIndex string) int64
+	HasOwnedCredentials() bool
+}
+
 type PluginScheduler interface {
 	PickAuth(context.Context, pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, bool, error)
 }
@@ -250,6 +257,9 @@ type Manager struct {
 
 	credentialGroupResolverMu sync.RWMutex
 	credentialGroupResolver   CredentialGroupResolver
+
+	credentialOwnershipResolverMu sync.RWMutex
+	credentialOwnershipResolver   CredentialOwnershipResolver
 	// homeRuntimeAuths caches auths returned by Home so websocket sessions can
 	// reuse an established upstream credential without dispatching every turn.
 	homeRuntimeAuths map[string]map[string]*Auth
@@ -329,6 +339,15 @@ func (m *Manager) SetCredentialGroupResolver(resolver CredentialGroupResolver) {
 	m.credentialGroupResolverMu.Lock()
 	m.credentialGroupResolver = resolver
 	m.credentialGroupResolverMu.Unlock()
+}
+
+func (m *Manager) SetCredentialOwnershipResolver(resolver CredentialOwnershipResolver) {
+	if m == nil {
+		return
+	}
+	m.credentialOwnershipResolverMu.Lock()
+	m.credentialOwnershipResolver = resolver
+	m.credentialOwnershipResolverMu.Unlock()
 }
 
 type clientCredentialAccess struct {
@@ -421,8 +440,86 @@ func (m *Manager) credentialGroupFilteringRequired(metadata map[string]any) bool
 	return resolver != nil
 }
 
-func (m *Manager) credentialGroupCandidate(candidate *Auth, metadata map[string]any) (*Auth, bool) {
+func tenantIDFromMetadata(metadata map[string]any) int64 {
+	if len(metadata) == 0 {
+		return 0
+	}
+	value := contextStringValue(metadata[cliproxyexecutor.ClientTenantIDMetadataKey])
+	tenantID, errParse := strconv.ParseInt(value, 10, 64)
+	if errParse != nil || tenantID <= 0 {
+		return 0
+	}
+	return tenantID
+}
+
+func tenantIDFromAuth(candidate *Auth) (int64, bool) {
+	if candidate == nil || len(candidate.Attributes) == 0 {
+		return 0, false
+	}
+	rawValue, exists := candidate.Attributes[AttributeTenantID]
+	if !exists {
+		return 0, false
+	}
+	rawValue = strings.TrimSpace(rawValue)
+	if rawValue == "" {
+		return 0, true
+	}
+	tenantID, errParse := strconv.ParseInt(rawValue, 10, 64)
+	if errParse != nil || tenantID <= 0 {
+		return 0, true
+	}
+	return tenantID, true
+}
+
+func (m *Manager) credentialOwnershipFilteringRequired() bool {
+	if m == nil {
+		return false
+	}
+	m.credentialOwnershipResolverMu.RLock()
+	resolver := m.credentialOwnershipResolver
+	m.credentialOwnershipResolverMu.RUnlock()
+	if resolver != nil && resolver.HasOwnedCredentials() {
+		return true
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, candidate := range m.auths {
+		if _, declared := tenantIDFromAuth(candidate); declared {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Manager) credentialOwnershipCandidate(candidate *Auth, metadata map[string]any) (*Auth, bool) {
 	if candidate == nil {
+		return nil, false
+	}
+	declaredOwner, declaresTenant := tenantIDFromAuth(candidate)
+	m.credentialOwnershipResolverMu.RLock()
+	resolver := m.credentialOwnershipResolver
+	m.credentialOwnershipResolverMu.RUnlock()
+	ownerTenant := int64(0)
+	if resolver != nil {
+		ownerTenant = resolver.OwnerOf(candidate.Index)
+	}
+	if declaresTenant {
+		if declaredOwner <= 0 || resolver == nil || ownerTenant != declaredOwner {
+			return nil, false
+		}
+	}
+	if ownerTenant == 0 {
+		return candidate, true
+	}
+	if tenantIDFromMetadata(metadata) != ownerTenant {
+		return nil, false
+	}
+	return candidate, true
+}
+
+func (m *Manager) credentialGroupCandidate(candidate *Auth, metadata map[string]any) (*Auth, bool) {
+	candidate, allowedByOwnership := m.credentialOwnershipCandidate(candidate, metadata)
+	if !allowedByOwnership {
 		return nil, false
 	}
 	access := clientCredentialAccessFromMetadata(metadata)
@@ -5376,7 +5473,7 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 		auth, exec, _, err := m.pickNextViaHome(ctx, model, opts, tried)
 		return auth, exec, err
 	}
-	if m.credentialGroupFilteringRequired(opts.Metadata) {
+	if m.credentialOwnershipFilteringRequired() || m.credentialGroupFilteringRequired(opts.Metadata) {
 		return m.pickNextLegacy(ctx, provider, model, opts, tried)
 	}
 
@@ -5553,7 +5650,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 	if m.HomeEnabled() {
 		return m.pickNextViaHome(ctx, model, opts, tried)
 	}
-	if m.credentialGroupFilteringRequired(opts.Metadata) {
+	if m.credentialOwnershipFilteringRequired() || m.credentialGroupFilteringRequired(opts.Metadata) {
 		return m.pickNextMixedLegacy(ctx, providers, model, opts, tried)
 	}
 

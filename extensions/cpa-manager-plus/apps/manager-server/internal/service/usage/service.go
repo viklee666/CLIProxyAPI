@@ -50,6 +50,9 @@ type CompatibleUsageRequest struct {
 	Page     int
 	PageSize int
 	Cursor   string
+	// APIKeyHashes scopes a tenant usage view. nil preserves management usage;
+	// an empty non-nil value deliberately produces an empty result.
+	APIKeyHashes []string
 }
 
 type CompatibleUsageResponse struct {
@@ -104,7 +107,7 @@ func (s *Service) CompatibleUsage(ctx context.Context, req CompatibleUsageReques
 		req.PageSize = 500
 	}
 
-	query := store.RecentUsagePageQuery{PageSize: req.PageSize}
+	query := store.RecentUsagePageQuery{PageSize: req.PageSize, APIKeyHashes: req.APIKeyHashes}
 	if cursor := strings.TrimSpace(req.Cursor); cursor != "" {
 		decoded, err := decodeCompatibleUsageCursor(cursor)
 		if err != nil {

@@ -15,6 +15,7 @@ func TestRequestExecutionMetadataCopiesClientAccessMetadata(t *testing.T) {
 	ginContext.Request = httptest.NewRequest("POST", "/v1/responses", nil)
 	ginContext.Set("accessMetadata", map[string]string{
 		coreexecutor.ClientKeyIDMetadataKey:          "42",
+		coreexecutor.ClientTenantIDMetadataKey:       "7",
 		coreexecutor.ClientGroupIDsMetadataKey:       "1,3",
 		coreexecutor.ClientAllowAllGroupsMetadataKey: "false",
 		coreexecutor.ClientAllowUngroupedMetadataKey: "true",
@@ -24,6 +25,9 @@ func TestRequestExecutionMetadataCopiesClientAccessMetadata(t *testing.T) {
 	metadata := requestExecutionMetadata(ctx)
 	if metadata[coreexecutor.ClientKeyIDMetadataKey] != "42" {
 		t.Fatalf("client key id = %#v", metadata[coreexecutor.ClientKeyIDMetadataKey])
+	}
+	if metadata[coreexecutor.ClientTenantIDMetadataKey] != "7" {
+		t.Fatalf("client tenant id = %#v", metadata[coreexecutor.ClientTenantIDMetadataKey])
 	}
 	if metadata[coreexecutor.ClientGroupIDsMetadataKey] != "1,3" {
 		t.Fatalf("client group ids = %#v", metadata[coreexecutor.ClientGroupIDsMetadataKey])

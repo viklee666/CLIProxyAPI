@@ -33,6 +33,7 @@ import { LogsPage } from '@/pages/LogsPage';
 import { PluginResourcePage } from '@/pages/PluginResourcePage';
 import { PluginsPage } from '@/pages/PluginsPage';
 import { SystemPage } from '@/pages/SystemPage';
+import { TenantManagementPage } from '@/pages/TenantManagementPage';
 import { ClientGroupsPage } from '@/pages/ClientGroupsPage';
 import { ClientKeysPage } from '@/pages/ClientKeysPage';
 import { AdaptiveRoutingPage } from '@/pages/AdaptiveRoutingPage';
@@ -159,6 +160,7 @@ const mainRoutes: RouteObject[] = [
   { path: '/api-keys', element: <Navigate to="/client-keys" replace /> },
   { path: '/client-groups', element: <ClientGroupsPage /> },
   { path: '/client-keys', element: <ClientKeysPage /> },
+  { path: '/tenants', element: <TenantManagementPage /> },
   { path: '/adaptive-routing', element: <AdaptiveRoutingPage /> },
   { path: '/ai-providers/gemini/new', element: <AiProvidersGeminiEditPage /> },
   { path: '/ai-providers/gemini/:index', element: <AiProvidersGeminiEditPage /> },

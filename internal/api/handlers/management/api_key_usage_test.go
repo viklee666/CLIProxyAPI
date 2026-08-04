@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -212,5 +213,39 @@ func TestGetAPIKeyUsage_RejectsPageSizeAboveMaximum(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
+func TestGetAPIKeyUsage_OmitsTenantRuntimeCredential(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	manager := coreauth.NewManager(nil, nil, nil)
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "tenant-private-auth",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"api_key":      "tenant-private-secret",
+			"base_url":     "https://tenant.example.com",
+			"runtime_only": "true",
+			"tenant_id":    "42",
+		},
+	}); err != nil {
+		t.Fatalf("register tenant auth: %v", err)
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
+	rec := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(rec)
+	ginCtx.Request = httptest.NewRequest(http.MethodGet, "/v0/management/api-key-usage", nil)
+	h.GetAPIKeyUsage(ginCtx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "tenant-private-secret") {
+		t.Fatalf("tenant API key leaked from usage response: %s", rec.Body.String())
+	}
+	payload := decodeAPIKeyUsageResponse(t, rec)
+	if payload.Total != 0 || len(payload.Items) != 0 {
+		t.Fatalf("tenant runtime auth appeared in usage response: %+v", payload)
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/clientaccess"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/tenant"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
@@ -281,6 +282,14 @@ func (b *Builder) Build() (*Service, error) {
 		accessManager.SetProviders(sdkaccess.RegisteredProviders())
 	}
 
+	tenantService, errTenant := tenant.New(tenant.ResolveDatabasePath(b.configPath))
+	if errTenant != nil {
+		if clientAccessService != nil {
+			_ = clientAccessService.Close()
+		}
+		return nil, fmt.Errorf("cliproxy: initialize tenant store: %w", errTenant)
+	}
+
 	coreManager := b.coreManager
 	if coreManager == nil {
 		tokenStore := sdkAuth.GetTokenStore()
@@ -294,6 +303,7 @@ func (b *Builder) Build() (*Service, error) {
 	coreManager.SetRoundTripperProvider(newDefaultRoundTripperProvider())
 	coreManager.SetConfig(b.cfg)
 	coreManager.SetOAuthModelAlias(b.cfg.OAuthModelAlias)
+	coreManager.SetCredentialOwnershipResolver(tenantService)
 	if clientAccessService != nil {
 		coreManager.SetCredentialGroupResolver(clientAccessService)
 	}
@@ -313,6 +323,7 @@ func (b *Builder) Build() (*Service, error) {
 		coreManager:    coreManager,
 		pluginHost:     pluginHost,
 		clientAccess:   clientAccessService,
+		tenant:         tenantService,
 		serverOptions:  append([]api.ServerOption(nil), b.serverOptions...),
 	}
 	if b.postAuthHook != nil {
@@ -321,6 +332,7 @@ func (b *Builder) Build() (*Service, error) {
 	service.serverOptions = append(service.serverOptions,
 		api.WithPostAuthPersistHook(service.runtimeAuthSyncHook()),
 		api.WithPluginHost(pluginHost),
+		api.WithTenantService(tenantService, service.syncTenantAuths),
 		api.WithConfigReloadHook(func(_ context.Context, _ *config.Config) {
 			service.reloadConfigFromWatcher()
 		}),

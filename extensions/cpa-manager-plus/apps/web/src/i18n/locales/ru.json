@@ -195,7 +195,9 @@
     "system_info": "Информация системы",
     "system_info_short": "Система",
     "adaptive_routing": "Адаптивная маршрутизация",
-    "adaptive_routing_short": "Адаптивная"
+    "adaptive_routing_short": "Адаптивная",
+    "tenant_management": "Управление арендаторами",
+    "tenant_management_short": "Арендаторы"
   },
   "client_access": {
     "groups_title": "Группы клиентов",

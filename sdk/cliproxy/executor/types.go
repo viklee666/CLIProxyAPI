@@ -34,6 +34,8 @@ const GenerateMetadataKey = "generate"
 const (
 	// ClientKeyIDMetadataKey identifies a persistent advanced client key.
 	ClientKeyIDMetadataKey = "client_key_id"
+	// ClientTenantIDMetadataKey identifies the tenant that owns a client key.
+	ClientTenantIDMetadataKey = "client_tenant_id"
 	// ClientGroupIDsMetadataKey carries the credential groups allowed for this request.
 	ClientGroupIDsMetadataKey = "client_group_ids"
 	// ClientAllowAllGroupsMetadataKey bypasses credential group filtering.

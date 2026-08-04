@@ -23,11 +23,15 @@ var managerPathPrefixes = []string{
 	"/v0/management/model-prices",
 	"/v0/management/monitoring",
 	"/v0/management/usage",
+	"/v0/tenant/dashboard",
+	"/v0/tenant/monitoring",
+	"/v0/tenant/usage",
 }
 
 var managerExactPaths = map[string]struct{}{
 	"/health":          {},
 	"/management.html": {},
+	"/user":            {},
 	"/setup":           {},
 	"/status":          {},
 }

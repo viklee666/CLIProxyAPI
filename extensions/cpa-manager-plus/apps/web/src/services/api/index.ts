@@ -18,3 +18,5 @@ export * from './codexQuota';
 export * from './antigravitySubscription';
 export * from './clientAccess';
 export * from './adaptiveRouting';
+export * from './tenant';
+export * from './tenants';

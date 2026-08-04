@@ -195,7 +195,9 @@
     "system_info": "系統資訊",
     "system_info_short": "系統",
     "adaptive_routing": "自適應調度",
-    "adaptive_routing_short": "調度"
+    "adaptive_routing_short": "調度",
+    "tenant_management": "租戶管理",
+    "tenant_management_short": "租戶"
   },
   "client_access": {
     "groups_title": "客戶端分組",

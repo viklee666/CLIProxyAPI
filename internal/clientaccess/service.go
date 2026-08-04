@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -57,6 +58,13 @@ type Service struct {
 }
 
 type Option func(*Service)
+
+// CredentialOwnershipResolver verifies that a runtime credential belongs to a
+// tenant before it can be bound to one of that tenant's client groups.
+// Implementations must return zero for global or unknown credentials.
+type CredentialOwnershipResolver interface {
+	OwnerOf(authIndex string) int64
+}
 
 // WithTokenReservation sets provisional tokens held by each in-flight request.
 func WithTokenReservation(tokens int64) Option {
@@ -238,19 +246,23 @@ func (s *Service) Authenticate(_ context.Context, request *http.Request) (*sdkac
 			s.scheduleReservationRelease(reservationID)
 		})
 	}
+	metadata := map[string]string{
+		"source":                  source,
+		MetadataKeyID:             strconv.FormatInt(key.ID, 10),
+		MetadataKeyHash:           hash,
+		MetadataKeyGroupIDs:       joinInt64s(key.GroupIDs),
+		MetadataKeyAllowAllGroups: strconv.FormatBool(key.AllowAllGroups),
+		MetadataKeyAllowUngrouped: strconv.FormatBool(key.AllowUngrouped),
+		MetadataKeyReservationID:  reservationID,
+	}
+	if key.TenantID > 0 {
+		metadata[MetadataKeyTenantID] = strconv.FormatInt(key.TenantID, 10)
+	}
 	return &sdkaccess.Result{
 		Provider:  ProviderIdentifier,
 		Principal: secret,
-		Metadata: map[string]string{
-			"source":                  source,
-			MetadataKeyID:             strconv.FormatInt(key.ID, 10),
-			MetadataKeyHash:           hash,
-			MetadataKeyGroupIDs:       joinInt64s(key.GroupIDs),
-			MetadataKeyAllowAllGroups: strconv.FormatBool(key.AllowAllGroups),
-			MetadataKeyAllowUngrouped: strconv.FormatBool(key.AllowUngrouped),
-			MetadataKeyReservationID:  reservationID,
-		},
-		Release: releaseRequest,
+		Metadata:  metadata,
+		Release:   releaseRequest,
 	}, nil
 }
 
@@ -379,6 +391,67 @@ func (s *Service) DeleteGroup(ctx context.Context, id int64) error {
 	return s.reload(ctx)
 }
 
+func tenantScopeID(tenantID int64) (int64, error) {
+	if tenantID <= 0 {
+		return 0, errors.New("tenant id is required")
+	}
+	return tenantID, nil
+}
+
+func tenantListOptions(tenantID int64, opts ListOptions) ListOptions {
+	copyTenantID := tenantID
+	opts.TenantID = &copyTenantID
+	return opts
+}
+
+// CreateTenantGroup creates a client group owned by tenantID.
+func (s *Service) CreateTenantGroup(ctx context.Context, tenantID int64, input GroupCreate) (Group, error) {
+	if _, errTenant := tenantScopeID(tenantID); errTenant != nil {
+		return Group{}, errTenant
+	}
+	input.TenantID = tenantID
+	group, errCreate := s.store.CreateGroup(ctx, input)
+	if errCreate == nil {
+		errCreate = s.reload(ctx)
+	}
+	return group, errCreate
+}
+
+func (s *Service) GetTenantGroup(ctx context.Context, tenantID, id int64) (Group, error) {
+	if _, errTenant := tenantScopeID(tenantID); errTenant != nil {
+		return Group{}, errTenant
+	}
+	return s.store.GetGroupScoped(ctx, id, tenantID)
+}
+
+func (s *Service) ListTenantGroups(ctx context.Context, tenantID int64, opts ListOptions) (Page[Group], error) {
+	if _, errTenant := tenantScopeID(tenantID); errTenant != nil {
+		return Page[Group]{}, errTenant
+	}
+	return s.store.ListGroups(ctx, tenantListOptions(tenantID, opts))
+}
+
+func (s *Service) UpdateTenantGroup(ctx context.Context, tenantID, id int64, input GroupUpdate) (Group, error) {
+	if _, errTenant := tenantScopeID(tenantID); errTenant != nil {
+		return Group{}, errTenant
+	}
+	group, errUpdate := s.store.UpdateGroupScoped(ctx, id, tenantID, input)
+	if errUpdate == nil {
+		errUpdate = s.reload(ctx)
+	}
+	return group, errUpdate
+}
+
+func (s *Service) DeleteTenantGroup(ctx context.Context, tenantID, id int64) error {
+	if _, errTenant := tenantScopeID(tenantID); errTenant != nil {
+		return errTenant
+	}
+	if errDelete := s.store.DeleteGroupScoped(ctx, id, tenantID); errDelete != nil {
+		return errDelete
+	}
+	return s.reload(ctx)
+}
+
 func (s *Service) CreateKey(ctx context.Context, input KeyCreate) (CreatedKey, error) {
 	secret := strings.TrimSpace(input.CustomSecret)
 	if secret == "" {
@@ -446,6 +519,122 @@ func (s *Service) DeleteKey(ctx context.Context, id int64) error {
 	return s.reload(ctx)
 }
 
+func zeroInt() *int {
+	value := 0
+	return &value
+}
+
+func zeroInt64() *int64 {
+	value := int64(0)
+	return &value
+}
+
+// CreateTenantKey limits tenant-managed keys to concurrency control. All
+// other quota dimensions and expiry are intentionally fixed to zero/nil.
+func (s *Service) CreateTenantKey(ctx context.Context, tenantID int64, input KeyCreate) (CreatedKey, error) {
+	if _, errTenant := tenantScopeID(tenantID); errTenant != nil {
+		return CreatedKey{}, errTenant
+	}
+	input.TenantID = tenantID
+	input.ExpiresAt = nil
+	input.RPMLimit = 0
+	input.RequestLimitTotal = 0
+	input.RequestLimit5h = 0
+	input.RequestLimit1d = 0
+	input.RequestLimit7d = 0
+	input.TokenLimitTotal = 0
+	input.TokenLimit5h = 0
+	input.TokenLimit1d = 0
+	input.TokenLimit7d = 0
+	return s.CreateKey(ctx, input)
+}
+
+func (s *Service) GetTenantKey(ctx context.Context, tenantID, id int64) (Key, error) {
+	if _, errTenant := tenantScopeID(tenantID); errTenant != nil {
+		return Key{}, errTenant
+	}
+	key, errGet := s.store.GetKeyScoped(ctx, id, tenantID)
+	if errGet == nil {
+		key.CurrentConcurrency = s.currentConcurrency(id)
+	}
+	return key, errGet
+}
+
+func (s *Service) ListTenantKeys(ctx context.Context, tenantID int64, opts ListOptions) (Page[Key], error) {
+	if _, errTenant := tenantScopeID(tenantID); errTenant != nil {
+		return Page[Key]{}, errTenant
+	}
+	page, errList := s.store.ListKeys(ctx, tenantListOptions(tenantID, opts))
+	if errList != nil {
+		return Page[Key]{}, errList
+	}
+	for i := range page.Items {
+		page.Items[i].CurrentConcurrency = s.currentConcurrency(page.Items[i].ID)
+	}
+	return page, nil
+}
+
+// UpdateTenantKey accepts only the fields exposed to tenants. Explicit zero
+// assignments prevent clients from smuggling legacy quota fields in JSON.
+func (s *Service) UpdateTenantKey(ctx context.Context, tenantID, id int64, input KeyUpdate) (Key, error) {
+	if _, errTenant := tenantScopeID(tenantID); errTenant != nil {
+		return Key{}, errTenant
+	}
+	input.ExpiresAt = nil
+	input.ClearExpiresAt = true
+	input.RPMLimit = zeroInt()
+	input.RequestLimitTotal = zeroInt64()
+	input.RequestLimit5h = zeroInt64()
+	input.RequestLimit1d = zeroInt64()
+	input.RequestLimit7d = zeroInt64()
+	input.TokenLimitTotal = zeroInt64()
+	input.TokenLimit5h = zeroInt64()
+	input.TokenLimit1d = zeroInt64()
+	input.TokenLimit7d = zeroInt64()
+	input.ResetRequestUsage = false
+	input.ResetTokenUsage = false
+	key, errUpdate := s.store.UpdateKeyScoped(ctx, id, tenantID, input)
+	if errUpdate != nil {
+		return Key{}, errUpdate
+	}
+	if errReload := s.reload(ctx); errReload != nil {
+		return Key{}, errReload
+	}
+	key.CurrentConcurrency = s.currentConcurrency(id)
+	return key, nil
+}
+
+func (s *Service) DeleteTenantKey(ctx context.Context, tenantID, id int64) error {
+	if _, errTenant := tenantScopeID(tenantID); errTenant != nil {
+		return errTenant
+	}
+	if errDelete := s.store.DeleteKeyScoped(ctx, id, tenantID); errDelete != nil {
+		return errDelete
+	}
+	s.runtimeMu.Lock()
+	delete(s.runtime, id)
+	s.runtimeMu.Unlock()
+	return s.reload(ctx)
+}
+
+// DeleteTenantResources removes tenant-owned keys and groups when the tenant
+// account is deleted from tenant.sqlite.
+func (s *Service) DeleteTenantResources(ctx context.Context, tenantID int64) error {
+	if _, errTenant := tenantScopeID(tenantID); errTenant != nil {
+		return errTenant
+	}
+	keyIDs, errDelete := s.store.DeleteTenantResources(ctx, tenantID)
+	if errDelete != nil {
+		return errDelete
+	}
+	s.runtimeMu.Lock()
+	for _, keyID := range keyIDs {
+		delete(s.runtime, keyID)
+	}
+	s.runtimeMu.Unlock()
+	return s.reload(ctx)
+}
+
 func (s *Service) ListCredentialBindings(ctx context.Context, opts ListOptions) (Page[CredentialBinding], error) {
 	return s.store.ListCredentialBindings(ctx, opts)
 }
@@ -480,6 +669,42 @@ func (s *Service) DeleteCredentialBindings(ctx context.Context, authIndices []st
 
 func (s *Service) ReplaceGroupCredentialBindings(ctx context.Context, groupID int64, input GroupCredentialBindingBatch) (CredentialBindingChangeStats, error) {
 	stats, errReplace := s.store.ReplaceGroupCredentialBindings(ctx, groupID, input.AuthIndices, input.Priority)
+	if errReplace != nil {
+		return CredentialBindingChangeStats{}, errReplace
+	}
+	if stats.Updated == 0 {
+		return stats, nil
+	}
+	if errReload := s.reload(ctx); errReload != nil {
+		return CredentialBindingChangeStats{}, errReload
+	}
+	return stats, nil
+}
+
+func (s *Service) ListTenantCredentialBindings(ctx context.Context, tenantID int64, opts ListOptions) (Page[CredentialBinding], error) {
+	if _, errTenant := tenantScopeID(tenantID); errTenant != nil {
+		return Page[CredentialBinding]{}, errTenant
+	}
+	return s.store.ListCredentialBindings(ctx, tenantListOptions(tenantID, opts))
+}
+
+// ReplaceTenantGroupCredentialBindings applies one tenant's provider bindings.
+// It fails closed unless every requested auth index is currently owned by that
+// tenant, then scopes the group update in the same service boundary.
+func (s *Service) ReplaceTenantGroupCredentialBindings(ctx context.Context, tenantID, groupID int64, input GroupCredentialBindingBatch, resolver CredentialOwnershipResolver) (CredentialBindingChangeStats, error) {
+	if _, errTenant := tenantScopeID(tenantID); errTenant != nil {
+		return CredentialBindingChangeStats{}, errTenant
+	}
+	if resolver == nil {
+		return CredentialBindingChangeStats{}, errors.New("tenant credential ownership resolver is unavailable")
+	}
+	for _, rawAuthIndex := range input.AuthIndices {
+		authIndex := strings.TrimSpace(rawAuthIndex)
+		if authIndex == "" || resolver.OwnerOf(authIndex) != tenantID {
+			return CredentialBindingChangeStats{}, sql.ErrNoRows
+		}
+	}
+	stats, errReplace := s.store.ReplaceGroupCredentialBindingsScoped(ctx, groupID, tenantID, input.AuthIndices, input.Priority)
 	if errReplace != nil {
 		return CredentialBindingChangeStats{}, errReplace
 	}

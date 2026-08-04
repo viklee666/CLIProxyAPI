@@ -449,6 +449,12 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	if auth == nil {
 		return nil
 	}
+	// Tenant providers are deliberately managed through the dedicated tenant
+	// APIs. They are runtime Auth records and contain an execution API key, so
+	// they must never enter the generic management auth-file projection.
+	if isTenantRuntimeAuth(auth) {
+		return nil
+	}
 	auth.EnsureIndex()
 	runtimeOnly := isRuntimeOnlyAuth(auth)
 	if runtimeOnly && (auth.Disabled || auth.Status == coreauth.StatusDisabled) {
@@ -685,6 +691,14 @@ func isRuntimeOnlyAuth(auth *coreauth.Auth) bool {
 		return false
 	}
 	return strings.EqualFold(strings.TrimSpace(auth.Attributes["runtime_only"]), "true")
+}
+
+func isTenantRuntimeAuth(auth *coreauth.Auth) bool {
+	if !isRuntimeOnlyAuth(auth) {
+		return false
+	}
+	tenantID, errParse := strconv.ParseInt(strings.TrimSpace(authAttribute(auth, coreauth.AttributeTenantID)), 10, 64)
+	return errParse == nil && tenantID > 0
 }
 
 func isUnsafeAuthFileName(name string) bool {

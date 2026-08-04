@@ -19,6 +19,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginstore"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/tenant"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
@@ -66,6 +67,8 @@ type Handler struct {
 	authFileCatalogMu       sync.Mutex
 	authFileCatalog         authFileCandidateCatalog
 	clientAccess            *clientaccess.Service
+	tenantService           *tenant.Service
+	tenantAuthSync          func(context.Context) error
 }
 
 type configReloadSnapshot struct {
@@ -153,6 +156,18 @@ func (h *Handler) SetClientAccessService(service *clientaccess.Service) {
 	}
 	h.mu.Lock()
 	h.clientAccess = service
+	h.mu.Unlock()
+}
+
+// SetTenantService attaches tenant account management and its runtime Auth
+// synchronizer to the authenticated management API.
+func (h *Handler) SetTenantService(service *tenant.Service, syncAuths func(context.Context) error) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.tenantService = service
+	h.tenantAuthSync = syncAuths
 	h.mu.Unlock()
 }
 

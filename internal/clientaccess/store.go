@@ -63,6 +63,7 @@ func (s *Store) migrate(ctx context.Context) error {
 	statements := []string{
 		`CREATE TABLE IF NOT EXISTS client_access_groups (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			tenant_id INTEGER,
 			name TEXT NOT NULL COLLATE NOCASE UNIQUE,
 			description TEXT NOT NULL DEFAULT '',
 			enabled INTEGER NOT NULL DEFAULT 1,
@@ -71,6 +72,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		)`,
 		`CREATE TABLE IF NOT EXISTS client_access_keys (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			tenant_id INTEGER,
 			name TEXT NOT NULL,
 			key_secret TEXT NOT NULL DEFAULT '',
 			key_prefix TEXT NOT NULL,
@@ -129,6 +131,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			expires_at_ms INTEGER NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_client_access_keys_enabled ON client_access_keys(enabled)`,
+		`CREATE INDEX IF NOT EXISTS idx_client_access_groups_tenant ON client_access_groups(tenant_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_client_access_keys_tenant ON client_access_keys(tenant_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_client_access_key_groups_group ON client_access_key_groups(group_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_client_access_credential_groups_group ON client_access_credential_groups(group_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_client_access_token_reservations_key ON client_access_token_reservations(key_id, settled, expires_at_ms)`,
@@ -139,6 +143,12 @@ func (s *Store) migrate(ctx context.Context) error {
 		}
 	}
 	if errColumn := s.ensureColumn(ctx, "client_access_keys", "key_secret", "TEXT NOT NULL DEFAULT ''"); errColumn != nil {
+		return errColumn
+	}
+	if errColumn := s.ensureColumn(ctx, "client_access_groups", "tenant_id", "INTEGER"); errColumn != nil {
+		return errColumn
+	}
+	if errColumn := s.ensureColumn(ctx, "client_access_keys", "tenant_id", "INTEGER"); errColumn != nil {
 		return errColumn
 	}
 	return nil
@@ -205,6 +215,32 @@ func nullableMillis(value *time.Time) any {
 	return value.UTC().UnixMilli()
 }
 
+func nullableTenantID(tenantID int64) any {
+	if tenantID <= 0 {
+		return nil
+	}
+	return tenantID
+}
+
+func appendTenantScope(where *string, args *[]any, column string, tenantID *int64) {
+	if tenantID == nil {
+		return
+	}
+	if *tenantID > 0 {
+		*where += " AND " + column + " = ?"
+		*args = append(*args, *tenantID)
+		return
+	}
+	*where += " AND " + column + " IS NULL"
+}
+
+func tenantScopeCondition(column string, tenantID int64) (string, []any) {
+	if tenantID > 0 {
+		return " AND " + column + " = ?", []any{tenantID}
+	}
+	return " AND " + column + " IS NULL", nil
+}
+
 func timeFromNullMillis(value sql.NullInt64) *time.Time {
 	if !value.Valid || value.Int64 <= 0 {
 		return nil
@@ -221,6 +257,9 @@ func boolInt(value bool) int {
 }
 
 func (s *Store) CreateGroup(ctx context.Context, input GroupCreate) (Group, error) {
+	if input.TenantID < 0 {
+		return Group{}, errors.New("tenant id cannot be negative")
+	}
 	name := strings.TrimSpace(input.Name)
 	if name == "" {
 		return Group{}, errors.New("group name is required")
@@ -230,7 +269,7 @@ func (s *Store) CreateGroup(ctx context.Context, input GroupCreate) (Group, erro
 		enabled = *input.Enabled
 	}
 	now := time.Now().UTC()
-	result, errExec := s.db.ExecContext(ctx, `INSERT INTO client_access_groups(name, description, enabled, created_at_ms, updated_at_ms) VALUES(?, ?, ?, ?, ?)`, name, strings.TrimSpace(input.Description), boolInt(enabled), now.UnixMilli(), now.UnixMilli())
+	result, errExec := s.db.ExecContext(ctx, `INSERT INTO client_access_groups(tenant_id, name, description, enabled, created_at_ms, updated_at_ms) VALUES(?, ?, ?, ?, ?, ?)`, nullableTenantID(input.TenantID), name, strings.TrimSpace(input.Description), boolInt(enabled), now.UnixMilli(), now.UnixMilli())
 	if errExec != nil {
 		return Group{}, fmt.Errorf("create client group: %w", errExec)
 	}
@@ -238,21 +277,36 @@ func (s *Store) CreateGroup(ctx context.Context, input GroupCreate) (Group, erro
 	if errID != nil {
 		return Group{}, fmt.Errorf("read client group id: %w", errID)
 	}
-	return s.GetGroup(ctx, id)
+	return s.GetGroupScoped(ctx, id, input.TenantID)
 }
 
 func (s *Store) GetGroup(ctx context.Context, id int64) (Group, error) {
+	return s.getGroup(ctx, id, nil)
+}
+
+func (s *Store) GetGroupScoped(ctx context.Context, id, tenantID int64) (Group, error) {
+	return s.getGroup(ctx, id, &tenantID)
+}
+
+func (s *Store) getGroup(ctx context.Context, id int64, tenantID *int64) (Group, error) {
 	var item Group
 	var enabled int
+	var storedTenantID sql.NullInt64
 	var createdMS, updatedMS int64
-	errScan := s.db.QueryRowContext(ctx, `SELECT g.id, g.name, g.description, g.enabled, g.created_at_ms, g.updated_at_ms,
+	where := " WHERE g.id = ?"
+	args := []any{id}
+	appendTenantScope(&where, &args, "g.tenant_id", tenantID)
+	errScan := s.db.QueryRowContext(ctx, `SELECT g.id, g.tenant_id, g.name, g.description, g.enabled, g.created_at_ms, g.updated_at_ms,
 		(SELECT COUNT(*) FROM client_access_key_groups kg WHERE kg.group_id = g.id),
 		(SELECT COUNT(*) FROM client_access_credential_groups cg WHERE cg.group_id = g.id)
-		FROM client_access_groups g WHERE g.id = ?`, id).Scan(&item.ID, &item.Name, &item.Description, &enabled, &createdMS, &updatedMS, &item.KeyCount, &item.CredentialCount)
+		FROM client_access_groups g`+where, args...).Scan(&item.ID, &storedTenantID, &item.Name, &item.Description, &enabled, &createdMS, &updatedMS, &item.KeyCount, &item.CredentialCount)
 	if errScan != nil {
 		return Group{}, errScan
 	}
 	item.Enabled = enabled != 0
+	if storedTenantID.Valid && storedTenantID.Int64 > 0 {
+		item.TenantID = storedTenantID.Int64
+	}
 	item.CreatedAt = time.UnixMilli(createdMS).UTC()
 	item.UpdatedAt = time.UnixMilli(updatedMS).UTC()
 	return item, nil
@@ -262,6 +316,7 @@ func (s *Store) ListGroups(ctx context.Context, opts ListOptions) (Page[Group], 
 	opts = normalizeListOptions(opts)
 	where := " WHERE 1=1"
 	args := make([]any, 0, 3)
+	appendTenantScope(&where, &args, "tenant_id", opts.TenantID)
 	if opts.Search != "" {
 		where += " AND (name LIKE ? OR description LIKE ?)"
 		like := "%" + opts.Search + "%"
@@ -277,7 +332,7 @@ func (s *Store) ListGroups(ctx context.Context, opts ListOptions) (Page[Group], 
 	}
 	queryArgs := append(append([]any(nil), args...), opts.PageSize, (opts.Page-1)*opts.PageSize)
 	rows, errQuery := s.db.QueryContext(ctx, `WITH page AS (
-		SELECT id, name, description, enabled, created_at_ms, updated_at_ms
+		SELECT id, tenant_id, name, description, enabled, created_at_ms, updated_at_ms
 		FROM client_access_groups`+where+`
 		ORDER BY name COLLATE NOCASE ASC, id ASC
 		LIMIT ? OFFSET ?
@@ -292,7 +347,7 @@ func (s *Store) ListGroups(ctx context.Context, opts ListOptions) (Page[Group], 
 		WHERE group_id IN (SELECT id FROM page)
 		GROUP BY group_id
 	)
-	SELECT p.id, p.name, p.description, p.enabled, p.created_at_ms, p.updated_at_ms,
+	SELECT p.id, p.tenant_id, p.name, p.description, p.enabled, p.created_at_ms, p.updated_at_ms,
 		COALESCE(k.key_count, 0), COALESCE(c.credential_count, 0)
 	FROM page p
 	LEFT JOIN key_counts k ON k.group_id = p.id
@@ -306,11 +361,15 @@ func (s *Store) ListGroups(ctx context.Context, opts ListOptions) (Page[Group], 
 	for rows.Next() {
 		var item Group
 		var enabled int
+		var tenantID sql.NullInt64
 		var createdMS, updatedMS int64
-		if errScan := rows.Scan(&item.ID, &item.Name, &item.Description, &enabled, &createdMS, &updatedMS, &item.KeyCount, &item.CredentialCount); errScan != nil {
+		if errScan := rows.Scan(&item.ID, &tenantID, &item.Name, &item.Description, &enabled, &createdMS, &updatedMS, &item.KeyCount, &item.CredentialCount); errScan != nil {
 			return Page[Group]{}, fmt.Errorf("scan client group: %w", errScan)
 		}
 		item.Enabled = enabled != 0
+		if tenantID.Valid && tenantID.Int64 > 0 {
+			item.TenantID = tenantID.Int64
+		}
 		item.CreatedAt = time.UnixMilli(createdMS).UTC()
 		item.UpdatedAt = time.UnixMilli(updatedMS).UTC()
 		items = append(items, item)
@@ -322,7 +381,15 @@ func (s *Store) ListGroups(ctx context.Context, opts ListOptions) (Page[Group], 
 }
 
 func (s *Store) UpdateGroup(ctx context.Context, id int64, input GroupUpdate) (Group, error) {
-	current, errGet := s.GetGroup(ctx, id)
+	return s.updateGroup(ctx, id, nil, input)
+}
+
+func (s *Store) UpdateGroupScoped(ctx context.Context, id, tenantID int64, input GroupUpdate) (Group, error) {
+	return s.updateGroup(ctx, id, &tenantID, input)
+}
+
+func (s *Store) updateGroup(ctx context.Context, id int64, tenantID *int64, input GroupUpdate) (Group, error) {
+	current, errGet := s.getGroup(ctx, id, tenantID)
 	if errGet != nil {
 		return Group{}, errGet
 	}
@@ -338,15 +405,29 @@ func (s *Store) UpdateGroup(ctx context.Context, id int64, input GroupUpdate) (G
 	if input.Enabled != nil {
 		current.Enabled = *input.Enabled
 	}
-	_, errExec := s.db.ExecContext(ctx, `UPDATE client_access_groups SET name = ?, description = ?, enabled = ?, updated_at_ms = ? WHERE id = ?`, current.Name, current.Description, boolInt(current.Enabled), time.Now().UTC().UnixMilli(), id)
+	where := " WHERE id = ?"
+	args := []any{current.Name, current.Description, boolInt(current.Enabled), time.Now().UTC().UnixMilli(), id}
+	appendTenantScope(&where, &args, "tenant_id", tenantID)
+	_, errExec := s.db.ExecContext(ctx, `UPDATE client_access_groups SET name = ?, description = ?, enabled = ?, updated_at_ms = ?`+where, args...)
 	if errExec != nil {
 		return Group{}, fmt.Errorf("update client group: %w", errExec)
 	}
-	return s.GetGroup(ctx, id)
+	return s.getGroup(ctx, id, tenantID)
 }
 
 func (s *Store) DeleteGroup(ctx context.Context, id int64) error {
-	result, errExec := s.db.ExecContext(ctx, `DELETE FROM client_access_groups WHERE id = ?`, id)
+	return s.deleteGroup(ctx, id, nil)
+}
+
+func (s *Store) DeleteGroupScoped(ctx context.Context, id, tenantID int64) error {
+	return s.deleteGroup(ctx, id, &tenantID)
+}
+
+func (s *Store) deleteGroup(ctx context.Context, id int64, tenantID *int64) error {
+	where := " WHERE id = ?"
+	args := []any{id}
+	appendTenantScope(&where, &args, "tenant_id", tenantID)
+	result, errExec := s.db.ExecContext(ctx, `DELETE FROM client_access_groups`+where, args...)
 	if errExec != nil {
 		return fmt.Errorf("delete client group: %w", errExec)
 	}
@@ -360,7 +441,7 @@ type keyRowScanner interface {
 	Scan(dest ...any) error
 }
 
-const keyColumns = `id, name, key_secret, key_prefix, key_hash, enabled, allow_all_groups, allow_ungrouped, expires_at_ms,
+const keyColumns = `id, tenant_id, name, key_secret, key_prefix, key_hash, enabled, allow_all_groups, allow_ungrouped, expires_at_ms,
 	rpm_limit, concurrency_limit,
 	request_limit_total, request_used_total, request_limit_5h, request_used_5h, request_window_5h_ms,
 	request_limit_1d, request_used_1d, request_window_1d_ms, request_limit_7d, request_used_7d, request_window_7d_ms,
@@ -372,11 +453,11 @@ func scanKey(scanner keyRowScanner) (Key, string, error) {
 	var item Key
 	var hash string
 	var enabled, allowAll, allowUngrouped int
-	var expiresMS, requestWindow5hMS, requestWindow1dMS, requestWindow7dMS sql.NullInt64
+	var tenantID, expiresMS, requestWindow5hMS, requestWindow1dMS, requestWindow7dMS sql.NullInt64
 	var tokenWindow5hMS, tokenWindow1dMS, tokenWindow7dMS, lastUsedMS sql.NullInt64
 	var createdMS, updatedMS int64
 	errScan := scanner.Scan(
-		&item.ID, &item.Name, &item.Secret, &item.KeyPrefix, &hash, &enabled, &allowAll, &allowUngrouped, &expiresMS,
+		&item.ID, &tenantID, &item.Name, &item.Secret, &item.KeyPrefix, &hash, &enabled, &allowAll, &allowUngrouped, &expiresMS,
 		&item.RPMLimit, &item.ConcurrencyLimit,
 		&item.RequestLimitTotal, &item.RequestUsedTotal, &item.RequestLimit5h, &item.RequestUsed5h, &requestWindow5hMS,
 		&item.RequestLimit1d, &item.RequestUsed1d, &requestWindow1dMS, &item.RequestLimit7d, &item.RequestUsed7d, &requestWindow7dMS,
@@ -388,6 +469,9 @@ func scanKey(scanner keyRowScanner) (Key, string, error) {
 		return Key{}, "", errScan
 	}
 	item.Enabled = enabled != 0
+	if tenantID.Valid && tenantID.Int64 > 0 {
+		item.TenantID = tenantID.Int64
+	}
 	item.AllowAllGroups = allowAll != 0
 	item.AllowUngrouped = allowUngrouped != 0
 	item.ExpiresAt = timeFromNullMillis(expiresMS)
@@ -421,19 +505,60 @@ func (s *Store) keyGroupIDs(ctx context.Context, keyID int64) ([]int64, error) {
 	return ids, rows.Err()
 }
 
-func (s *Store) replaceKeyGroups(ctx context.Context, tx *sql.Tx, keyID int64, groupIDs []int64) error {
+func normalizePositiveIDs(values []int64) []int64 {
+	result := make([]int64, 0, len(values))
+	seen := make(map[int64]struct{}, len(values))
+	for _, value := range values {
+		if value <= 0 {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
+}
+
+func validateGroupsForTenant(ctx context.Context, tx *sql.Tx, tenantID int64, groupIDs []int64) error {
+	groupIDs = normalizePositiveIDs(groupIDs)
+	if len(groupIDs) == 0 {
+		return nil
+	}
+	for start := 0; start < len(groupIDs); start += sqliteVariableChunkSize {
+		end := start + sqliteVariableChunkSize
+		if end > len(groupIDs) {
+			end = len(groupIDs)
+		}
+		chunk := groupIDs[start:end]
+		placeholders := strings.TrimRight(strings.Repeat("?,", len(chunk)), ",")
+		args := make([]any, 0, len(chunk)+1)
+		for _, groupID := range chunk {
+			args = append(args, groupID)
+		}
+		condition, tenantArgs := tenantScopeCondition("tenant_id", tenantID)
+		args = append(args, tenantArgs...)
+		var count int
+		if errCount := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM client_access_groups WHERE id IN (`+placeholders+`)`+condition, args...).Scan(&count); errCount != nil {
+			return errCount
+		}
+		if count != len(chunk) {
+			return sql.ErrNoRows
+		}
+	}
+	return nil
+}
+
+func (s *Store) replaceKeyGroups(ctx context.Context, tx *sql.Tx, keyID, tenantID int64, groupIDs []int64) error {
+	groupIDs = normalizePositiveIDs(groupIDs)
+	if errValidate := validateGroupsForTenant(ctx, tx, tenantID, groupIDs); errValidate != nil {
+		return errValidate
+	}
 	if _, errDelete := tx.ExecContext(ctx, `DELETE FROM client_access_key_groups WHERE key_id = ?`, keyID); errDelete != nil {
 		return errDelete
 	}
-	seen := make(map[int64]struct{}, len(groupIDs))
 	for _, groupID := range groupIDs {
-		if groupID <= 0 {
-			continue
-		}
-		if _, ok := seen[groupID]; ok {
-			continue
-		}
-		seen[groupID] = struct{}{}
 		if _, errInsert := tx.ExecContext(ctx, `INSERT INTO client_access_key_groups(key_id, group_id) VALUES(?, ?)`, keyID, groupID); errInsert != nil {
 			return errInsert
 		}
@@ -442,6 +567,9 @@ func (s *Store) replaceKeyGroups(ctx context.Context, tx *sql.Tx, keyID int64, g
 }
 
 func (s *Store) CreateKey(ctx context.Context, input KeyCreate, secret, prefix, hash string) (Key, error) {
+	if input.TenantID < 0 {
+		return Key{}, errors.New("tenant id cannot be negative")
+	}
 	name := strings.TrimSpace(input.Name)
 	if name == "" {
 		return Key{}, errors.New("key name is required")
@@ -464,10 +592,10 @@ func (s *Store) CreateKey(ctx context.Context, input KeyCreate, secret, prefix, 
 	}
 	defer func() { _ = tx.Rollback() }()
 	result, errExec := tx.ExecContext(ctx, `INSERT INTO client_access_keys(
-		name, key_secret, key_prefix, key_hash, enabled, allow_all_groups, allow_ungrouped, expires_at_ms, rpm_limit, concurrency_limit,
+		tenant_id, name, key_secret, key_prefix, key_hash, enabled, allow_all_groups, allow_ungrouped, expires_at_ms, rpm_limit, concurrency_limit,
 		request_limit_total, request_limit_5h, request_limit_1d, request_limit_7d,
 		token_limit_total, token_limit_5h, token_limit_1d, token_limit_7d, created_at_ms, updated_at_ms
-	) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, name, secret, prefix, hash, boolInt(enabled), boolInt(allowAll), boolInt(input.AllowUngrouped), nullableMillis(input.ExpiresAt), input.RPMLimit, input.ConcurrencyLimit, input.RequestLimitTotal, input.RequestLimit5h, input.RequestLimit1d, input.RequestLimit7d, input.TokenLimitTotal, input.TokenLimit5h, input.TokenLimit1d, input.TokenLimit7d, now.UnixMilli(), now.UnixMilli())
+	) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, nullableTenantID(input.TenantID), name, secret, prefix, hash, boolInt(enabled), boolInt(allowAll), boolInt(input.AllowUngrouped), nullableMillis(input.ExpiresAt), input.RPMLimit, input.ConcurrencyLimit, input.RequestLimitTotal, input.RequestLimit5h, input.RequestLimit1d, input.RequestLimit7d, input.TokenLimitTotal, input.TokenLimit5h, input.TokenLimit1d, input.TokenLimit7d, now.UnixMilli(), now.UnixMilli())
 	if errExec != nil {
 		return Key{}, fmt.Errorf("create client key: %w", errExec)
 	}
@@ -475,7 +603,7 @@ func (s *Store) CreateKey(ctx context.Context, input KeyCreate, secret, prefix, 
 	if errID != nil {
 		return Key{}, errID
 	}
-	if errGroups := s.replaceKeyGroups(ctx, tx, keyID, input.GroupIDs); errGroups != nil {
+	if errGroups := s.replaceKeyGroups(ctx, tx, keyID, input.TenantID, input.GroupIDs); errGroups != nil {
 		return Key{}, fmt.Errorf("assign client key groups: %w", errGroups)
 	}
 	if errCommit := tx.Commit(); errCommit != nil {
@@ -494,7 +622,18 @@ func validateLimits(values ...int64) error {
 }
 
 func (s *Store) GetKey(ctx context.Context, id int64) (Key, error) {
-	item, _, errScan := scanKey(s.db.QueryRowContext(ctx, `SELECT `+keyColumns+` FROM client_access_keys WHERE id = ?`, id))
+	return s.getKey(ctx, id, nil)
+}
+
+func (s *Store) GetKeyScoped(ctx context.Context, id, tenantID int64) (Key, error) {
+	return s.getKey(ctx, id, &tenantID)
+}
+
+func (s *Store) getKey(ctx context.Context, id int64, tenantID *int64) (Key, error) {
+	where := " WHERE id = ?"
+	args := []any{id}
+	appendTenantScope(&where, &args, "tenant_id", tenantID)
+	item, _, errScan := scanKey(s.db.QueryRowContext(ctx, `SELECT `+keyColumns+` FROM client_access_keys`+where, args...))
 	if errScan != nil {
 		return Key{}, errScan
 	}
@@ -572,6 +711,7 @@ func (s *Store) ListKeys(ctx context.Context, opts ListOptions) (Page[Key], erro
 	opts = normalizeListOptions(opts)
 	where := " WHERE 1=1"
 	args := make([]any, 0, 3)
+	appendTenantScope(&where, &args, "tenant_id", opts.TenantID)
 	if opts.Search != "" {
 		where += " AND (name LIKE ? OR key_prefix LIKE ?)"
 		like := "%" + opts.Search + "%"
@@ -685,9 +825,17 @@ func (s *Store) populateKeyRelations(ctx context.Context, items []Key, now time.
 }
 
 func (s *Store) UpdateKey(ctx context.Context, id int64, input KeyUpdate) (Key, error) {
+	return s.updateKey(ctx, id, nil, input)
+}
+
+func (s *Store) UpdateKeyScoped(ctx context.Context, id, tenantID int64, input KeyUpdate) (Key, error) {
+	return s.updateKey(ctx, id, &tenantID, input)
+}
+
+func (s *Store) updateKey(ctx context.Context, id int64, tenantID *int64, input KeyUpdate) (Key, error) {
 	s.quotaMu.Lock()
 	defer s.quotaMu.Unlock()
-	current, errGet := s.GetKey(ctx, id)
+	current, errGet := s.getKey(ctx, id, tenantID)
 	if errGet != nil {
 		return Key{}, errGet
 	}
@@ -750,30 +898,45 @@ func (s *Store) UpdateKey(ctx context.Context, id int64, input KeyUpdate) (Key, 
 			return Key{}, fmt.Errorf("reset token reservations: %w", errDeleteReservations)
 		}
 	}
-	_, errExec := tx.ExecContext(ctx, `UPDATE client_access_keys SET name = ?, enabled = ?, allow_all_groups = ?, allow_ungrouped = ?, expires_at_ms = ?, rpm_limit = ?, concurrency_limit = ?,
-		request_limit_total = ?, request_limit_5h = ?, request_limit_1d = ?, request_limit_7d = ?,
-		token_limit_total = ?, token_limit_5h = ?, token_limit_1d = ?, token_limit_7d = ?, updated_at_ms = ?`+requestReset+tokenReset+` WHERE id = ?`,
+	where := " WHERE id = ?"
+	args := []any{
 		current.Name, boolInt(current.Enabled), boolInt(current.AllowAllGroups), boolInt(current.AllowUngrouped), nullableMillis(current.ExpiresAt), current.RPMLimit, current.ConcurrencyLimit,
 		current.RequestLimitTotal, current.RequestLimit5h, current.RequestLimit1d, current.RequestLimit7d,
-		current.TokenLimitTotal, current.TokenLimit5h, current.TokenLimit1d, current.TokenLimit7d, time.Now().UTC().UnixMilli(), id)
+		current.TokenLimitTotal, current.TokenLimit5h, current.TokenLimit1d, current.TokenLimit7d, time.Now().UTC().UnixMilli(), id,
+	}
+	appendTenantScope(&where, &args, "tenant_id", tenantID)
+	_, errExec := tx.ExecContext(ctx, `UPDATE client_access_keys SET name = ?, enabled = ?, allow_all_groups = ?, allow_ungrouped = ?, expires_at_ms = ?, rpm_limit = ?, concurrency_limit = ?,
+		request_limit_total = ?, request_limit_5h = ?, request_limit_1d = ?, request_limit_7d = ?,
+		token_limit_total = ?, token_limit_5h = ?, token_limit_1d = ?, token_limit_7d = ?, updated_at_ms = ?`+requestReset+tokenReset+where, args...)
 	if errExec != nil {
 		return Key{}, fmt.Errorf("update client key: %w", errExec)
 	}
 	if input.GroupIDs != nil {
-		if errGroups := s.replaceKeyGroups(ctx, tx, id, *input.GroupIDs); errGroups != nil {
+		if errGroups := s.replaceKeyGroups(ctx, tx, id, current.TenantID, *input.GroupIDs); errGroups != nil {
 			return Key{}, fmt.Errorf("update client key groups: %w", errGroups)
 		}
 	}
 	if errCommit := tx.Commit(); errCommit != nil {
 		return Key{}, errCommit
 	}
-	return s.GetKey(ctx, id)
+	return s.getKey(ctx, id, tenantID)
 }
 
 func (s *Store) DeleteKey(ctx context.Context, id int64) error {
+	return s.deleteKey(ctx, id, nil)
+}
+
+func (s *Store) DeleteKeyScoped(ctx context.Context, id, tenantID int64) error {
+	return s.deleteKey(ctx, id, &tenantID)
+}
+
+func (s *Store) deleteKey(ctx context.Context, id int64, tenantID *int64) error {
 	s.quotaMu.Lock()
 	defer s.quotaMu.Unlock()
-	result, errExec := s.db.ExecContext(ctx, `DELETE FROM client_access_keys WHERE id = ?`, id)
+	where := " WHERE id = ?"
+	args := []any{id}
+	appendTenantScope(&where, &args, "tenant_id", tenantID)
+	result, errExec := s.db.ExecContext(ctx, `DELETE FROM client_access_keys`+where, args...)
 	if errExec != nil {
 		return errExec
 	}
@@ -781,6 +944,52 @@ func (s *Store) DeleteKey(ctx context.Context, id int64) error {
 		return sql.ErrNoRows
 	}
 	return nil
+}
+
+// DeleteTenantResources removes all client groups and API keys owned by one
+// tenant. The tenant database owns the tenant record itself, so this is kept
+// as an explicit cross-store cleanup operation.
+func (s *Store) DeleteTenantResources(ctx context.Context, tenantID int64) ([]int64, error) {
+	if tenantID <= 0 {
+		return nil, errors.New("tenant id is required")
+	}
+	s.quotaMu.Lock()
+	defer s.quotaMu.Unlock()
+	tx, errBegin := s.db.BeginTx(ctx, nil)
+	if errBegin != nil {
+		return nil, errBegin
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, errQuery := tx.QueryContext(ctx, `SELECT id FROM client_access_keys WHERE tenant_id = ?`, tenantID)
+	if errQuery != nil {
+		return nil, errQuery
+	}
+	keyIDs := make([]int64, 0)
+	for rows.Next() {
+		var id int64
+		if errScan := rows.Scan(&id); errScan != nil {
+			_ = rows.Close()
+			return nil, errScan
+		}
+		keyIDs = append(keyIDs, id)
+	}
+	if errRows := rows.Err(); errRows != nil {
+		_ = rows.Close()
+		return nil, errRows
+	}
+	if errClose := rows.Close(); errClose != nil {
+		return nil, errClose
+	}
+	if _, errDeleteKeys := tx.ExecContext(ctx, `DELETE FROM client_access_keys WHERE tenant_id = ?`, tenantID); errDeleteKeys != nil {
+		return nil, errDeleteKeys
+	}
+	if _, errDeleteGroups := tx.ExecContext(ctx, `DELETE FROM client_access_groups WHERE tenant_id = ?`, tenantID); errDeleteGroups != nil {
+		return nil, errDeleteGroups
+	}
+	if errCommit := tx.Commit(); errCommit != nil {
+		return nil, errCommit
+	}
+	return keyIDs, nil
 }
 
 func (s *Store) TouchKey(ctx context.Context, id int64, usedAt time.Time) error {
@@ -815,6 +1024,14 @@ func (s *Store) ListCredentialBindings(ctx context.Context, opts ListOptions) (P
 	opts = normalizeListOptions(opts)
 	conditions := make([]string, 0, 2)
 	args := make([]any, 0, len(opts.AuthIndices)+1)
+	if opts.TenantID != nil {
+		if *opts.TenantID > 0 {
+			conditions = append(conditions, "g.tenant_id = ?")
+			args = append(args, *opts.TenantID)
+		} else {
+			conditions = append(conditions, "g.tenant_id IS NULL")
+		}
+	}
 	if opts.Search != "" {
 		conditions = append(conditions, "cg.auth_index LIKE ?")
 		args = append(args, "%"+opts.Search+"%")
@@ -861,12 +1078,13 @@ func (s *Store) ListCredentialBindings(ctx context.Context, opts ListOptions) (P
 		where = " WHERE " + strings.Join(conditions, " AND ")
 	}
 	var total int64
-	if errCount := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM client_access_credential_groups cg`+where, args...).Scan(&total); errCount != nil {
+	from := ` FROM client_access_credential_groups cg JOIN client_access_groups g ON g.id = cg.group_id`
+	if errCount := s.db.QueryRowContext(ctx, `SELECT COUNT(*)`+from+where, args...).Scan(&total); errCount != nil {
 		return Page[CredentialBinding]{}, errCount
 	}
 	queryArgs := append(append([]any(nil), args...), opts.PageSize, (opts.Page-1)*opts.PageSize)
 	rows, errQuery := s.db.QueryContext(ctx, `SELECT cg.auth_index, cg.group_id, cg.priority, cg.created_at_ms
-		FROM client_access_credential_groups cg`+where+` ORDER BY cg.auth_index, cg.group_id LIMIT ? OFFSET ?`, queryArgs...)
+		`+from+where+` ORDER BY cg.auth_index, cg.group_id LIMIT ? OFFSET ?`, queryArgs...)
 	if errQuery != nil {
 		return Page[CredentialBinding]{}, errQuery
 	}
@@ -895,6 +1113,14 @@ func (s *Store) ReplaceCredentialBindings(ctx context.Context, authIndices []str
 // ReplaceGroupCredentialBindings replaces only the membership rows of groupID.
 // Credentials may remain assigned to any other client groups.
 func (s *Store) ReplaceGroupCredentialBindings(ctx context.Context, groupID int64, authIndices []string, priority int) (CredentialBindingChangeStats, error) {
+	return s.replaceGroupCredentialBindings(ctx, groupID, nil, authIndices, priority)
+}
+
+func (s *Store) ReplaceGroupCredentialBindingsScoped(ctx context.Context, groupID, tenantID int64, authIndices []string, priority int) (CredentialBindingChangeStats, error) {
+	return s.replaceGroupCredentialBindings(ctx, groupID, &tenantID, authIndices, priority)
+}
+
+func (s *Store) replaceGroupCredentialBindings(ctx context.Context, groupID int64, tenantID *int64, authIndices []string, priority int) (CredentialBindingChangeStats, error) {
 	if groupID <= 0 {
 		return CredentialBindingChangeStats{}, errors.New("group id is required")
 	}
@@ -907,8 +1133,11 @@ func (s *Store) ReplaceGroupCredentialBindings(ctx context.Context, groupID int6
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	where := " WHERE id = ?"
+	args := []any{groupID}
+	appendTenantScope(&where, &args, "tenant_id", tenantID)
 	var groupCount int
-	if errCount := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM client_access_groups WHERE id = ?`, groupID).Scan(&groupCount); errCount != nil {
+	if errCount := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM client_access_groups`+where, args...).Scan(&groupCount); errCount != nil {
 		return CredentialBindingChangeStats{}, errCount
 	}
 	if groupCount != 1 {
@@ -966,7 +1195,7 @@ func (s *Store) ReplaceGroupCredentialBindings(ctx context.Context, groupID int6
 	}
 	nowMS := time.Now().UTC().UnixMilli()
 	values := make([]string, 0, sqliteInsertRowsPerBatch)
-	args := make([]any, 0, sqliteInsertRowsPerBatch*4)
+	args = make([]any, 0, sqliteInsertRowsPerBatch*4)
 	flushInsert := func() error {
 		if len(values) == 0 {
 			return nil

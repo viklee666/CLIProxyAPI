@@ -17,6 +17,9 @@ type RecentPageQuery struct {
 	SnapshotMaxID     int64
 	BeforeTimestampMS int64
 	BeforeID          int64
+	// APIKeyHashes is an optional mandatory caller predicate. nil preserves the
+	// management query; a non-nil empty slice intentionally yields no rows.
+	APIKeyHashes []string
 }
 
 type RecentPage struct {
@@ -49,9 +52,14 @@ func (r *repository) ListRecentPage(ctx context.Context, query RecentPageQuery) 
 		query.Offset = 0
 	}
 
+	apiKeyCondition, apiKeyArgs := recentPageAPIKeyCondition(query.APIKeyHashes)
 	snapshotMaxID := query.SnapshotMaxID
 	if snapshotMaxID <= 0 {
-		if err := r.db.QueryRowContext(ctx, `select coalesce(max(id), 0) from usage_events`).Scan(&snapshotMaxID); err != nil {
+		query := `select coalesce(max(id), 0) from usage_events`
+		if apiKeyCondition != "" {
+			query += ` where ` + apiKeyCondition
+		}
+		if err := r.db.QueryRowContext(ctx, query, apiKeyArgs...).Scan(&snapshotMaxID); err != nil {
 			return RecentPage{}, err
 		}
 	}
@@ -59,13 +67,23 @@ func (r *repository) ListRecentPage(ctx context.Context, query RecentPageQuery) 
 		return RecentPage{Items: []model.UsageEvent{}}, nil
 	}
 
+	countConditions := []string{"id <= ?"}
+	countArgs := []any{snapshotMaxID}
+	if apiKeyCondition != "" {
+		countConditions = append(countConditions, apiKeyCondition)
+		countArgs = append(countArgs, apiKeyArgs...)
+	}
 	var total int64
-	if err := r.db.QueryRowContext(ctx, `select count(*) from usage_events where id <= ?`, snapshotMaxID).Scan(&total); err != nil {
+	if err := r.db.QueryRowContext(ctx, `select count(*) from usage_events where `+strings.Join(countConditions, " and "), countArgs...).Scan(&total); err != nil {
 		return RecentPage{}, err
 	}
 
 	conditions := []string{"id <= ?"}
 	args := []any{snapshotMaxID}
+	if apiKeyCondition != "" {
+		conditions = append(conditions, apiKeyCondition)
+		args = append(args, apiKeyArgs...)
+	}
 	if query.BeforeTimestampMS > 0 && query.BeforeID > 0 {
 		conditions = append(conditions, `(timestamp_ms < ? or (timestamp_ms = ? and id < ?))`)
 		args = append(args, query.BeforeTimestampMS, query.BeforeTimestampMS, query.BeforeID)
@@ -125,6 +143,34 @@ func (r *repository) ListRecentPage(ctx context.Context, query RecentPageQuery) 
 		page.LastID = last.id
 	}
 	return page, nil
+}
+
+func recentPageAPIKeyCondition(values []string) (string, []any) {
+	if values == nil {
+		return "", nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	normalized := make([]string, 0, len(values))
+	for _, rawValue := range values {
+		value := strings.ToLower(strings.TrimSpace(rawValue))
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		normalized = append(normalized, value)
+	}
+	if len(normalized) == 0 {
+		return "1 = 0", nil
+	}
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(normalized)), ",")
+	args := make([]any, len(normalized))
+	for index := range normalized {
+		args[index] = normalized[index]
+	}
+	return "lower(coalesce(api_key_hash, '')) in (" + placeholders + ")", args
 }
 
 func scanRecentPageItem(row recentPageScanner) (recentPageItem, error) {

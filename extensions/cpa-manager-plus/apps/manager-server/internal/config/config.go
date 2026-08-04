@@ -22,6 +22,8 @@ type Config struct {
 	HTTPAddr                     string
 	DataDir                      string
 	DBPath                       string
+	TenantDBPath                 string
+	ClientAccessDBPath           string
 	CPAUpstreamURL               string
 	ManagementKey                string
 	AdminKey                     string
@@ -125,6 +127,8 @@ func LoadWithOptions(options LoadOptions) (Config, error) {
 		HTTPAddr:                     env("HTTP_ADDR", stringFallback(cfgFile.HTTPAddr, "0.0.0.0:18317")),
 		DataDir:                      dataDir,
 		DBPath:                       env("USAGE_DB_PATH", dbPathFallback),
+		TenantDBPath:                 env("TENANT_DB_PATH", filepath.Join(dataDir, "tenant.sqlite")),
+		ClientAccessDBPath:           env("CLIENT_ACCESS_DB_PATH", filepath.Join(dataDir, "client-access.sqlite")),
 		CPAUpstreamURL:               env("CPA_UPSTREAM_URL", cfgFile.CPAUpstreamURL),
 		ManagementKey:                readSecret("CPA_MANAGEMENT_KEY", "CPA_MANAGEMENT_KEY_FILE", managementKeyFile),
 		AdminKey:                     readSecret("CPA_MANAGER_ADMIN_KEY", "CPA_MANAGER_ADMIN_KEY_FILE", adminKeyFile),

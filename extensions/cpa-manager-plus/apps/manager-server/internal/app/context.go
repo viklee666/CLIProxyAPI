@@ -20,6 +20,7 @@ import (
 	panelsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/panel"
 	proxysvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/proxy"
 	setupsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/setup"
+	tenantauthsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/tenantauth"
 	usagesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 )
@@ -51,6 +52,7 @@ type Context struct {
 	AccountProcessingPolicyService *automationsvc.Service
 	ProxyService                   *proxysvc.Service
 	PanelService                   *panelsvc.Service
+	TenantAuthService              *tenantauthsvc.Service
 	AutomationRuntimeService       AutomationRuntimeService
 }
 
@@ -92,6 +94,7 @@ func FromExisting(
 		AccountProcessingPolicyService: accountProcessingPolicyService,
 		ProxyService:                   proxysvc.New(managerConfigService),
 		PanelService:                   panelsvc.New(cfg.PanelPath, embeddedPanel),
+		TenantAuthService:              tenantauthsvc.New(cfg.TenantDBPath, cfg.ClientAccessDBPath),
 		AutomationRuntimeService:       runtimeService,
 	}
 }

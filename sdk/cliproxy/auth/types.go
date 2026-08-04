@@ -104,6 +104,7 @@ const (
 	AttributeAuthIndexSeed   = "auth_index_seed"
 	AttributePluginVirtual   = "plugin_virtual"
 	AttributeVirtualSource   = "virtual_source"
+	AttributeTenantID        = "tenant_id"
 	pluginVirtualAttrEnabled = "true"
 )
 

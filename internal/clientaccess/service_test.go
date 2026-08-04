@@ -2,6 +2,8 @@ package clientaccess
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -13,6 +15,12 @@ import (
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
+
+type testCredentialOwnership map[string]int64
+
+func (owners testCredentialOwnership) OwnerOf(authIndex string) int64 {
+	return owners[authIndex]
+}
 
 func newTestService(t *testing.T) *Service {
 	t.Helper()
@@ -436,6 +444,26 @@ func TestServiceAuthenticateConcurrencyAndMetadata(t *testing.T) {
 	third.Release()
 }
 
+func TestServiceAuthenticateIncludesTenantID(t *testing.T) {
+	service := newTestService(t)
+	created, errKey := service.CreateKey(context.Background(), KeyCreate{
+		TenantID:     42,
+		Name:         "tenant key",
+		CustomSecret: "sk-cpa-test-secret-tenant",
+	})
+	if errKey != nil {
+		t.Fatalf("CreateKey() error = %v", errKey)
+	}
+	result, authErr := authenticateSecret(service, created.Secret)
+	if authErr != nil {
+		t.Fatalf("Authenticate() error = %v", authErr)
+	}
+	if got := result.Metadata[MetadataKeyTenantID]; got != "42" {
+		t.Fatalf("tenant metadata = %q, want 42", got)
+	}
+	result.Release()
+}
+
 func TestServiceAuthenticateExpiryAndRPM(t *testing.T) {
 	service := newTestService(t)
 	ctx := context.Background()
@@ -638,5 +666,151 @@ func TestServiceReplaceGroupCredentialBindingsPreservesOtherGroups(t *testing.T)
 	allowed, priority, overridden = service.ResolveCredentialAccess("shared", []int64{second.ID}, false, false)
 	if !allowed || !overridden || priority != 20 {
 		t.Fatalf("ResolveCredentialAccess(preserved second group) = (%v, %d, %v)", allowed, priority, overridden)
+	}
+}
+
+func TestTenantScopedResourcesRejectCrossTenantAccess(t *testing.T) {
+	service := newTestService(t)
+	ctx := context.Background()
+
+	firstGroup, errFirstGroup := service.CreateTenantGroup(ctx, 101, GroupCreate{Name: "tenant-101"})
+	if errFirstGroup != nil {
+		t.Fatalf("CreateTenantGroup(first) error = %v", errFirstGroup)
+	}
+	secondGroup, errSecondGroup := service.CreateTenantGroup(ctx, 202, GroupCreate{Name: "tenant-202"})
+	if errSecondGroup != nil {
+		t.Fatalf("CreateTenantGroup(second) error = %v", errSecondGroup)
+	}
+
+	if _, errGet := service.GetTenantGroup(ctx, 101, secondGroup.ID); !errors.Is(errGet, sql.ErrNoRows) {
+		t.Fatalf("GetTenantGroup(cross tenant) error = %v, want sql.ErrNoRows", errGet)
+	}
+	groups, errListGroups := service.ListTenantGroups(ctx, 101, ListOptions{Page: 1, PageSize: 20})
+	if errListGroups != nil {
+		t.Fatalf("ListTenantGroups() error = %v", errListGroups)
+	}
+	if groups.Total != 1 || len(groups.Items) != 1 || groups.Items[0].ID != firstGroup.ID || groups.Items[0].TenantID != 101 {
+		t.Fatalf("ListTenantGroups() = %+v", groups)
+	}
+	if _, errUpdate := service.UpdateTenantGroup(ctx, 101, secondGroup.ID, GroupUpdate{}); !errors.Is(errUpdate, sql.ErrNoRows) {
+		t.Fatalf("UpdateTenantGroup(cross tenant) error = %v, want sql.ErrNoRows", errUpdate)
+	}
+	if errDelete := service.DeleteTenantGroup(ctx, 101, secondGroup.ID); !errors.Is(errDelete, sql.ErrNoRows) {
+		t.Fatalf("DeleteTenantGroup(cross tenant) error = %v, want sql.ErrNoRows", errDelete)
+	}
+
+	if _, errCreate := service.CreateTenantKey(ctx, 101, KeyCreate{
+		Name:         "invalid-cross-group",
+		CustomSecret: "sk-cpa-invalid-cross-group",
+		GroupIDs:     []int64{secondGroup.ID},
+	}); !errors.Is(errCreate, sql.ErrNoRows) {
+		t.Fatalf("CreateTenantKey(cross tenant group) error = %v, want sql.ErrNoRows", errCreate)
+	}
+	created, errCreate := service.CreateTenantKey(ctx, 101, KeyCreate{
+		Name:              "tenant-key",
+		CustomSecret:      "sk-cpa-tenant-scoped-key",
+		GroupIDs:          []int64{firstGroup.ID},
+		RPMLimit:          77,
+		RequestLimitTotal: 88,
+		TokenLimitTotal:   99,
+	})
+	if errCreate != nil {
+		t.Fatalf("CreateTenantKey() error = %v", errCreate)
+	}
+	if created.TenantID != 101 || created.RPMLimit != 0 || created.RequestLimitTotal != 0 || created.TokenLimitTotal != 0 || created.ExpiresAt != nil {
+		t.Fatalf("CreateTenantKey() did not sanitize tenant quotas: %+v", created.Key)
+	}
+	secondKey, errSecondKey := service.CreateTenantKey(ctx, 202, KeyCreate{Name: "tenant-202-key", CustomSecret: "sk-cpa-tenant-202-key", GroupIDs: []int64{secondGroup.ID}})
+	if errSecondKey != nil {
+		t.Fatalf("CreateTenantKey(second) error = %v", errSecondKey)
+	}
+	if _, errGet := service.GetTenantKey(ctx, 101, secondKey.ID); !errors.Is(errGet, sql.ErrNoRows) {
+		t.Fatalf("GetTenantKey(cross tenant) error = %v, want sql.ErrNoRows", errGet)
+	}
+	maliciousRPM := 123
+	concurrency := 4
+	updated, errUpdate := service.UpdateTenantKey(ctx, 101, created.ID, KeyUpdate{RPMLimit: &maliciousRPM, ConcurrencyLimit: &concurrency})
+	if errUpdate != nil {
+		t.Fatalf("UpdateTenantKey() error = %v", errUpdate)
+	}
+	if updated.RPMLimit != 0 || updated.ConcurrencyLimit != concurrency || updated.RequestLimitTotal != 0 || updated.TokenLimitTotal != 0 || updated.ExpiresAt != nil {
+		t.Fatalf("UpdateTenantKey() did not sanitize tenant quotas: %+v", updated)
+	}
+	if _, errUpdate := service.UpdateTenantKey(ctx, 101, secondKey.ID, KeyUpdate{}); !errors.Is(errUpdate, sql.ErrNoRows) {
+		t.Fatalf("UpdateTenantKey(cross tenant) error = %v, want sql.ErrNoRows", errUpdate)
+	}
+}
+
+func TestTenantCredentialBindingsRequireOwnedAuthAndScopedGroup(t *testing.T) {
+	service := newTestService(t)
+	ctx := context.Background()
+	firstGroup, errFirst := service.CreateTenantGroup(ctx, 11, GroupCreate{Name: "tenant-11"})
+	if errFirst != nil {
+		t.Fatalf("CreateTenantGroup(first) error = %v", errFirst)
+	}
+	secondGroup, errSecond := service.CreateTenantGroup(ctx, 22, GroupCreate{Name: "tenant-22"})
+	if errSecond != nil {
+		t.Fatalf("CreateTenantGroup(second) error = %v", errSecond)
+	}
+	owners := testCredentialOwnership{"owned-by-11": 11, "owned-by-22": 22}
+	if _, errReplace := service.ReplaceTenantGroupCredentialBindings(ctx, 11, firstGroup.ID, GroupCredentialBindingBatch{AuthIndices: []string{"owned-by-22"}}, owners); !errors.Is(errReplace, sql.ErrNoRows) {
+		t.Fatalf("ReplaceTenantGroupCredentialBindings(cross auth) error = %v, want sql.ErrNoRows", errReplace)
+	}
+	if _, errReplace := service.ReplaceTenantGroupCredentialBindings(ctx, 11, secondGroup.ID, GroupCredentialBindingBatch{AuthIndices: []string{"owned-by-11"}}, owners); !errors.Is(errReplace, sql.ErrNoRows) {
+		t.Fatalf("ReplaceTenantGroupCredentialBindings(cross group) error = %v, want sql.ErrNoRows", errReplace)
+	}
+	if _, errReplace := service.ReplaceTenantGroupCredentialBindings(ctx, 11, firstGroup.ID, GroupCredentialBindingBatch{AuthIndices: []string{"owned-by-11"}, Priority: 9}, owners); errReplace != nil {
+		t.Fatalf("ReplaceTenantGroupCredentialBindings() error = %v", errReplace)
+	}
+	bindings, errList := service.ListTenantCredentialBindings(ctx, 11, ListOptions{Page: 1, PageSize: 20})
+	if errList != nil {
+		t.Fatalf("ListTenantCredentialBindings() error = %v", errList)
+	}
+	if bindings.Total != 1 || len(bindings.Items) != 1 || bindings.Items[0].AuthIndex != "owned-by-11" || bindings.Items[0].GroupID != firstGroup.ID {
+		t.Fatalf("ListTenantCredentialBindings() = %+v", bindings)
+	}
+	otherBindings, errOtherList := service.ListTenantCredentialBindings(ctx, 22, ListOptions{Page: 1, PageSize: 20})
+	if errOtherList != nil {
+		t.Fatalf("ListTenantCredentialBindings(other) error = %v", errOtherList)
+	}
+	if otherBindings.Total != 0 {
+		t.Fatalf("tenant 22 unexpectedly saw tenant 11 bindings: %+v", otherBindings)
+	}
+}
+
+func TestDeleteTenantResourcesLeavesAdministratorResources(t *testing.T) {
+	service := newTestService(t)
+	ctx := context.Background()
+	tenantGroup, errTenantGroup := service.CreateTenantGroup(ctx, 7, GroupCreate{Name: "tenant-delete"})
+	if errTenantGroup != nil {
+		t.Fatalf("CreateTenantGroup() error = %v", errTenantGroup)
+	}
+	tenantKey, errTenantKey := service.CreateTenantKey(ctx, 7, KeyCreate{Name: "tenant-delete-key", CustomSecret: "sk-cpa-tenant-delete", GroupIDs: []int64{tenantGroup.ID}})
+	if errTenantKey != nil {
+		t.Fatalf("CreateTenantKey() error = %v", errTenantKey)
+	}
+	globalGroup, errGlobalGroup := service.CreateGroup(ctx, GroupCreate{Name: "administrator-group"})
+	if errGlobalGroup != nil {
+		t.Fatalf("CreateGroup() error = %v", errGlobalGroup)
+	}
+	globalKey, errGlobalKey := service.CreateKey(ctx, KeyCreate{Name: "administrator-key", CustomSecret: "sk-cpa-administrator", GroupIDs: []int64{globalGroup.ID}})
+	if errGlobalKey != nil {
+		t.Fatalf("CreateKey() error = %v", errGlobalKey)
+	}
+
+	if errDelete := service.DeleteTenantResources(ctx, 7); errDelete != nil {
+		t.Fatalf("DeleteTenantResources() error = %v", errDelete)
+	}
+	if _, errGet := service.GetTenantGroup(ctx, 7, tenantGroup.ID); !errors.Is(errGet, sql.ErrNoRows) {
+		t.Fatalf("tenant group survived cleanup: %v", errGet)
+	}
+	if _, errGet := service.GetTenantKey(ctx, 7, tenantKey.ID); !errors.Is(errGet, sql.ErrNoRows) {
+		t.Fatalf("tenant key survived cleanup: %v", errGet)
+	}
+	if _, errGet := service.GetGroup(ctx, globalGroup.ID); errGet != nil {
+		t.Fatalf("GetGroup(global) error = %v", errGet)
+	}
+	if _, errGet := service.GetKey(ctx, globalKey.ID); errGet != nil {
+		t.Fatalf("GetKey(global) error = %v", errGet)
 	}
 }

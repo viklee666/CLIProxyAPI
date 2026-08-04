@@ -74,6 +74,7 @@ const sidebarIcons: Record<string, ReactNode> = {
   system: <IconSidebarSystem size={SIDEBAR_ICON_SIZE} />,
   clientGroups: <IconModelCluster size={SIDEBAR_ICON_SIZE} />,
   clientKeys: <IconKey size={SIDEBAR_ICON_SIZE} />,
+  tenantManagement: <IconModelCluster size={SIDEBAR_ICON_SIZE} />,
   adaptiveRouting: <IconTrendingUp size={SIDEBAR_ICON_SIZE} />,
 };
 
@@ -616,6 +617,12 @@ export function MainLayout({ routeBase = '', demoMode = false }: MainLayoutProps
         label: t('nav.client_keys'),
         shortLabel: navShortLabel('nav.client_keys', t('nav.client_keys')),
         icon: sidebarIcons.clientKeys,
+      },
+      {
+        path: '/tenants',
+        label: t('nav.tenant_management'),
+        shortLabel: navShortLabel('nav.tenant_management', t('nav.tenant_management')),
+        icon: sidebarIcons.tenantManagement,
       },
       {
         path: '/adaptive-routing',

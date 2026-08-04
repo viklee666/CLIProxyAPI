@@ -23,6 +23,7 @@ import { useQuotaStore } from './useQuotaStore';
 import { useUsageServiceStore } from './useUsageServiceStore';
 import { detectApiBaseFromLocation, normalizeApiBase } from '@/utils/connection';
 import { sha256Hex } from '@/utils/apiKeyHash';
+import { resolvePanelRole } from '@/utils/panelRole';
 
 interface AuthStoreState extends AuthState {
   sessionMode: AuthSessionMode | '';
@@ -74,6 +75,7 @@ export const useAuthStore = create<AuthStoreState>()(
   persist(
     (set, get) => ({
       // 初始状态
+      role: resolvePanelRole(),
       isAuthenticated: false,
       apiBase: '',
       managementKey: '',

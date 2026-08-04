@@ -389,6 +389,9 @@ func (h *Handler) authFileCandidatesFromManager() []authFileCandidate {
 		if auth == nil {
 			continue
 		}
+		if isTenantRuntimeAuth(auth) {
+			continue
+		}
 		auth.EnsureIndex()
 		runtimeOnly := isRuntimeOnlyAuth(auth)
 		if runtimeOnly && (auth.Disabled || auth.Status == coreauth.StatusDisabled) {

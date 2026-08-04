@@ -1,0 +1,131 @@
+@use '../../styles/variables' as *;
+@use '../../styles/mixins' as *;
+
+.shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 218px minmax(0, 1fr);
+}
+
+.sidebar {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  padding: 18px 12px;
+  border-right: 1px solid var(--glass-border);
+  background: color-mix(in srgb, var(--app-surface-strong) 92%, transparent);
+  backdrop-filter: var(--glass-backdrop-filter);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 8px 20px;
+  color: var(--text-primary);
+  font-size: 15px;
+  font-weight: 750;
+
+  img {
+    width: 30px;
+    height: 30px;
+    border-radius: 7px;
+  }
+}
+
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+
+  a {
+    padding: 9px 10px;
+    border-radius: 6px;
+    color: var(--text-secondary);
+    font-size: 14px;
+    text-decoration: none;
+
+    &:hover {
+      background: var(--app-surface-muted);
+      color: var(--text-primary);
+    }
+  }
+}
+
+.navActive {
+  background: var(--app-accent-soft);
+  color: var(--primary-color) !important;
+  font-weight: 650;
+}
+
+.account {
+  position: absolute;
+  right: 12px;
+  bottom: 18px;
+  left: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 14px;
+  border-top: 1px solid var(--glass-border);
+
+  strong,
+  span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  strong {
+    color: var(--text-primary);
+    font-size: 13px;
+  }
+
+  span {
+    color: var(--text-secondary);
+    font-size: 12px;
+  }
+}
+
+.content {
+  min-width: 0;
+  padding: 28px clamp(18px, 3vw, 42px);
+}
+
+@include mobile {
+  .shell {
+    display: block;
+  }
+
+  .sidebar {
+    position: sticky;
+    z-index: 10;
+    width: 100%;
+    height: auto;
+    padding: 10px 12px;
+    border-right: 0;
+    border-bottom: 1px solid var(--glass-border);
+  }
+
+  .brand {
+    display: none;
+  }
+
+  .nav {
+    flex-direction: row;
+    overflow-x: auto;
+
+    a {
+      flex: 0 0 auto;
+      white-space: nowrap;
+    }
+  }
+
+  .account {
+    display: none;
+  }
+
+  .content {
+    padding: 18px 14px 28px;
+  }
+}

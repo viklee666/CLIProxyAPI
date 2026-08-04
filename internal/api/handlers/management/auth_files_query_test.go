@@ -139,6 +139,50 @@ func TestListAuthFilesQueryDoesNotExposeAgentIdentitySecrets(t *testing.T) {
 	}
 }
 
+func TestListAuthFilesQueryOmitsTenantRuntimeCredentials(t *testing.T) {
+	t.Parallel()
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	auth := &coreauth.Auth{
+		ID:       "tenant-private-auth",
+		Provider: "claude",
+		Attributes: map[string]string{
+			"api_key":      "tenant-private-secret",
+			"runtime_only": "true",
+			"tenant_id":    "42",
+		},
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register tenant auth: %v", err)
+	}
+
+	h := &Handler{authManager: manager}
+	for _, view := range []string{"summary", "detail"} {
+		t.Run(view, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			ctx.Request = httptest.NewRequest(http.MethodGet, "/v0/management/auth-files?view="+view, nil)
+
+			h.ListAuthFiles(ctx)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+			}
+			if strings.Contains(recorder.Body.String(), "tenant-private-secret") {
+				t.Fatalf("%s response leaked tenant API key: %s", view, recorder.Body.String())
+			}
+			var response struct {
+				Total int `json:"total"`
+			}
+			if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if response.Total != 0 {
+				t.Fatalf("tenant runtime credential appeared in %s response: %s", view, recorder.Body.String())
+			}
+		})
+	}
+}
+
 func TestListAuthFilesQueryFiltersByAuthIndex(t *testing.T) {
 	t.Parallel()
 

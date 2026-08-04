@@ -543,6 +543,9 @@ func (h *Handler) authByIndex(authIndex string) *coreauth.Auth {
 		}
 		auth.EnsureIndex()
 		if auth.Index == authIndex {
+			if isTenantRuntimeAuth(auth) {
+				return nil
+			}
 			return auth
 		}
 	}
