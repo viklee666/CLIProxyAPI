@@ -163,7 +163,10 @@ export function AiProvidersPage() {
     void loadRecentRequests().catch(() => {});
   }, [isCurrentLayer, loadRecentRequests]);
 
+  const isUIConfigProjection = config?.raw?.projection === 'ui';
+
   useEffect(() => {
+    if (isUIConfigProjection) return;
     if (config?.geminiApiKeys) setGeminiKeys(config.geminiApiKeys);
     if (config?.interactionsApiKeys) setInteractionsKeys(config.interactionsApiKeys);
     if (config?.codexApiKeys) setCodexConfigs(config.codexApiKeys);
@@ -177,13 +180,14 @@ export function AiProvidersPage() {
     config?.claudeApiKeys,
     config?.vertexApiKeys,
     config?.openaiCompatibility,
+    isUIConfigProjection,
   ]);
 
-  const handleRecentRequestsRefresh = useCallback(async () => {
-    await refreshRecentRequests();
-  }, [refreshRecentRequests]);
+  const handleHeaderRefresh = useCallback(async () => {
+    await Promise.all([loadConfigs(), refreshRecentRequests()]);
+  }, [loadConfigs, refreshRecentRequests]);
 
-  useHeaderRefresh(handleRecentRequestsRefresh, isCurrentLayer);
+  useHeaderRefresh(handleHeaderRefresh, isCurrentLayer);
 
   const openEditorDrawer = useCallback((kind: ProviderKind, editIndex: number | null) => {
     setDetailRowKey(null);

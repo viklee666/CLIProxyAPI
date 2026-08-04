@@ -699,11 +699,12 @@ export function MainLayout({ routeBase = '', demoMode = false }: MainLayoutProps
 
   const handleRefreshAll = async () => {
     clearCache();
-    const results = await Promise.allSettled([
+    const initialResults = await Promise.allSettled([
       fetchConfig(undefined, true),
       loadPluginResources(),
-      triggerHeaderRefresh(),
     ]);
+    const headerResults = await Promise.allSettled([triggerHeaderRefresh()]);
+    const results = [...initialResults, ...headerResults];
     const rejected = results.find((result) => result.status === 'rejected');
     if (rejected && rejected.status === 'rejected') {
       const reason = rejected.reason;

@@ -251,7 +251,7 @@ func TestSchedulerPick_XAIWebsocketPrefersWebsocketEnabledSubset(t *testing.T) {
 	}
 }
 
-func TestSchedulerPick_CodexWebsocketPrefersWebsocketEnabledAcrossPriorities(t *testing.T) {
+func TestSchedulerPick_CodexWebsocketKeepsHighestPriority(t *testing.T) {
 	t.Parallel()
 
 	scheduler := newSchedulerForTest(
@@ -262,7 +262,7 @@ func TestSchedulerPick_CodexWebsocketPrefersWebsocketEnabledAcrossPriorities(t *
 	)
 
 	ctx := cliproxyexecutor.WithDownstreamWebsocket(context.Background())
-	want := []string{"codex-ws-a", "codex-ws-b", "codex-ws-a"}
+	want := []string{"codex-http", "codex-http", "codex-http"}
 	for index, wantID := range want {
 		got, errPick := scheduler.pickSingle(ctx, "codex", "", cliproxyexecutor.Options{}, nil)
 		if errPick != nil {
@@ -514,8 +514,8 @@ func TestManagerSelectAuthByKindExcludesAgentIdentity(t *testing.T) {
 	manager.executors["codex"] = schedulerTestExecutor{}
 	for _, candidate := range []*Auth{
 		{
-			ID:       "codex-agent",
-			Provider: "codex",
+			ID:         "codex-agent",
+			Provider:   "codex",
 			Attributes: map[string]string{AttributeAuthKind: AuthKindAgentIdentity},
 			Metadata: map[string]any{
 				"auth_kind":         AuthKindAgentIdentity,

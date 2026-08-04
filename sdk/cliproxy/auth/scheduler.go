@@ -325,7 +325,7 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 		if shard == nil {
 			continue
 		}
-		priorityReady, okPriority := shard.highestReadyPriorityLocked(false, predicate)
+		priorityReady, okPriority := shard.highestReadyPriorityLocked(predicate)
 		if !okPriority {
 			continue
 		}
@@ -736,7 +736,7 @@ func (m *modelScheduler) pickReadyLocked(preferWebsocket bool, strategy schedule
 		return nil
 	}
 	m.promoteExpiredLocked(time.Now())
-	priorityReady, okPriority := m.highestReadyPriorityLocked(preferWebsocket, predicate)
+	priorityReady, okPriority := m.highestReadyPriorityLocked(predicate)
 	if !okPriority {
 		return nil
 	}
@@ -745,22 +745,9 @@ func (m *modelScheduler) pickReadyLocked(preferWebsocket bool, strategy schedule
 
 // highestReadyPriorityLocked returns the highest priority bucket that still has a matching ready auth.
 // The caller must ensure expired entries are already promoted when needed.
-func (m *modelScheduler) highestReadyPriorityLocked(preferWebsocket bool, predicate func(*scheduledAuth) bool) (int, bool) {
+func (m *modelScheduler) highestReadyPriorityLocked(predicate func(*scheduledAuth) bool) (int, bool) {
 	if m == nil {
 		return 0, false
-	}
-	if preferWebsocket {
-		// When downstream is websocket and Codex supports websocket transport, prefer websocket-enabled
-		// credentials even if they are in a lower priority tier than HTTP-only credentials.
-		for _, priority := range m.priorityOrder {
-			bucket := m.readyByPriority[priority]
-			if bucket == nil {
-				continue
-			}
-			if bucket.ws.pickFirst(predicate) != nil {
-				return priority, true
-			}
-		}
 	}
 	for _, priority := range m.priorityOrder {
 		bucket := m.readyByPriority[priority]
