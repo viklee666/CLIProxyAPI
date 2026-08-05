@@ -1,8 +1,10 @@
 package executor
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	xxHash64 "github.com/pierrec/xxHash/xxHash64"
@@ -68,6 +70,17 @@ func resolveClaudeKeyConfig(cfg *config.Config, auth *cliproxyauth.Auth) *config
 
 // resolveClaudeKeyCloakConfig finds the matching ClaudeKey config and returns its CloakConfig.
 func resolveClaudeKeyCloakConfig(cfg *config.Config, auth *cliproxyauth.Auth) *config.CloakConfig {
+	if auth != nil && auth.Attributes != nil {
+		if raw := strings.TrimSpace(auth.Attributes[cliproxyauth.AttributeTenantClaudeCloak]); raw != "" {
+			var cloak config.CloakConfig
+			if errUnmarshal := json.Unmarshal([]byte(raw), &cloak); errUnmarshal == nil {
+				return &cloak
+			}
+		}
+		if strings.TrimSpace(auth.Attributes[cliproxyauth.AttributeTenantID]) != "" {
+			return nil
+		}
+	}
 	entry := resolveClaudeKeyConfig(cfg, auth)
 	if entry == nil {
 		return nil
@@ -76,13 +89,29 @@ func resolveClaudeKeyCloakConfig(cfg *config.Config, auth *cliproxyauth.Auth) *c
 }
 
 func experimentalCCHSigningEnabled(cfg *config.Config, auth *cliproxyauth.Auth) bool {
+	if auth != nil && auth.Attributes != nil {
+		if raw := strings.TrimSpace(auth.Attributes[cliproxyauth.AttributeTenantExperimentalCCHSigning]); raw != "" {
+			enabled, errParse := strconv.ParseBool(raw)
+			if errParse == nil {
+				return enabled
+			}
+		}
+		if strings.TrimSpace(auth.Attributes[cliproxyauth.AttributeTenantID]) != "" {
+			return false
+		}
+	}
 	entry := resolveClaudeKeyConfig(cfg, auth)
 	return entry != nil && entry.ExperimentalCCHSigning
 }
 
 func rebuildMidSystemMessageEnabled(cfg *config.Config, auth *cliproxyauth.Auth) bool {
-	if auth != nil && auth.Attributes != nil && strings.EqualFold(strings.TrimSpace(auth.Attributes["rebuild_mid_system_message"]), "true") {
-		return true
+	if auth != nil && auth.Attributes != nil {
+		if strings.TrimSpace(auth.Attributes[cliproxyauth.AttributeTenantID]) != "" {
+			return strings.EqualFold(strings.TrimSpace(auth.Attributes["rebuild_mid_system_message"]), "true")
+		}
+		if strings.EqualFold(strings.TrimSpace(auth.Attributes["rebuild_mid_system_message"]), "true") {
+			return true
+		}
 	}
 	entry := resolveClaudeKeyConfig(cfg, auth)
 	return entry != nil && entry.RebuildMidSystemMessage

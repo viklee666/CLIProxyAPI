@@ -19,6 +19,9 @@ type providerExtra struct {
 	DisableCooling          bool
 	Websockets              bool
 	RebuildMidSystemMessage bool
+	Cloak                   *config.CloakConfig
+	ExperimentalCCHSigning  bool
+	Weight                  *int
 }
 
 func (s *Service) SynthesizeAuths(ctx context.Context) ([]*coreauth.Auth, error) {
@@ -88,7 +91,7 @@ func synthesizeProvider(provider providerRecord, apiKey string) (*coreauth.Auth,
 	}
 	auth.ID = fmt.Sprintf("tenant-provider:%d:%d", provider.TenantID, provider.ID)
 	auth.Index = ""
-	auth.Prefix = fmt.Sprintf("t%d/", provider.TenantID)
+	auth.Prefix = tenantProviderPrefix(provider.TenantID, provider.Prefix)
 	auth.Disabled = provider.Disabled
 	if provider.Disabled {
 		auth.Status = coreauth.StatusDisabled
@@ -99,7 +102,45 @@ func synthesizeProvider(provider providerRecord, apiKey string) (*coreauth.Auth,
 	auth.Attributes[coreauth.AttributeRuntimeOnly] = "true"
 	auth.Attributes[coreauth.AttributeTenantID] = strconv.FormatInt(provider.TenantID, 10)
 	auth.Attributes[coreauth.AttributeAuthIndexSeed] = fmt.Sprintf("tenant:%d:provider:%d:%s", provider.TenantID, provider.ID, provider.Channel)
+	auth.Attributes[coreauth.AttributeTenantModels] = provider.modelsJSON
+	auth.Attributes[coreauth.AttributeTenantChannel] = provider.Channel
+	if errExtra := addTenantProviderExtraAttributes(auth, provider.extraJSON); errExtra != nil {
+		return nil, errExtra
+	}
 	return auth, nil
+}
+
+func tenantProviderPrefix(tenantID int64, providerPrefix string) string {
+	prefix := fmt.Sprintf("t%d", tenantID)
+	providerPrefix = strings.Trim(strings.TrimSpace(providerPrefix), "/")
+	if providerPrefix == "" {
+		return prefix
+	}
+	return prefix + "/" + providerPrefix
+}
+
+func addTenantProviderExtraAttributes(auth *coreauth.Auth, rawExtra string) error {
+	if auth == nil || auth.Attributes == nil {
+		return nil
+	}
+	extra, errExtra := decodeProviderExtra(rawExtra)
+	if errExtra != nil {
+		return errExtra
+	}
+	if extra.Cloak != nil {
+		data, errMarshal := json.Marshal(extra.Cloak)
+		if errMarshal != nil {
+			return fmt.Errorf("encode tenant provider cloak: %w", errMarshal)
+		}
+		auth.Attributes[coreauth.AttributeTenantClaudeCloak] = string(data)
+	}
+	if extra.ExperimentalCCHSigning {
+		auth.Attributes[coreauth.AttributeTenantExperimentalCCHSigning] = "true"
+	}
+	if extra.Weight != nil {
+		auth.Attributes[coreauth.AttributeWeight] = strconv.Itoa(*extra.Weight)
+	}
+	return nil
 }
 
 func providerConfig(provider providerRecord, apiKey string) (*config.Config, error) {
@@ -118,6 +159,7 @@ func providerConfig(provider providerRecord, apiKey string) (*config.Config, err
 			Name:                    provider.Name,
 			APIKey:                  apiKey,
 			Priority:                provider.Priority,
+			Prefix:                  provider.Prefix,
 			BaseURL:                 provider.BaseURL,
 			ProxyURL:                provider.ProxyURL,
 			Models:                  models,
@@ -125,6 +167,8 @@ func providerConfig(provider providerRecord, apiKey string) (*config.Config, err
 			ExcludedModels:          extra.ExcludedModels,
 			DisableCooling:          extra.DisableCooling,
 			RebuildMidSystemMessage: extra.RebuildMidSystemMessage,
+			Cloak:                   extra.Cloak,
+			ExperimentalCCHSigning:  extra.ExperimentalCCHSigning,
 		}}
 	case ChannelCodex, ChannelXAI:
 		models := make([]config.CodexModel, 0)
@@ -135,6 +179,7 @@ func providerConfig(provider providerRecord, apiKey string) (*config.Config, err
 			Name:           provider.Name,
 			APIKey:         apiKey,
 			Priority:       provider.Priority,
+			Prefix:         provider.Prefix,
 			BaseURL:        provider.BaseURL,
 			ProxyURL:       provider.ProxyURL,
 			Models:         models,
@@ -157,6 +202,7 @@ func providerConfig(provider providerRecord, apiKey string) (*config.Config, err
 			Name:           provider.Name,
 			APIKey:         apiKey,
 			Priority:       provider.Priority,
+			Prefix:         provider.Prefix,
 			BaseURL:        provider.BaseURL,
 			ProxyURL:       provider.ProxyURL,
 			Models:         models,
@@ -172,6 +218,7 @@ func providerConfig(provider providerRecord, apiKey string) (*config.Config, err
 		cfg.OpenAICompatibility = []config.OpenAICompatibility{{
 			Name:           provider.Name,
 			Priority:       provider.Priority,
+			Prefix:         provider.Prefix,
 			BaseURL:        provider.BaseURL,
 			APIKeyEntries:  []config.OpenAICompatibilityAPIKey{{APIKey: apiKey, ProxyURL: provider.ProxyURL}},
 			Models:         models,
@@ -187,6 +234,8 @@ func providerConfig(provider providerRecord, apiKey string) (*config.Config, err
 			Name:           provider.Name,
 			APIKey:         apiKey,
 			Priority:       provider.Priority,
+			Prefix:         provider.Prefix,
+			Weight:         extra.Weight,
 			BaseURL:        provider.BaseURL,
 			ProxyURL:       provider.ProxyURL,
 			Models:         models,
@@ -239,6 +288,25 @@ func decodeProviderExtra(rawValue string) (providerExtra, error) {
 		if errUnmarshal := json.Unmarshal(value, &extra.RebuildMidSystemMessage); errUnmarshal != nil {
 			return providerExtra{}, errors.New("invalid tenant provider rebuild system message")
 		}
+	}
+	if value := firstJSONValue(values, "cloak"); value != nil {
+		var cloak config.CloakConfig
+		if errUnmarshal := json.Unmarshal(value, &cloak); errUnmarshal != nil {
+			return providerExtra{}, errors.New("invalid tenant provider cloak")
+		}
+		extra.Cloak = &cloak
+	}
+	if value := firstJSONValue(values, "experimental_cch_signing", "experimental-cch-signing"); value != nil {
+		if errUnmarshal := json.Unmarshal(value, &extra.ExperimentalCCHSigning); errUnmarshal != nil {
+			return providerExtra{}, errors.New("invalid tenant provider experimental CCH signing")
+		}
+	}
+	if value := firstJSONValue(values, "weight"); value != nil {
+		var weight int
+		if errUnmarshal := json.Unmarshal(value, &weight); errUnmarshal != nil {
+			return providerExtra{}, errors.New("invalid tenant provider weight")
+		}
+		extra.Weight = &weight
 	}
 	return extra, nil
 }

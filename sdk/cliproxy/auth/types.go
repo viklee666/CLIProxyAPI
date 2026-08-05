@@ -101,11 +101,15 @@ type Auth struct {
 }
 
 const (
-	AttributeAuthIndexSeed   = "auth_index_seed"
-	AttributePluginVirtual   = "plugin_virtual"
-	AttributeVirtualSource   = "virtual_source"
-	AttributeTenantID        = "tenant_id"
-	pluginVirtualAttrEnabled = "true"
+	AttributeAuthIndexSeed                = "auth_index_seed"
+	AttributePluginVirtual                = "plugin_virtual"
+	AttributeVirtualSource                = "virtual_source"
+	AttributeTenantID                     = "tenant_id"
+	AttributeTenantChannel                = "tenant_channel"
+	AttributeTenantModels                 = "tenant_models"
+	AttributeTenantClaudeCloak            = "tenant_cloak"
+	AttributeTenantExperimentalCCHSigning = "tenant_experimental_cch_signing"
+	pluginVirtualAttrEnabled              = "true"
 )
 
 // MarkPluginVirtualAuth marks an auth that was expanded from a plugin-owned source file.

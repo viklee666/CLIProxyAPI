@@ -12,6 +12,7 @@ export interface ModelEntry {
   inputModalitiesDraft?: string;
   outputModalitiesDraft?: string;
   thinking?: Record<string, unknown>;
+  thinkingDraft?: string;
 }
 
 export const createDiscoveredModelEntry = (name: string): ModelEntry => ({
@@ -23,19 +24,29 @@ export const modelsToEntries = (models?: ModelAlias[]): ModelEntry[] => {
   if (!Array.isArray(models) || models.length === 0) {
     return [{ name: '', alias: '' }];
   }
-  return models.map((model) => ({
-    name: model.name || '',
-    alias: model.alias || '',
-    priority: model.priority,
-    testModel: model.testModel,
-    image: model.image,
-    forceMapping: model.forceMapping,
-    inputModalities: model.inputModalities,
-    outputModalities: model.outputModalities,
-    inputModalitiesDraft: model.inputModalities?.join(', '),
-    outputModalitiesDraft: model.outputModalities?.join(', '),
-    thinking: model.thinking,
-  }));
+  return models.map((model) => {
+    const entry: ModelEntry = {
+      name: model.name || '',
+      alias: model.alias || '',
+    };
+    if (model.priority !== undefined) entry.priority = model.priority;
+    if (model.testModel !== undefined) entry.testModel = model.testModel;
+    if (model.image !== undefined) entry.image = model.image;
+    if (model.forceMapping !== undefined) entry.forceMapping = model.forceMapping;
+    if (model.inputModalities !== undefined) {
+      entry.inputModalities = model.inputModalities;
+      entry.inputModalitiesDraft = model.inputModalities.join(', ');
+    }
+    if (model.outputModalities !== undefined) {
+      entry.outputModalities = model.outputModalities;
+      entry.outputModalitiesDraft = model.outputModalities.join(', ');
+    }
+    if (model.thinking !== undefined) {
+      entry.thinking = model.thinking;
+      entry.thinkingDraft = JSON.stringify(model.thinking);
+    }
+    return entry;
+  });
 };
 
 export const entriesToModels = (entries: ModelEntry[]): ModelAlias[] => {

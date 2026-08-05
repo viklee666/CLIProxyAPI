@@ -129,8 +129,8 @@ func TestServiceProviderEncryptionAndSynthesis(t *testing.T) {
 	if auth.Attributes["tenant_id"] != "1" || auth.Attributes["runtime_only"] != "true" {
 		t.Fatalf("synthesized tenant attributes = %#v", auth.Attributes)
 	}
-	if auth.Prefix != "t1/" {
-		t.Fatalf("synthesized prefix = %q, want t1/", auth.Prefix)
+	if auth.Prefix != "t1" {
+		t.Fatalf("synthesized prefix = %q, want t1", auth.Prefix)
 	}
 	if service.OwnerOf(auth.Index) != created.ID {
 		t.Fatalf("OwnerOf(%q) = %d, want %d", auth.Index, service.OwnerOf(auth.Index), created.ID)
@@ -147,5 +147,24 @@ func TestServiceProviderEncryptionAndSynthesis(t *testing.T) {
 	}
 	if service.OwnerOf(auth.Index) != 0 {
 		t.Fatalf("OwnerOf(%q) after delete = %d, want 0", auth.Index, service.OwnerOf(auth.Index))
+	}
+}
+
+func TestTenantProviderPrefixKeepsSingleModelSeparator(t *testing.T) {
+	testCases := []struct {
+		name           string
+		tenantID       int64
+		providerPrefix string
+		want           string
+	}{
+		{name: "tenant namespace", tenantID: 1, want: "t1"},
+		{name: "custom provider namespace", tenantID: 42, providerPrefix: "team-a", want: "t42/team-a"},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := tenantProviderPrefix(testCase.tenantID, testCase.providerPrefix); got != testCase.want {
+				t.Fatalf("tenantProviderPrefix() = %q, want %q", got, testCase.want)
+			}
+		})
 	}
 }

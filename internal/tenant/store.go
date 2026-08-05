@@ -82,6 +82,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			api_key_enc TEXT NOT NULL,
 			proxy_url TEXT NOT NULL DEFAULT '',
 			priority INTEGER NOT NULL DEFAULT 0,
+			prefix TEXT NOT NULL DEFAULT '',
 			disabled INTEGER NOT NULL DEFAULT 0,
 			headers_json TEXT NOT NULL DEFAULT '{}',
 			models_json TEXT NOT NULL DEFAULT '[]',
@@ -108,6 +109,35 @@ func (s *Store) migrate(ctx context.Context) error {
 		if _, errExec := s.db.ExecContext(ctx, statement); errExec != nil {
 			return fmt.Errorf("migrate tenant database: %w", errExec)
 		}
+	}
+	if errColumn := s.ensureColumn(ctx, "tenant_providers", "prefix", "TEXT NOT NULL DEFAULT ''"); errColumn != nil {
+		return errColumn
+	}
+	return nil
+}
+
+func (s *Store) ensureColumn(ctx context.Context, table, column, definition string) error {
+	rows, errQuery := s.db.QueryContext(ctx, "PRAGMA table_info("+table+")")
+	if errQuery != nil {
+		return fmt.Errorf("inspect tenant database table %s: %w", table, errQuery)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if errScan := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); errScan != nil {
+			return fmt.Errorf("scan tenant database table %s: %w", table, errScan)
+		}
+		if strings.EqualFold(name, column) {
+			return nil
+		}
+	}
+	if errRows := rows.Err(); errRows != nil {
+		return fmt.Errorf("iterate tenant database table %s: %w", table, errRows)
+	}
+	if _, errExec := s.db.ExecContext(ctx, "ALTER TABLE "+table+" ADD COLUMN "+column+" "+definition); errExec != nil {
+		return fmt.Errorf("add tenant database column %s.%s: %w", table, column, errExec)
 	}
 	return nil
 }
@@ -346,10 +376,10 @@ func (s *Store) listCredentialOwnership(ctx context.Context) (map[string]int64, 
 	return items, nil
 }
 
-const providerColumns = `id, tenant_id, channel, name, base_url, api_key_enc, proxy_url, priority, disabled,
+const providerColumns = `id, tenant_id, channel, name, base_url, api_key_enc, proxy_url, priority, prefix, disabled,
 	headers_json, models_json, extra_json, auth_index, created_at_ms, updated_at_ms`
 
-const providerColumnsQualified = `p.id, p.tenant_id, p.channel, p.name, p.base_url, p.api_key_enc, p.proxy_url, p.priority, p.disabled,
+const providerColumnsQualified = `p.id, p.tenant_id, p.channel, p.name, p.base_url, p.api_key_enc, p.proxy_url, p.priority, p.prefix, p.disabled,
 	p.headers_json, p.models_json, p.extra_json, p.auth_index, p.created_at_ms, p.updated_at_ms`
 
 func scanProvider(scanner interface{ Scan(...any) error }) (providerRecord, error) {
@@ -365,6 +395,7 @@ func scanProvider(scanner interface{ Scan(...any) error }) (providerRecord, erro
 		&item.apiKeyEnc,
 		&item.ProxyURL,
 		&item.Priority,
+		&item.Prefix,
 		&disabled,
 		&item.headersJSON,
 		&item.modelsJSON,
@@ -408,9 +439,9 @@ func (p *providerRecord) decodeJSON() error {
 func (s *Store) createProvider(ctx context.Context, tenantID int64, input ProviderCreateInput, apiKeyEnc, headersJSON, modelsJSON, extraJSON, authIndex string) (providerRecord, error) {
 	now := time.Now().UTC()
 	result, errExec := s.db.ExecContext(ctx, `INSERT INTO tenant_providers(
-		tenant_id, channel, name, base_url, api_key_enc, proxy_url, priority, disabled, headers_json, models_json, extra_json, auth_index, created_at_ms, updated_at_ms
-	) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		tenantID, input.Channel, input.Name, input.BaseURL, apiKeyEnc, input.ProxyURL, input.Priority, boolInt(input.Disabled), headersJSON, modelsJSON, extraJSON, authIndex, now.UnixMilli(), now.UnixMilli())
+		tenant_id, channel, name, base_url, api_key_enc, proxy_url, priority, prefix, disabled, headers_json, models_json, extra_json, auth_index, created_at_ms, updated_at_ms
+	) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		tenantID, input.Channel, input.Name, input.BaseURL, apiKeyEnc, input.ProxyURL, input.Priority, input.Prefix, boolInt(input.Disabled), headersJSON, modelsJSON, extraJSON, authIndex, now.UnixMilli(), now.UnixMilli())
 	if errExec != nil {
 		return providerRecord{}, fmt.Errorf("create tenant provider: %w", errExec)
 	}
@@ -468,8 +499,8 @@ func (s *Store) listProvidersForSynthesis(ctx context.Context) ([]providerRecord
 }
 
 func (s *Store) updateProvider(ctx context.Context, item providerRecord) (providerRecord, error) {
-	_, errExec := s.db.ExecContext(ctx, `UPDATE tenant_providers SET name = ?, base_url = ?, api_key_enc = ?, proxy_url = ?, priority = ?, disabled = ?, headers_json = ?, models_json = ?, extra_json = ?, updated_at_ms = ? WHERE id = ? AND tenant_id = ?`,
-		item.Name, item.BaseURL, item.apiKeyEnc, item.ProxyURL, item.Priority, boolInt(item.Disabled), item.headersJSON, item.modelsJSON, item.extraJSON, time.Now().UTC().UnixMilli(), item.ID, item.TenantID)
+	_, errExec := s.db.ExecContext(ctx, `UPDATE tenant_providers SET name = ?, base_url = ?, api_key_enc = ?, proxy_url = ?, priority = ?, prefix = ?, disabled = ?, headers_json = ?, models_json = ?, extra_json = ?, updated_at_ms = ? WHERE id = ? AND tenant_id = ?`,
+		item.Name, item.BaseURL, item.apiKeyEnc, item.ProxyURL, item.Priority, item.Prefix, boolInt(item.Disabled), item.headersJSON, item.modelsJSON, item.extraJSON, time.Now().UTC().UnixMilli(), item.ID, item.TenantID)
 	if errExec != nil {
 		return providerRecord{}, fmt.Errorf("update tenant provider: %w", errExec)
 	}

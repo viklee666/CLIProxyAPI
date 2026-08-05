@@ -155,7 +155,7 @@ func rewriteClaudeDDModelInBody(rawJSON []byte) []byte {
 // Parameters:
 //   - c: The Gin context for the request.
 func (h *ClaudeCodeAPIHandler) ClaudeModels(c *gin.Context) {
-	models := h.Models()
+	models := h.ModelsForRequest(c, "claude")
 	for i := range models {
 		if id, ok := models[i]["id"].(string); ok {
 			models[i]["id"] = util.EnsureClaudeModelIDPrefix(id)

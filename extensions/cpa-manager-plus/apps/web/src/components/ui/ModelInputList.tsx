@@ -22,9 +22,13 @@ interface ModelInputListProps {
   removeButtonAriaLabel?: string;
   showForceMapping?: boolean;
   showModalities?: boolean;
+  showImage?: boolean;
+  showThinking?: boolean;
   forceMappingLabel?: string;
+  imageLabel?: string;
   inputModalitiesPlaceholder?: string;
   outputModalitiesPlaceholder?: string;
+  thinkingPlaceholder?: string;
 }
 
 const parseModalities = (value: string) =>
@@ -50,9 +54,13 @@ export function ModelInputList({
   removeButtonAriaLabel = 'Remove',
   showForceMapping = false,
   showModalities = false,
+  showImage = false,
+  showThinking = false,
   forceMappingLabel = 'Rewrite response model',
+  imageLabel = 'Image model',
   inputModalitiesPlaceholder = 'Input modalities: text, image',
   outputModalitiesPlaceholder = 'Output modalities: text, image',
+  thinkingPlaceholder = 'Thinking JSON',
 }: ModelInputListProps) {
   const currentEntries = entries.length ? entries : [{ name: '', alias: '' }];
   const containerClassName = ['header-input-list', className].filter(Boolean).join(' ');
@@ -119,7 +127,7 @@ export function ModelInputList({
               <IconX size={14} />
             </Button>
           </div>
-          {(showForceMapping || showModalities) && (
+          {(showForceMapping || showModalities || showImage || showThinking) && (
             <div className={styles.advancedRow}>
               {showForceMapping && (
                 <ToggleSwitch
@@ -127,6 +135,15 @@ export function ModelInputList({
                   labelPosition="left"
                   checked={Boolean(entry.forceMapping)}
                   onChange={(forceMapping) => updateAdvancedEntry(index, { forceMapping })}
+                  disabled={disabled}
+                />
+              )}
+              {showImage && (
+                <ToggleSwitch
+                  label={imageLabel}
+                  labelPosition="left"
+                  checked={Boolean(entry.image)}
+                  onChange={(image) => updateAdvancedEntry(index, { image })}
                   disabled={disabled}
                 />
               )}
@@ -165,6 +182,34 @@ export function ModelInputList({
                     disabled={disabled}
                   />
                 </>
+              )}
+              {showThinking && (
+                <textarea
+                  className={inputClassNames}
+                  placeholder={thinkingPlaceholder}
+                  value={entry.thinkingDraft ?? (entry.thinking ? JSON.stringify(entry.thinking) : '')}
+                  aria-label={thinkingPlaceholder}
+                  onChange={(event) => {
+                    const thinkingDraft = event.target.value;
+                    let thinking = entry.thinking;
+                    const trimmed = thinkingDraft.trim();
+                    if (!trimmed) {
+                      thinking = undefined;
+                    } else {
+                      try {
+                        const parsed: unknown = JSON.parse(trimmed);
+                        thinking = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+                          ? (parsed as Record<string, unknown>)
+                          : undefined;
+                      } catch {
+                        // Preserve the draft so the page can report a validation error on save.
+                      }
+                    }
+                    updateAdvancedEntry(index, { thinkingDraft, thinking });
+                  }}
+                  disabled={disabled}
+                  rows={2}
+                />
               )}
             </div>
           )}

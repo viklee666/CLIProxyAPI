@@ -28,6 +28,7 @@ type Provider struct {
 	BaseURL   string            `json:"base_url"`
 	ProxyURL  string            `json:"proxy_url"`
 	Priority  int               `json:"priority"`
+	Prefix    string            `json:"prefix"`
 	Disabled  bool              `json:"disabled"`
 	Headers   map[string]string `json:"headers"`
 	Models    json.RawMessage   `json:"models"`
@@ -44,6 +45,7 @@ type ProviderCreateInput struct {
 	APIKey   string
 	ProxyURL string
 	Priority int
+	Prefix   string
 	Disabled bool
 	Headers  map[string]string
 	Models   json.RawMessage
@@ -56,6 +58,7 @@ type ProviderUpdateInput struct {
 	APIKey   *string
 	ProxyURL *string
 	Priority *int
+	Prefix   *string
 	Disabled *bool
 	Headers  *map[string]string
 	Models   *json.RawMessage
@@ -120,6 +123,11 @@ func normalizeProviderCreate(input ProviderCreateInput) (ProviderCreateInput, er
 	input.APIKey = strings.TrimSpace(input.APIKey)
 	input.BaseURL = strings.TrimSpace(input.BaseURL)
 	input.ProxyURL = strings.TrimSpace(input.ProxyURL)
+	prefix, errPrefix := normalizeProviderPrefix(input.Prefix)
+	if errPrefix != nil {
+		return ProviderCreateInput{}, errPrefix
+	}
+	input.Prefix = prefix
 	if input.Name == "" {
 		return ProviderCreateInput{}, errors.New("tenant provider name is required")
 	}
@@ -127,6 +135,14 @@ func normalizeProviderCreate(input ProviderCreateInput) (ProviderCreateInput, er
 		return ProviderCreateInput{}, errors.New("tenant provider API key is required")
 	}
 	return input, nil
+}
+
+func normalizeProviderPrefix(value string) (string, error) {
+	prefix := strings.Trim(strings.TrimSpace(value), "/")
+	if strings.Contains(prefix, "/") {
+		return "", errors.New("tenant provider prefix must be a single segment")
+	}
+	return prefix, nil
 }
 
 func normalizeJSON(value json.RawMessage, fallback string) (string, error) {
@@ -341,6 +357,13 @@ func (s *Service) UpdateProvider(ctx context.Context, tenantID, providerID int64
 	}
 	if input.Priority != nil {
 		current.Priority = *input.Priority
+	}
+	if input.Prefix != nil {
+		prefix, errPrefix := normalizeProviderPrefix(*input.Prefix)
+		if errPrefix != nil {
+			return Provider{}, errPrefix
+		}
+		current.Prefix = prefix
 	}
 	if input.Disabled != nil {
 		current.Disabled = *input.Disabled

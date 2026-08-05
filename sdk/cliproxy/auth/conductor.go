@@ -440,7 +440,8 @@ func (m *Manager) credentialGroupFilteringRequired(metadata map[string]any) bool
 	return resolver != nil
 }
 
-func tenantIDFromMetadata(metadata map[string]any) int64 {
+// TenantIDFromMetadata extracts the tenant identity propagated by client-access.
+func TenantIDFromMetadata(metadata map[string]any) int64 {
 	if len(metadata) == 0 {
 		return 0
 	}
@@ -450,6 +451,10 @@ func tenantIDFromMetadata(metadata map[string]any) int64 {
 		return 0
 	}
 	return tenantID
+}
+
+func tenantIDFromMetadata(metadata map[string]any) int64 {
+	return TenantIDFromMetadata(metadata)
 }
 
 func tenantIDFromAuth(candidate *Auth) (int64, bool) {
@@ -1295,6 +1300,12 @@ func (m *Manager) HomeEnabled() bool {
 	return cfg != nil && cfg.Home.Enabled
 }
 
+// HomeEnabledForMetadata excludes tenant client-access keys from the global
+// Home control plane. Tenant requests must use their own runtime providers.
+func (m *Manager) HomeEnabledForMetadata(metadata map[string]any) bool {
+	return m.HomeEnabled() && TenantIDFromMetadata(metadata) <= 0
+}
+
 func (m *Manager) lookupAPIKeyUpstreamModel(authID, requestedModel string) string {
 	if m == nil {
 		return ""
@@ -1416,6 +1427,9 @@ func (m *Manager) resolveOpenAICompatUpstreamModelPool(auth *Auth, requestedMode
 	requestedModel = strings.TrimSpace(requestedModel)
 	if requestedModel == "" {
 		return nil
+	}
+	if models, tenantModels := tenantModelAliasEntries(auth); tenantModels {
+		return resolveModelAliasPoolFromConfigModels(requestedModel, models)
 	}
 	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
 	if cfg == nil {
@@ -1617,6 +1631,16 @@ func (m *Manager) resolveAPIKeyModelAliasWithResult(auth *Auth, requestedModel s
 	requestedModel = strings.TrimSpace(requestedModel)
 	if requestedModel == "" {
 		return OAuthModelAliasResult{}
+	}
+	if models, tenantModels := tenantModelAliasEntries(auth); tenantModels {
+		if len(models) == 0 {
+			return OAuthModelAliasResult{UpstreamModel: requestedModel}
+		}
+		result := resolveModelAliasResultFromConfigModels(requestedModel, models)
+		if strings.TrimSpace(result.UpstreamModel) == "" {
+			return OAuthModelAliasResult{UpstreamModel: requestedModel}
+		}
+		return result
 	}
 	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
 	if cfg == nil {
@@ -2405,6 +2429,13 @@ func (m *Manager) rebuildAPIKeyModelAliasLocked(cfg *internalconfig.Config) {
 		}
 
 		byAlias := make(map[string]string)
+		if models, tenantModels := tenantModelAliasEntries(auth); tenantModels {
+			compileAPIKeyModelAliasEntries(byAlias, models)
+			if len(byAlias) > 0 {
+				out[auth.ID] = byAlias
+			}
+			continue
+		}
 		provider := strings.ToLower(strings.TrimSpace(auth.Provider))
 		switch provider {
 		case "gemini":
@@ -2496,6 +2527,34 @@ func compileAPIKeyModelAliasForModels[T interface {
 					out[baseKey] = name
 				}
 			}
+		}
+	}
+}
+
+func compileAPIKeyModelAliasEntries(out map[string]string, models []modelAliasEntry) {
+	if out == nil {
+		return
+	}
+	for i := range models {
+		alias := strings.TrimSpace(models[i].GetAlias())
+		name := strings.TrimSpace(models[i].GetName())
+		if alias == "" || name == "" {
+			continue
+		}
+		aliasKey := strings.ToLower(thinking.ParseSuffix(alias).ModelName)
+		if aliasKey == "" {
+			aliasKey = strings.ToLower(alias)
+		}
+		if _, exists := out[aliasKey]; exists {
+			continue
+		}
+		out[aliasKey] = name
+		nameKey := strings.ToLower(thinking.ParseSuffix(name).ModelName)
+		if nameKey == "" {
+			nameKey = strings.ToLower(name)
+		}
+		if _, exists := out[nameKey]; !exists {
+			out[nameKey] = name
 		}
 	}
 }
@@ -2937,7 +2996,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 	routeModel := authSelectionModelFromOptions(opts, req.Model)
 	executionModel, restoreExecutionModel := executionModelForAuthSelection(opts, req.Model)
 	opts = ensureRequestedModelMetadata(opts, routeModel)
-	homeMode := m.HomeEnabled()
+	homeMode := m.HomeEnabledForMetadata(opts.Metadata)
 	homeAuthCount := 1
 	tried := make(map[string]struct{})
 	attempted := make(map[string]struct{})
@@ -3070,7 +3129,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 	routeModel := authSelectionModelFromOptions(opts, req.Model)
 	executionModel, restoreExecutionModel := executionModelForAuthSelection(opts, req.Model)
 	opts = ensureRequestedModelMetadata(opts, routeModel)
-	homeMode := m.HomeEnabled()
+	homeMode := m.HomeEnabledForMetadata(opts.Metadata)
 	homeAuthCount := 1
 	tried := make(map[string]struct{})
 	attempted := make(map[string]struct{})
@@ -3211,7 +3270,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 	routeModel := authSelectionModelFromOptions(opts, req.Model)
 	executionModel, restoreExecutionModel := executionModelForAuthSelection(opts, req.Model)
 	opts = ensureRequestedModelMetadata(opts, routeModel)
-	homeMode := m.HomeEnabled()
+	homeMode := m.HomeEnabledForMetadata(opts.Metadata)
 	homeAuthCount := 1
 	tried := make(map[string]struct{})
 	attempted := make(map[string]struct{})
@@ -3717,6 +3776,12 @@ func (m *Manager) applyAPIKeyModelAlias(auth *Auth, requestedModel string) strin
 
 	requestedModel = strings.TrimSpace(requestedModel)
 	if requestedModel == "" {
+		return requestedModel
+	}
+	if models, tenantModels := tenantModelAliasEntries(auth); tenantModels {
+		if resolved := resolveModelAliasFromConfigModels(requestedModel, models); resolved != "" {
+			return resolved
+		}
 		return requestedModel
 	}
 
@@ -5213,6 +5278,42 @@ func (m *Manager) List() []*Auth {
 	return list
 }
 
+// TenantModelClientIDs returns the registry client IDs that are usable by the
+// tenant represented by client-access metadata. It applies the same ownership
+// and group checks as request routing, so a model list cannot disclose another
+// tenant's providers or providers outside the calling key's groups.
+func (m *Manager) TenantModelClientIDs(metadata map[string]any) []string {
+	tenantID := tenantIDFromMetadata(metadata)
+	if m == nil || tenantID <= 0 {
+		return nil
+	}
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	clientIDs := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, candidate := range m.auths {
+		ownerTenant, declaresTenant := tenantIDFromAuth(candidate)
+		if !declaresTenant || ownerTenant != tenantID || candidate == nil || candidate.Disabled {
+			continue
+		}
+		if _, allowed := m.credentialGroupCandidate(candidate, metadata); !allowed {
+			continue
+		}
+		clientID := strings.TrimSpace(candidate.ID)
+		if clientID == "" {
+			continue
+		}
+		if _, exists := seen[clientID]; exists {
+			continue
+		}
+		seen[clientID] = struct{}{}
+		clientIDs = append(clientIDs, clientID)
+	}
+	sort.Strings(clientIDs)
+	return clientIDs
+}
+
 // GetByID retrieves an auth entry by its ID.
 
 func (m *Manager) GetByID(id string) (*Auth, bool) {
@@ -5327,7 +5428,7 @@ func (m *Manager) routeAwareSelectionRequired(auth *Auth, routeModel string) boo
 }
 
 func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
-	if m.HomeEnabled() {
+	if m.HomeEnabledForMetadata(opts.Metadata) {
 		auth, exec, _, err := m.pickNextViaHome(ctx, model, opts, tried)
 		return auth, exec, err
 	}
@@ -5436,7 +5537,7 @@ func (m *Manager) SelectAuthByKind(ctx context.Context, provider, model, require
 		return nil, &Error{Code: "invalid_auth_kind", Message: "required auth kind is invalid", HTTPStatus: http.StatusBadRequest}
 	}
 
-	homeMode := m.HomeEnabled()
+	homeMode := m.HomeEnabledForMetadata(opts.Metadata)
 	homeAuthCount := homeAuthCountFromMetadata(opts.Metadata)
 	tried := make(map[string]struct{})
 	for {
@@ -5469,7 +5570,7 @@ func (m *Manager) SelectAuthByKind(ctx context.Context, provider, model, require
 }
 
 func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
-	if m.HomeEnabled() {
+	if m.HomeEnabledForMetadata(opts.Metadata) {
 		auth, exec, _, err := m.pickNextViaHome(ctx, model, opts, tried)
 		return auth, exec, err
 	}
@@ -5534,7 +5635,7 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 }
 
 func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, string, error) {
-	if m.HomeEnabled() {
+	if m.HomeEnabledForMetadata(opts.Metadata) {
 		return m.pickNextViaHome(ctx, model, opts, tried)
 	}
 
@@ -5647,7 +5748,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 }
 
 func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, string, error) {
-	if m.HomeEnabled() {
+	if m.HomeEnabledForMetadata(opts.Metadata) {
 		return m.pickNextViaHome(ctx, model, opts, tried)
 	}
 	if m.credentialOwnershipFilteringRequired() || m.credentialGroupFilteringRequired(opts.Metadata) {

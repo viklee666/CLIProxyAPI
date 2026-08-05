@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"testing"
 
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
@@ -115,5 +116,55 @@ func TestManagerCredentialOwnershipAllowsMatchingTenantAndGlobalCredentials(t *t
 	}
 	if global.ID != "global" {
 		t.Fatalf("SelectAuth() global ID = %q, want global", global.ID)
+	}
+}
+
+func TestManagerTenantModelClientIDsHonorsOwnershipAndGroupBindings(t *testing.T) {
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	manager.RegisterExecutor(schedulerTestExecutor{})
+	manager.SetCredentialOwnershipResolver(testCredentialOwnershipResolver{owners: map[string]int64{
+		"tenant-a": 1,
+		"tenant-b": 1,
+		"other":    2,
+	}})
+	manager.SetCredentialGroupResolver(testCredentialGroupResolver{memberships: map[string]map[int64]int{
+		"tenant-a": {10: 0},
+		"tenant-b": {20: 0},
+		"other":    {10: 0},
+	}})
+	for _, candidate := range []*Auth{
+		tenantAuth("client-a", "tenant-a", 1),
+		tenantAuth("client-b", "tenant-b", 1),
+		tenantAuth("client-other", "other", 2),
+	} {
+		if _, errRegister := manager.Register(context.Background(), candidate); errRegister != nil {
+			t.Fatalf("Register(%s) error = %v", candidate.ID, errRegister)
+		}
+	}
+
+	metadata := map[string]any{
+		cliproxyexecutor.ClientKeyIDMetadataKey:          "tenant-key",
+		cliproxyexecutor.ClientTenantIDMetadataKey:       "1",
+		cliproxyexecutor.ClientGroupIDsMetadataKey:       "10",
+		cliproxyexecutor.ClientAllowAllGroupsMetadataKey: false,
+		cliproxyexecutor.ClientAllowUngroupedMetadataKey: false,
+	}
+	clientIDs := manager.TenantModelClientIDs(metadata)
+	if len(clientIDs) != 1 || clientIDs[0] != "client-a" {
+		t.Fatalf("TenantModelClientIDs() = %v, want [client-a]", clientIDs)
+	}
+}
+
+func TestManagerHomeEnabledForMetadataExcludesTenantKeys(t *testing.T) {
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	manager.SetConfig(&internalconfig.Config{Home: internalconfig.HomeConfig{Enabled: true}})
+
+	if !manager.HomeEnabledForMetadata(nil) {
+		t.Fatal("HomeEnabledForMetadata(nil) = false, want true")
+	}
+	if manager.HomeEnabledForMetadata(map[string]any{
+		cliproxyexecutor.ClientTenantIDMetadataKey: "1",
+	}) {
+		t.Fatal("HomeEnabledForMetadata(tenant) = true, want false")
 	}
 }

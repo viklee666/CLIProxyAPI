@@ -73,6 +73,7 @@ func (h *Handler) Register(engine *gin.Engine) {
 		tenantAPI.PATCH("/providers/:id", h.UpdateProvider)
 		tenantAPI.DELETE("/providers/:id", h.DeleteProvider)
 		tenantAPI.POST("/providers/:id/test", h.TestProvider)
+		tenantAPI.POST("/providers/:id/models", h.DiscoverProviderModels)
 
 		tenantAPI.GET("/groups", h.ListGroups)
 		tenantAPI.POST("/groups", h.CreateGroup)
@@ -243,6 +244,7 @@ type providerCreateRequest struct {
 	APIKey   string            `json:"api_key"`
 	ProxyURL string            `json:"proxy_url"`
 	Priority int               `json:"priority"`
+	Prefix   string            `json:"prefix"`
 	Disabled bool              `json:"disabled"`
 	Headers  map[string]string `json:"headers"`
 	Models   json.RawMessage   `json:"models"`
@@ -252,7 +254,7 @@ type providerCreateRequest struct {
 func (input providerCreateRequest) toInput() tenantservice.ProviderCreateInput {
 	return tenantservice.ProviderCreateInput{
 		Channel: input.Channel, Name: input.Name, BaseURL: input.BaseURL, APIKey: input.APIKey,
-		ProxyURL: input.ProxyURL, Priority: input.Priority, Disabled: input.Disabled,
+		ProxyURL: input.ProxyURL, Priority: input.Priority, Prefix: input.Prefix, Disabled: input.Disabled,
 		Headers: input.Headers, Models: input.Models, Extra: input.Extra,
 	}
 }
@@ -263,6 +265,7 @@ type providerUpdateRequest struct {
 	APIKey   *string            `json:"api_key,omitempty"`
 	ProxyURL *string            `json:"proxy_url,omitempty"`
 	Priority *int               `json:"priority,omitempty"`
+	Prefix   *string            `json:"prefix,omitempty"`
 	Disabled *bool              `json:"disabled,omitempty"`
 	Headers  *map[string]string `json:"headers,omitempty"`
 	Models   *json.RawMessage   `json:"models,omitempty"`
@@ -272,7 +275,7 @@ type providerUpdateRequest struct {
 func (input providerUpdateRequest) toInput() tenantservice.ProviderUpdateInput {
 	return tenantservice.ProviderUpdateInput{
 		Name: input.Name, BaseURL: input.BaseURL, APIKey: input.APIKey, ProxyURL: input.ProxyURL,
-		Priority: input.Priority, Disabled: input.Disabled, Headers: input.Headers, Models: input.Models, Extra: input.Extra,
+		Priority: input.Priority, Prefix: input.Prefix, Disabled: input.Disabled, Headers: input.Headers, Models: input.Models, Extra: input.Extra,
 	}
 }
 
@@ -398,6 +401,16 @@ type providerTestResponse struct {
 	Body       string `json:"body"`
 }
 
+type providerDiscoveredModel struct {
+	Name        string `json:"name"`
+	Alias       string `json:"alias,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+type providerModelsResponse struct {
+	Models []providerDiscoveredModel `json:"models"`
+}
+
 func (h *Handler) TestProvider(c *gin.Context) {
 	tenantID, ok := tenantID(c)
 	if !ok {
@@ -412,7 +425,7 @@ func (h *Handler) TestProvider(c *gin.Context) {
 		writeTenantError(c, errConfig)
 		return
 	}
-	endpoint, errEndpoint := providerTestEndpoint(provider)
+	endpoint, errEndpoint := providerModelsEndpoint(provider)
 	if errEndpoint != nil {
 		writeTenantError(c, errEndpoint)
 		return
@@ -447,7 +460,29 @@ func (h *Handler) TestProvider(c *gin.Context) {
 	c.JSON(http.StatusOK, providerTestResponse{StatusCode: response.StatusCode, Body: string(body)})
 }
 
-func providerTestEndpoint(provider tenantservice.ProviderTestConfig) (string, error) {
+func (h *Handler) DiscoverProviderModels(c *gin.Context) {
+	tenantID, ok := tenantID(c)
+	if !ok {
+		return
+	}
+	id, valid := providerID(c)
+	if !valid {
+		return
+	}
+	provider, errConfig := h.tenants.ProviderTestConfig(c.Request.Context(), tenantID, id)
+	if errConfig != nil {
+		writeTenantError(c, errConfig)
+		return
+	}
+	models, errDiscover := discoverProviderModels(c.Request.Context(), provider)
+	if errDiscover != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "provider model discovery failed"})
+		return
+	}
+	c.JSON(http.StatusOK, providerModelsResponse{Models: models})
+}
+
+func providerModelsEndpoint(provider tenantservice.ProviderTestConfig) (string, error) {
 	baseURL := strings.TrimSpace(provider.BaseURL)
 	if baseURL == "" {
 		switch provider.Channel {
@@ -463,16 +498,158 @@ func providerTestEndpoint(provider tenantservice.ProviderTestConfig) (string, er
 			baseURL = "https://api.openai.com"
 		}
 	}
-	baseURL = strings.TrimRight(baseURL, "/")
 	parsed, errParse := url.Parse(baseURL)
 	if errParse != nil || parsed.Host == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") {
 		return "", errors.New("tenant provider base URL must be an absolute HTTP URL")
 	}
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	basePath := strings.TrimRight(parsed.Path, "/")
 	path := "/v1/models"
 	if provider.Channel == tenantservice.ChannelGemini {
 		path = "/v1beta/models"
+		basePath = strings.TrimSuffix(basePath, "/v1beta/models")
+		basePath = strings.TrimSuffix(basePath, "/v1beta")
+	} else {
+		basePath = strings.TrimSuffix(basePath, "/v1/models")
+		basePath = strings.TrimSuffix(basePath, "/v1")
 	}
-	return baseURL + path, nil
+	parsed.Path = strings.TrimRight(basePath, "/") + path
+	parsed.RawPath = ""
+	return parsed.String(), nil
+}
+
+func discoverProviderModels(ctx context.Context, provider tenantservice.ProviderTestConfig) ([]providerDiscoveredModel, error) {
+	endpoint, errEndpoint := providerModelsEndpoint(provider)
+	if errEndpoint != nil {
+		return nil, errEndpoint
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, tenantTestTimeout)
+	defer cancel()
+	transport, errTransport := tenantProviderTransport(provider.ProxyURL)
+	if errTransport != nil {
+		return nil, errTransport
+	}
+	client := &http.Client{Timeout: tenantTestTimeout, Transport: transport}
+	models := make([]providerDiscoveredModel, 0)
+	seen := make(map[string]struct{})
+	pageToken := ""
+	pages := 1
+	if provider.Channel == tenantservice.ChannelGemini {
+		pages = 20
+	}
+	for page := 0; page < pages; page++ {
+		requestURL := endpoint
+		if pageToken != "" {
+			parsed, errParse := url.Parse(endpoint)
+			if errParse != nil {
+				return nil, errParse
+			}
+			query := parsed.Query()
+			query.Set("pageToken", pageToken)
+			parsed.RawQuery = query.Encode()
+			requestURL = parsed.String()
+		}
+		request, errRequest := http.NewRequestWithContext(requestCtx, http.MethodGet, requestURL, nil)
+		if errRequest != nil {
+			return nil, errRequest
+		}
+		for key, value := range provider.Headers {
+			request.Header.Set(key, value)
+		}
+		setProviderTestAuthorization(request, provider)
+		response, errDo := client.Do(request)
+		if errDo != nil {
+			return nil, errDo
+		}
+		body, errRead := io.ReadAll(io.LimitReader(response.Body, tenantTestBodyLimit))
+		closeErr := response.Body.Close()
+		if errRead != nil {
+			return nil, errRead
+		}
+		if closeErr != nil {
+			return nil, closeErr
+		}
+		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+			return nil, errors.New("provider model discovery returned a non-success status")
+		}
+		pageModels, nextToken, errParse := parseProviderDiscoveredModels(body, provider.Channel)
+		if errParse != nil {
+			return nil, errParse
+		}
+		for _, model := range pageModels {
+			key := strings.ToLower(strings.TrimSpace(model.Name))
+			if key == "" {
+				continue
+			}
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			models = append(models, model)
+		}
+		if provider.Channel != tenantservice.ChannelGemini || nextToken == "" {
+			break
+		}
+		pageToken = nextToken
+	}
+	return models, nil
+}
+
+func parseProviderDiscoveredModels(body []byte, channel string) ([]providerDiscoveredModel, string, error) {
+	var payload any
+	if errUnmarshal := json.Unmarshal(body, &payload); errUnmarshal != nil {
+		return nil, "", errors.New("invalid provider model discovery response")
+	}
+	entries, nextPageToken := providerModelEntries(payload)
+	models := make([]providerDiscoveredModel, 0, len(entries))
+	for _, entry := range entries {
+		item, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		name := firstProviderModelString(item, "id", "name", "model", "value")
+		if channel == tenantservice.ChannelGemini {
+			name = strings.TrimPrefix(strings.TrimSpace(name), "models/")
+		}
+		if name == "" {
+			continue
+		}
+		models = append(models, providerDiscoveredModel{
+			Name:        name,
+			Alias:       firstProviderModelString(item, "alias", "display_name", "displayName"),
+			Description: firstProviderModelString(item, "description", "note", "comment"),
+		})
+	}
+	return models, nextPageToken, nil
+}
+
+func providerModelEntries(payload any) ([]any, string) {
+	if items, ok := payload.([]any); ok {
+		return items, ""
+	}
+	object, ok := payload.(map[string]any)
+	if !ok {
+		return nil, ""
+	}
+	var entries []any
+	for _, key := range []string{"data", "models"} {
+		if items, ok := object[key].([]any); ok {
+			entries = items
+			break
+		}
+	}
+	nextPageToken, _ := object["nextPageToken"].(string)
+	return entries, strings.TrimSpace(nextPageToken)
+}
+
+func firstProviderModelString(item map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := item[key].(string); ok && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func setProviderTestAuthorization(request *http.Request, provider tenantservice.ProviderTestConfig) {
@@ -481,14 +658,20 @@ func setProviderTestAuthorization(request *http.Request, provider tenantservice.
 	}
 	switch provider.Channel {
 	case tenantservice.ChannelClaude:
-		request.Header.Set("x-api-key", provider.APIKey)
+		if request.Header.Get("x-api-key") == "" {
+			request.Header.Set("x-api-key", provider.APIKey)
+		}
 		if request.Header.Get("anthropic-version") == "" {
 			request.Header.Set("anthropic-version", "2023-06-01")
 		}
 	case tenantservice.ChannelGemini:
-		request.Header.Set("x-goog-api-key", provider.APIKey)
+		if request.Header.Get("x-goog-api-key") == "" {
+			request.Header.Set("x-goog-api-key", provider.APIKey)
+		}
 	default:
-		request.Header.Set("Authorization", "Bearer "+provider.APIKey)
+		if request.Header.Get("Authorization") == "" {
+			request.Header.Set("Authorization", "Bearer "+provider.APIKey)
+		}
 	}
 }
 

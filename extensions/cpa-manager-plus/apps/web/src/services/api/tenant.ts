@@ -34,6 +34,7 @@ export type TenantProvider = {
   base_url: string;
   proxy_url: string;
   priority: number;
+  prefix: string;
   disabled: boolean;
   headers: Record<string, string>;
   models: unknown;
@@ -50,6 +51,7 @@ export type TenantProviderInput = {
   api_key?: string;
   proxy_url?: string;
   priority?: number;
+  prefix?: string;
   disabled?: boolean;
   headers?: Record<string, string>;
   models?: unknown;
@@ -59,6 +61,16 @@ export type TenantProviderInput = {
 export type TenantProviderTestResult = {
   status_code: number;
   body: string;
+};
+
+export type TenantDiscoveredModel = {
+  name: string;
+  alias?: string;
+  description?: string;
+};
+
+export type TenantProviderModelsResult = {
+  models: TenantDiscoveredModel[];
 };
 
 export type TenantLoginResponse = {
@@ -174,6 +186,7 @@ export const tenantProvidersApi = {
     tenantApiClient.patch<TenantProvider>(`/providers/${id}`, input),
   delete: (id: number) => tenantApiClient.delete<void>(`/providers/${id}`),
   test: (id: number) => tenantApiClient.post<TenantProviderTestResult>(`/providers/${id}/test`),
+  models: (id: number) => tenantApiClient.post<TenantProviderModelsResult>(`/providers/${id}/models`),
 };
 
 const listQuery = (page: number, pageSize: number, search: string) => ({

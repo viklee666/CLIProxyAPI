@@ -222,6 +222,98 @@ func TestTenantProviderAPIScopesSecretsAndTestTarget(t *testing.T) {
 	}
 }
 
+func TestTenantProviderModelDiscoveryUsesStoredProviderAndScopesTenant(t *testing.T) {
+	engine, tenants, _ := newTenantTestEngine(t)
+	ctx := context.Background()
+	_, _, errFirst := tenants.Create(ctx, tenantservice.CreateInput{DisplayName: "discovery-first", Password: "discovery-first-password"})
+	if errFirst != nil {
+		t.Fatalf("Create(first) error = %v", errFirst)
+	}
+	_, _, errSecond := tenants.Create(ctx, tenantservice.CreateInput{DisplayName: "discovery-second", Password: "discovery-second-password"})
+	if errSecond != nil {
+		t.Fatalf("Create(second) error = %v", errSecond)
+	}
+	firstToken := loginTenant(t, engine, "discovery-first-password")
+	secondToken := loginTenant(t, engine, "discovery-second-password")
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/v1/models":
+			if got := request.Header.Get("Authorization"); got != "Bearer discovery-secret" {
+				t.Errorf("OpenAI discovery authorization = %q", got)
+			}
+			_, _ = writer.Write([]byte(`{"data":[{"id":"gpt-private","display_name":"Private GPT","description":"tenant model"}]}`))
+		case "/v1beta/models":
+			if got := request.Header.Get("x-goog-api-key"); got != "gemini-discovery-secret" {
+				t.Errorf("Gemini discovery authorization = %q", got)
+			}
+			if request.URL.Query().Get("pageToken") == "second" {
+				_, _ = writer.Write([]byte(`{"models":[{"name":"models/gemini-second"}]}`))
+				return
+			}
+			_, _ = writer.Write([]byte(`{"models":[{"name":"models/gemini-first","displayName":"Gemini First"}],"nextPageToken":"second"}`))
+		default:
+			t.Errorf("unexpected discovery path = %q", request.URL.Path)
+			writer.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer upstream.Close()
+
+	createProvider := func(channel, name, apiKey, baseURL string) int64 {
+		response := tenantRequest(t, engine, http.MethodPost, "/v0/tenant/providers", firstToken, map[string]any{
+			"channel":  channel,
+			"name":     name,
+			"base_url": baseURL,
+			"api_key":  apiKey,
+		})
+		if response.Code != http.StatusCreated {
+			t.Fatalf("create %s provider status = %d, body = %s", channel, response.Code, response.Body.String())
+		}
+		var provider struct {
+			ID int64 `json:"id"`
+		}
+		if errDecode := json.Unmarshal(response.Body.Bytes(), &provider); errDecode != nil {
+			t.Fatalf("decode %s provider: %v", channel, errDecode)
+		}
+		return provider.ID
+	}
+
+	openAIProviderID := createProvider(tenantservice.ChannelOpenAICompat, "openai-discovery", "discovery-secret", upstream.URL+"/v1")
+	openAIModels := tenantRequest(t, engine, http.MethodPost, "/v0/tenant/providers/"+jsonNumber(openAIProviderID)+"/models", firstToken, nil)
+	if openAIModels.Code != http.StatusOK {
+		t.Fatalf("OpenAI discovery status = %d, body = %s", openAIModels.Code, openAIModels.Body.String())
+	}
+	if bytes.Contains(openAIModels.Body.Bytes(), []byte("discovery-secret")) {
+		t.Fatalf("OpenAI discovery leaked API key: %s", openAIModels.Body.String())
+	}
+	var openAIPayload providerModelsResponse
+	if errDecode := json.Unmarshal(openAIModels.Body.Bytes(), &openAIPayload); errDecode != nil {
+		t.Fatalf("decode OpenAI discovery response: %v", errDecode)
+	}
+	if len(openAIPayload.Models) != 1 || openAIPayload.Models[0] != (providerDiscoveredModel{Name: "gpt-private", Alias: "Private GPT", Description: "tenant model"}) {
+		t.Fatalf("OpenAI discovery models = %+v", openAIPayload.Models)
+	}
+
+	crossTenant := tenantRequest(t, engine, http.MethodPost, "/v0/tenant/providers/"+jsonNumber(openAIProviderID)+"/models", secondToken, nil)
+	if crossTenant.Code != http.StatusNotFound {
+		t.Fatalf("cross-tenant discovery status = %d, body = %s", crossTenant.Code, crossTenant.Body.String())
+	}
+
+	geminiProviderID := createProvider(tenantservice.ChannelGemini, "gemini-discovery", "gemini-discovery-secret", upstream.URL+"/v1beta")
+	geminiModels := tenantRequest(t, engine, http.MethodPost, "/v0/tenant/providers/"+jsonNumber(geminiProviderID)+"/models", firstToken, nil)
+	if geminiModels.Code != http.StatusOK {
+		t.Fatalf("Gemini discovery status = %d, body = %s", geminiModels.Code, geminiModels.Body.String())
+	}
+	var geminiPayload providerModelsResponse
+	if errDecode := json.Unmarshal(geminiModels.Body.Bytes(), &geminiPayload); errDecode != nil {
+		t.Fatalf("decode Gemini discovery response: %v", errDecode)
+	}
+	if len(geminiPayload.Models) != 2 || geminiPayload.Models[0].Name != "gemini-first" || geminiPayload.Models[0].Alias != "Gemini First" || geminiPayload.Models[1].Name != "gemini-second" {
+		t.Fatalf("Gemini discovery models = %+v", geminiPayload.Models)
+	}
+}
+
 func TestTenantLogoutInvalidatesOnlyPresentedSession(t *testing.T) {
 	engine, tenants, _ := newTenantTestEngine(t)
 	_, _, errCreate := tenants.Create(context.Background(), tenantservice.CreateInput{DisplayName: "logout", Password: "logout-password"})

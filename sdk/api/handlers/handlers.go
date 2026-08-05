@@ -21,6 +21,7 @@ import (
 	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -299,29 +300,8 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 			if requestPath == "" && ginCtx.Request.URL != nil {
 				requestPath = strings.TrimSpace(ginCtx.Request.URL.Path)
 			}
-			if rawAccessMetadata, exists := ginCtx.Get("accessMetadata"); exists {
-				if accessMetadata, okMetadata := rawAccessMetadata.(map[string]string); okMetadata {
-					for _, metadataKey := range []string{
-						coreexecutor.ClientKeyIDMetadataKey,
-						coreexecutor.ClientTenantIDMetadataKey,
-						coreexecutor.ClientGroupIDsMetadataKey,
-						coreexecutor.ClientAllowAllGroupsMetadataKey,
-						coreexecutor.ClientAllowUngroupedMetadataKey,
-						coreexecutor.ClientReservationIDMetadataKey,
-					} {
-						value := strings.TrimSpace(accessMetadata[metadataKey])
-						if value == "" {
-							continue
-						}
-						if metadataKey == coreexecutor.ClientAllowAllGroupsMetadataKey || metadataKey == coreexecutor.ClientAllowUngroupedMetadataKey {
-							if parsed, errParse := strconv.ParseBool(value); errParse == nil {
-								meta[metadataKey] = parsed
-								continue
-							}
-						}
-						meta[metadataKey] = value
-					}
-				}
+			for metadataKey, value := range accessMetadataFromGinContext(ginCtx) {
+				meta[metadataKey] = value
 			}
 		}
 	}
@@ -348,6 +328,42 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	}
 	if disallowFreeAuthFromContext(ctx) {
 		meta[coreexecutor.DisallowFreeAuthMetadataKey] = true
+	}
+	return meta
+}
+
+func accessMetadataFromGinContext(c *gin.Context) map[string]any {
+	meta := make(map[string]any)
+	if c == nil {
+		return meta
+	}
+	rawAccessMetadata, exists := c.Get("accessMetadata")
+	if !exists {
+		return meta
+	}
+	accessMetadata, ok := rawAccessMetadata.(map[string]string)
+	if !ok {
+		return meta
+	}
+	for _, metadataKey := range []string{
+		coreexecutor.ClientKeyIDMetadataKey,
+		coreexecutor.ClientTenantIDMetadataKey,
+		coreexecutor.ClientGroupIDsMetadataKey,
+		coreexecutor.ClientAllowAllGroupsMetadataKey,
+		coreexecutor.ClientAllowUngroupedMetadataKey,
+		coreexecutor.ClientReservationIDMetadataKey,
+	} {
+		value := strings.TrimSpace(accessMetadata[metadataKey])
+		if value == "" {
+			continue
+		}
+		if metadataKey == coreexecutor.ClientAllowAllGroupsMetadataKey || metadataKey == coreexecutor.ClientAllowUngroupedMetadataKey {
+			if parsed, errParse := strconv.ParseBool(value); errParse == nil {
+				meta[metadataKey] = parsed
+				continue
+			}
+		}
+		meta[metadataKey] = value
 	}
 	return meta
 }
@@ -519,6 +535,27 @@ func NewBaseAPIHandlers(cfg *config.SDKConfig, authManager *coreauth.Manager) *B
 //   - clients: The new slice of AI service clients
 //   - cfg: The new application configuration
 func (h *BaseAPIHandler) UpdateClients(cfg *config.SDKConfig) { h.Cfg = cfg }
+
+// ModelsForRequest returns a tenant-scoped catalog for client-access tenant
+// keys and the existing global catalog for all other callers.
+func (h *BaseAPIHandler) ModelsForRequest(c *gin.Context, handlerType string) []map[string]any {
+	modelRegistry := registry.GetGlobalRegistry()
+	metadata := accessMetadataFromGinContext(c)
+	if h == nil || h.AuthManager == nil || coreauth.TenantIDFromMetadata(metadata) <= 0 {
+		return modelRegistry.GetAvailableModels(handlerType)
+	}
+	return modelRegistry.GetAvailableModelsForClients(handlerType, h.AuthManager.TenantModelClientIDs(metadata))
+}
+
+// IsTenantRequest reports whether the authenticated request belongs to a tenant
+// client-access key. It is used by protocol-specific catalog branches that
+// would otherwise bypass ModelsForRequest.
+func (h *BaseAPIHandler) IsTenantRequest(c *gin.Context) bool {
+	if h == nil || h.AuthManager == nil {
+		return false
+	}
+	return coreauth.TenantIDFromMetadata(accessMetadataFromGinContext(c)) > 0
+}
 
 // SetPluginHost configures the optional plugin interceptor host.
 func (h *BaseAPIHandler) SetPluginHost(host PluginInterceptorHost) {
@@ -801,7 +838,7 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	if routeDecision.ExecutorPluginID != "" {
 		return h.executeWithPluginExecutor(ctx, entryProtocol, responseProtocol, modelName, originalRequestedModel, rawJSON, alt, routeDecision.ExecutorPluginID, execOptions)
 	}
-	providers, normalizedModel, errMsg := h.providersForExecution(modelName, originalRequestedModel, allowImageModel, routeDecision, execOptions)
+	providers, normalizedModel, errMsg := h.providersForExecutionForContext(ctx, modelName, originalRequestedModel, allowImageModel, routeDecision, execOptions)
 	if errMsg != nil {
 		return nil, nil, errMsg
 	}
@@ -870,7 +907,7 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 	if routeDecision.ExecutorPluginID != "" {
 		return h.countWithPluginExecutor(ctx, handlerType, modelName, originalRequestedModel, rawJSON, alt, routeDecision.ExecutorPluginID, execOptions)
 	}
-	providers, normalizedModel, errMsg := h.providersForExecution(modelName, originalRequestedModel, false, routeDecision, execOptions)
+	providers, normalizedModel, errMsg := h.providersForExecutionForContext(ctx, modelName, originalRequestedModel, false, routeDecision, execOptions)
 	if errMsg != nil {
 		return nil, nil, errMsg
 	}
@@ -1214,7 +1251,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	if routeDecision.ExecutorPluginID != "" {
 		return h.streamWithPluginExecutor(ctx, entryProtocol, responseProtocol, modelName, originalRequestedModel, rawJSON, alt, routeDecision.ExecutorPluginID, execOptions)
 	}
-	providers, normalizedModel, errMsg := h.providersForExecution(modelName, originalRequestedModel, allowImageModel, routeDecision, execOptions)
+	providers, normalizedModel, errMsg := h.providersForExecutionForContext(ctx, modelName, originalRequestedModel, allowImageModel, routeDecision, execOptions)
 	if errMsg != nil {
 		errChan := make(chan *interfaces.ErrorMessage, 1)
 		errChan <- errMsg
@@ -1679,6 +1716,10 @@ func nativeInteractionsExecutionError() *interfaces.ErrorMessage {
 // router selected a built-in provider, it skips model->provider resolution and uses the router's
 // provider (with an optional target model); otherwise it falls back to the registry-based path.
 func (h *BaseAPIHandler) providersForExecution(modelName, originalRequestedModel string, allowImageModel bool, routeDecision modelRouteDecision, execOptions modelExecutionOptions) ([]string, string, *interfaces.ErrorMessage) {
+	return h.providersForExecutionForContext(context.Background(), modelName, originalRequestedModel, allowImageModel, routeDecision, execOptions)
+}
+
+func (h *BaseAPIHandler) providersForExecutionForContext(ctx context.Context, modelName, originalRequestedModel string, allowImageModel bool, routeDecision modelRouteDecision, execOptions modelExecutionOptions) ([]string, string, *interfaces.ErrorMessage) {
 	forcedProvider := strings.ToLower(strings.TrimSpace(execOptions.ForcedProvider))
 	if forcedProvider != "" {
 		if routeDecision.ExecutorPluginID != "" {
@@ -1706,14 +1747,19 @@ func (h *BaseAPIHandler) providersForExecution(modelName, originalRequestedModel
 		}
 		return []string{routeDecision.Provider}, normalizedModel, nil
 	}
-	return h.getRequestDetailsWithOptions(modelName, allowImageModel)
+	return h.getRequestDetailsWithMetadata(modelName, allowImageModel, requestExecutionMetadata(ctx))
 }
 
 func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowImageModel bool) (providers []string, normalizedModel string, err *interfaces.ErrorMessage) {
+	return h.getRequestDetailsWithMetadata(modelName, allowImageModel, nil)
+}
+
+func (h *BaseAPIHandler) getRequestDetailsWithMetadata(modelName string, allowImageModel bool, metadata map[string]any) (providers []string, normalizedModel string, err *interfaces.ErrorMessage) {
+	homeEnabled := h != nil && h.AuthManager != nil && h.AuthManager.HomeEnabledForMetadata(metadata)
 	resolvedModelName := modelName
 	initialSuffix := thinking.ParseSuffix(modelName)
 	if initialSuffix.ModelName == "auto" {
-		if h != nil && h.AuthManager != nil && h.AuthManager.HomeEnabled() {
+		if homeEnabled {
 			resolvedModelName = modelName
 		} else {
 			resolvedBase := util.ResolveAutoModel(initialSuffix.ModelName)
@@ -1724,7 +1770,7 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 			}
 		}
 	} else {
-		if h != nil && h.AuthManager != nil && h.AuthManager.HomeEnabled() {
+		if homeEnabled {
 			resolvedModelName = modelName
 		} else {
 			resolvedModelName = util.ResolveAutoModel(modelName)
@@ -1738,7 +1784,7 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 		return nil, "", errMsg
 	}
 
-	if h != nil && h.AuthManager != nil && h.AuthManager.HomeEnabled() {
+	if homeEnabled {
 		return []string{"home"}, resolvedModelName, nil
 	}
 

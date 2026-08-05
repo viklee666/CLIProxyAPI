@@ -835,6 +835,55 @@ func (r *ModelRegistry) GetAvailableModels(handlerType string) []map[string]any 
 	return models
 }
 
+// GetAvailableModelsForClients returns models registered by the supplied
+// client IDs. It preserves the handler-specific response shape while keeping
+// the catalog scoped to a caller's usable credentials.
+func (r *ModelRegistry) GetAvailableModelsForClients(handlerType string, clientIDs []string) []map[string]any {
+	if r == nil || len(clientIDs) == 0 {
+		return []map[string]any{}
+	}
+
+	r.mutex.RLock()
+	defer r.mutex.RUnlock()
+
+	models := make([]map[string]any, 0)
+	seenModels := make(map[string]struct{})
+	for _, clientID := range clientIDs {
+		clientID = strings.TrimSpace(clientID)
+		if clientID == "" {
+			continue
+		}
+		modelIDs := r.clientModels[clientID]
+		clientInfos := r.clientModelInfos[clientID]
+		for _, modelID := range modelIDs {
+			modelID = strings.TrimSpace(modelID)
+			if modelID == "" {
+				continue
+			}
+			if _, exists := seenModels[modelID]; exists {
+				continue
+			}
+			registration := r.models[modelID]
+			if registration != nil && registration.SuspendedClients != nil {
+				if reason := registration.SuspendedClients[clientID]; reason != "" && !strings.EqualFold(reason, "quota") {
+					continue
+				}
+			}
+			info := clientInfos[modelID]
+			if info == nil && registration != nil {
+				info = registration.Info
+			}
+			model := r.convertModelToMap(info, handlerType)
+			if model == nil {
+				continue
+			}
+			seenModels[modelID] = struct{}{}
+			models = append(models, model)
+		}
+	}
+	return models
+}
+
 func (r *ModelRegistry) buildAvailableModelsLocked(handlerType string, now time.Time) ([]map[string]any, time.Time) {
 	models := make([]map[string]any, 0, len(r.models))
 	var expiresAt time.Time

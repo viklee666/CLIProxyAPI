@@ -1442,6 +1442,30 @@ func TestClaudeExecutor_CountTokensRebuildsMidSystemMessagesBeforeValidation(t *
 	}
 }
 
+func TestRebuildMidSystemMessageTenantAuthDoesNotFallbackToGlobalConfig(t *testing.T) {
+	const apiKey = "shared-claude-key"
+	const baseURL = "https://claude.example.test"
+	cfg := &config.Config{ClaudeKey: []config.ClaudeKey{{
+		APIKey:                  apiKey,
+		BaseURL:                 baseURL,
+		RebuildMidSystemMessage: true,
+	}}}
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		cliproxyauth.AttributeTenantID: "1",
+		"api_key":                      apiKey,
+		"base_url":                     baseURL,
+	}}
+
+	if rebuildMidSystemMessageEnabled(cfg, auth) {
+		t.Fatal("tenant auth inherited rebuild_mid_system_message from global Claude config")
+	}
+
+	auth.Attributes["rebuild_mid_system_message"] = "true"
+	if !rebuildMidSystemMessageEnabled(cfg, auth) {
+		t.Fatal("tenant auth did not honor its rebuild_mid_system_message attribute")
+	}
+}
+
 func TestClaudeExecutor_ReusesUserIDAcrossModelsWhenCacheEnabled(t *testing.T) {
 	var userIDs []string
 	var requestModels []string

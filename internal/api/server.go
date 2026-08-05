@@ -1259,8 +1259,9 @@ func isAnthropicModelsRequest(c *gin.Context) bool {
 // route to the Claude handler, otherwise they route to the OpenAI handler.
 func (s *Server) unifiedModelsHandler(openaiHandler *openai.OpenAIAPIHandler, claudeHandler *claude.ClaudeCodeAPIHandler) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		isTenantRequest := openaiHandler.IsTenantRequest(c)
 		if _, ok := c.Request.URL.Query()["client_version"]; ok {
-			if s != nil && s.cfg != nil && s.cfg.Home.Enabled {
+			if s != nil && s.cfg != nil && s.cfg.Home.Enabled && !isTenantRequest {
 				s.handleHomeCodexClientModels(c)
 				return
 			}
@@ -1268,7 +1269,7 @@ func (s *Server) unifiedModelsHandler(openaiHandler *openai.OpenAIAPIHandler, cl
 			return
 		}
 
-		if s != nil && s.cfg != nil && s.cfg.Home.Enabled {
+		if s != nil && s.cfg != nil && s.cfg.Home.Enabled && !isTenantRequest {
 			s.handleHomeModels(c)
 			return
 		}
@@ -1314,7 +1315,7 @@ func (s *Server) handleHomeCodexClientModels(c *gin.Context) {
 
 func (s *Server) geminiModelsHandler(geminiHandler *gemini.GeminiAPIHandler) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if s != nil && s.cfg != nil && s.cfg.Home.Enabled {
+		if s != nil && s.cfg != nil && s.cfg.Home.Enabled && !geminiHandler.IsTenantRequest(c) {
 			s.handleHomeGeminiModels(c)
 			return
 		}
@@ -1325,7 +1326,7 @@ func (s *Server) geminiModelsHandler(geminiHandler *gemini.GeminiAPIHandler) gin
 
 func (s *Server) geminiGetHandler(geminiHandler *gemini.GeminiAPIHandler) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if s != nil && s.cfg != nil && s.cfg.Home.Enabled {
+		if s != nil && s.cfg != nil && s.cfg.Home.Enabled && !geminiHandler.IsTenantRequest(c) {
 			s.handleHomeGeminiModel(c)
 			return
 		}
