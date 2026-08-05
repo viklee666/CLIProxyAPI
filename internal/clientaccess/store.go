@@ -131,8 +131,6 @@ func (s *Store) migrate(ctx context.Context) error {
 			expires_at_ms INTEGER NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_client_access_keys_enabled ON client_access_keys(enabled)`,
-		`CREATE INDEX IF NOT EXISTS idx_client_access_groups_tenant ON client_access_groups(tenant_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_client_access_keys_tenant ON client_access_keys(tenant_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_client_access_key_groups_group ON client_access_key_groups(group_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_client_access_credential_groups_group ON client_access_credential_groups(group_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_client_access_token_reservations_key ON client_access_token_reservations(key_id, settled, expires_at_ms)`,
@@ -145,11 +143,20 @@ func (s *Store) migrate(ctx context.Context) error {
 	if errColumn := s.ensureColumn(ctx, "client_access_keys", "key_secret", "TEXT NOT NULL DEFAULT ''"); errColumn != nil {
 		return errColumn
 	}
+	// Add tenant_id before creating indexes that reference it so legacy databases upgrade cleanly.
 	if errColumn := s.ensureColumn(ctx, "client_access_groups", "tenant_id", "INTEGER"); errColumn != nil {
 		return errColumn
 	}
 	if errColumn := s.ensureColumn(ctx, "client_access_keys", "tenant_id", "INTEGER"); errColumn != nil {
 		return errColumn
+	}
+	for _, statement := range []string{
+		`CREATE INDEX IF NOT EXISTS idx_client_access_groups_tenant ON client_access_groups(tenant_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_client_access_keys_tenant ON client_access_keys(tenant_id)`,
+	} {
+		if _, errExec := s.db.ExecContext(ctx, statement); errExec != nil {
+			return fmt.Errorf("migrate client access database: %w", errExec)
+		}
 	}
 	return nil
 }

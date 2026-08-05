@@ -36,6 +36,89 @@ func newTestService(t *testing.T) *Service {
 	return service
 }
 
+func TestServiceMigratesLegacyTenantIDColumn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "client-access.sqlite")
+	dsn := "file:" + filepath.ToSlash(path) + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"
+	db, errOpen := sql.Open("sqlite", dsn)
+	if errOpen != nil {
+		t.Fatalf("open legacy database: %v", errOpen)
+	}
+	for _, statement := range []string{
+		`CREATE TABLE client_access_groups (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+			description TEXT NOT NULL DEFAULT '',
+			enabled INTEGER NOT NULL DEFAULT 1,
+			created_at_ms INTEGER NOT NULL,
+			updated_at_ms INTEGER NOT NULL
+		)`,
+		`CREATE TABLE client_access_keys (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			key_secret TEXT NOT NULL DEFAULT '',
+			key_prefix TEXT NOT NULL,
+			key_hash TEXT NOT NULL UNIQUE,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			allow_all_groups INTEGER NOT NULL DEFAULT 1,
+			allow_ungrouped INTEGER NOT NULL DEFAULT 0,
+			expires_at_ms INTEGER,
+			rpm_limit INTEGER NOT NULL DEFAULT 0,
+			concurrency_limit INTEGER NOT NULL DEFAULT 0,
+			request_limit_total INTEGER NOT NULL DEFAULT 0,
+			request_used_total INTEGER NOT NULL DEFAULT 0,
+			request_limit_5h INTEGER NOT NULL DEFAULT 0,
+			request_used_5h INTEGER NOT NULL DEFAULT 0,
+			request_window_5h_ms INTEGER,
+			request_limit_1d INTEGER NOT NULL DEFAULT 0,
+			request_used_1d INTEGER NOT NULL DEFAULT 0,
+			request_window_1d_ms INTEGER,
+			request_limit_7d INTEGER NOT NULL DEFAULT 0,
+			request_used_7d INTEGER NOT NULL DEFAULT 0,
+			request_window_7d_ms INTEGER,
+			token_limit_total INTEGER NOT NULL DEFAULT 0,
+			token_used_total INTEGER NOT NULL DEFAULT 0,
+			token_limit_5h INTEGER NOT NULL DEFAULT 0,
+			token_used_5h INTEGER NOT NULL DEFAULT 0,
+			token_window_5h_ms INTEGER,
+			token_limit_1d INTEGER NOT NULL DEFAULT 0,
+			token_used_1d INTEGER NOT NULL DEFAULT 0,
+			token_window_1d_ms INTEGER,
+			token_limit_7d INTEGER NOT NULL DEFAULT 0,
+			token_used_7d INTEGER NOT NULL DEFAULT 0,
+			token_window_7d_ms INTEGER,
+			last_used_at_ms INTEGER,
+			created_at_ms INTEGER NOT NULL,
+			updated_at_ms INTEGER NOT NULL
+		)`,
+		`INSERT INTO client_access_groups(name, description, enabled, created_at_ms, updated_at_ms) VALUES('legacy', '', 1, 1, 1)`,
+	} {
+		if _, errExec := db.Exec(statement); errExec != nil {
+			_ = db.Close()
+			t.Fatalf("seed legacy database: %v", errExec)
+		}
+	}
+	if errClose := db.Close(); errClose != nil {
+		t.Fatalf("close legacy database: %v", errClose)
+	}
+
+	service, errNew := New(path)
+	if errNew != nil {
+		t.Fatalf("New(legacy database) error = %v", errNew)
+	}
+	defer func() { _ = service.Close() }()
+
+	groups, errList := service.ListGroups(context.Background(), ListOptions{Page: 1, PageSize: 10})
+	if errList != nil {
+		t.Fatalf("ListGroups() error = %v", errList)
+	}
+	if groups.Total != 1 || len(groups.Items) != 1 || groups.Items[0].Name != "legacy" {
+		t.Fatalf("ListGroups() = %+v", groups)
+	}
+	if groups.Items[0].TenantID != 0 {
+		t.Fatalf("legacy group tenant_id = %d, want 0", groups.Items[0].TenantID)
+	}
+}
+
 func TestServiceMigratesLegacyKeySecretColumn(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "client-access.sqlite")
 	service, errNew := New(path)
