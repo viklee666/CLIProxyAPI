@@ -18,10 +18,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends build-essential
 
 COPY go.mod go.sum ./
 
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 
 COPY extensions/cpa-manager-plus/apps/manager-server/go.mod extensions/cpa-manager-plus/apps/manager-server/go.sum /tmp/manager-server/
-RUN cd /tmp/manager-server && go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    cd /tmp/manager-server && go mod download
 
 COPY . .
 
@@ -32,9 +34,13 @@ ARG VERSION=dev
 ARG COMMIT=none
 ARG BUILD_DATE=unknown
 
-RUN CGO_ENABLED=1 GOOS=linux go build -buildvcs=false -ldflags="-s -w -X 'main.Version=${VERSION}' -X 'main.Commit=${COMMIT}' -X 'main.BuildDate=${BUILD_DATE}'" -o ./CLIProxyAPI ./cmd/server/
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=1 GOOS=linux go build -buildvcs=false -ldflags="-s -w -X 'main.Version=${VERSION}' -X 'main.Commit=${COMMIT}' -X 'main.BuildDate=${BUILD_DATE}'" -o ./CLIProxyAPI ./cmd/server/
 
-RUN cd /app/extensions/cpa-manager-plus/apps/manager-server && \
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    cd /app/extensions/cpa-manager-plus/apps/manager-server && \
     CGO_ENABLED=0 GOOS=linux go build -trimpath -buildvcs=false -ldflags="-s -w" -o /app/cpa-manager-plus ./cmd/cpa-manager-plus
 
 FROM debian:bookworm
