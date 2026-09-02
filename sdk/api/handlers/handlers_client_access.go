@@ -92,6 +92,17 @@ func (h *BaseAPIHandler) ModelsForRequest(c *gin.Context, handlerType string) []
 	return modelRegistry.GetAvailableModelsForClients(handlerType, h.AuthManager.TenantModelClientIDs(metadata))
 }
 
+// ModelInfosForRequest returns tenant-scoped ModelInfo values for client-access
+// tenant keys and the existing global catalog for all other callers.
+func (h *BaseAPIHandler) ModelInfosForRequest(c *gin.Context) []*registry.ModelInfo {
+	modelRegistry := registry.GetGlobalRegistry()
+	metadata := accessMetadataFromGinContext(c)
+	if h == nil || h.AuthManager == nil || coreauth.TenantIDFromMetadata(metadata) <= 0 {
+		return modelRegistry.GetAvailableModelInfos()
+	}
+	return modelRegistry.GetAvailableModelInfosForClients(h.AuthManager.TenantModelClientIDs(metadata))
+}
+
 // IsTenantRequest reports whether the authenticated request belongs to a tenant
 // client-access key. It is used by protocol-specific catalog branches that
 // would otherwise bypass ModelsForRequest.

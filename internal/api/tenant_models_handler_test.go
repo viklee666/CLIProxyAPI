@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -38,6 +39,7 @@ func TestTenantModelCatalogIgnoresHomeAndScopesEveryFormat(t *testing.T) {
 	modelRegistry := registry.GetGlobalRegistry()
 	modelRegistry.RegisterClient(tenantClientID, "openai", []*registry.ModelInfo{{
 		ID: tenantModelID, Object: "model", OwnedBy: "tenant",
+		Thinking: &registry.ThinkingSupport{Levels: []string{"low", "high"}},
 	}})
 	modelRegistry.RegisterClient(foreignClientID, "openai", []*registry.ModelInfo{{
 		ID: foreignModelID, Object: "model", OwnedBy: "global",
@@ -114,6 +116,30 @@ func TestTenantModelCatalogIgnoresHomeAndScopesEveryFormat(t *testing.T) {
 	recorder, ctx = tenantContext("/v1/models", grokHeaders)
 	modelsHandler(ctx)
 	assertScopedResponse("Grok shell", recorder)
+	var grokResponse struct {
+		Data []struct {
+			ID               string `json:"id"`
+			ReasoningEfforts []struct {
+				Value string `json:"value"`
+			} `json:"reasoning_efforts"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &grokResponse); err != nil {
+		t.Fatalf("decode Grok shell response: %v; body=%s", err, recorder.Body.String())
+	}
+	var foundTenantGrok bool
+	for _, model := range grokResponse.Data {
+		if model.ID != tenantModelID {
+			continue
+		}
+		foundTenantGrok = true
+		if len(model.ReasoningEfforts) != 2 || model.ReasoningEfforts[0].Value != "low" || model.ReasoningEfforts[1].Value != "high" {
+			t.Fatalf("tenant Grok reasoning_efforts = %#v, want [low high]", model.ReasoningEfforts)
+		}
+	}
+	if !foundTenantGrok {
+		t.Fatalf("tenant Grok model missing from %#v", grokResponse.Data)
+	}
 
 	recorder, ctx = tenantContext("/v1beta/models", make(http.Header))
 	server.geminiModelsHandler(geminiHandler)(ctx)

@@ -24,7 +24,7 @@ func (e *ClaudeExecutor) ShouldPrepareRequestAuth(auth *cliproxyauth.Auth) bool 
 	if !isClaudeOAuthToken(apiKey) || auth == nil {
 		return false
 	}
-	if !claudeauth.HasCanonicalDeviceIDPool(claudeauth.ReadDeviceIDPool(&auth.Metadata)) {
+	if !claudeauth.HasCanonicalDeviceIDPool(helps.ClaudeDeviceIDPool(auth)) {
 		return true
 	}
 	return helps.ClaudeCredentialAccountUUID(auth) == ""
@@ -34,17 +34,17 @@ func isClaudeSetupToken(auth *cliproxyauth.Auth, apiKey string) bool {
 	if !isClaudeOAuthToken(apiKey) || auth == nil {
 		return false
 	}
-	if claudeauth.ReadMetadataBool(&auth.Metadata, "skip_account_profile") ||
-		claudeauth.ReadMetadataBool(&auth.Metadata, "is_setup_token") ||
-		claudeauth.ReadMetadataBool(&auth.Metadata, "setup_token") {
+	if auth.ReadMetadataBool("skip_account_profile") ||
+		auth.ReadMetadataBool("is_setup_token") ||
+		auth.ReadMetadataBool("setup_token") {
 		return true
 	}
 	if kind := strings.ToLower(strings.TrimSpace(auth.ReadAttribute("auth_kind"))); kind == "setup_token" || kind == "setup-token" {
 		return true
 	}
-	scopes := strings.ToLower(claudeauth.ReadMetadataString(&auth.Metadata, "scopes"))
+	scopes := strings.ToLower(auth.ReadMetadataString("scopes"))
 	if scopes == "" {
-		scopes = strings.ToLower(claudeauth.ReadMetadataString(&auth.Metadata, "scope"))
+		scopes = strings.ToLower(auth.ReadMetadataString("scope"))
 	}
 	if scopes != "" && !strings.Contains(scopes, "user:profile") && !strings.Contains(scopes, "user:office") {
 		return true
@@ -73,9 +73,6 @@ func (e *ClaudeExecutor) PrepareRequestAuth(ctx context.Context, auth *cliproxya
 		return auth, nil
 	}
 	apiKey, _ := claudeCreds(auth)
-	auth.WithMetadataLock(func() {
-		claudeauth.EnsureMetadataMap(&auth.Metadata)
-	})
 	if _, errDeviceIDs := helps.EnsureClaudeCredentialDevicePoolRequired(ctx, auth); errDeviceIDs != nil {
 		return nil, errDeviceIDs
 	}
@@ -111,12 +108,12 @@ func (e *ClaudeExecutor) PrepareRequestAuth(ctx context.Context, auth *cliproxya
 		return auth, nil
 	}
 	checkedAt := time.Now().UTC().Format(time.RFC3339)
-	auth.WithMetadataLock(func() {
-		claudeauth.StoreMetadataString(&auth.Metadata, "account_uuid", profile.Account.UUID)
-		claudeauth.StoreMetadataString(&auth.Metadata, "email", profile.Account.Email)
-		claudeauth.StoreMetadataString(&auth.Metadata, "organization_uuid", profile.Organization.UUID)
-		claudeauth.StoreMetadataString(&auth.Metadata, "organization_name", profile.Organization.Name)
-		claudeauth.StoreMetadataString(&auth.Metadata, claudeAccountProfileCheckedAtKey, checkedAt)
+	auth.MutateMetadata(func(meta map[string]any) {
+		claudeauth.StoreMetadataStringIn(meta, "account_uuid", profile.Account.UUID)
+		claudeauth.StoreMetadataStringIn(meta, "email", profile.Account.Email)
+		claudeauth.StoreMetadataStringIn(meta, "organization_uuid", profile.Organization.UUID)
+		claudeauth.StoreMetadataStringIn(meta, "organization_name", profile.Organization.Name)
+		claudeauth.StoreMetadataStringIn(meta, claudeAccountProfileCheckedAtKey, checkedAt)
 	})
 	return auth, nil
 }
@@ -134,9 +131,9 @@ func storeClaudeAccountUUIDFallback(auth *cliproxyauth.Auth, accountUUID string)
 		return
 	}
 	checkedAt := time.Now().UTC().Format(time.RFC3339)
-	auth.WithMetadataLock(func() {
-		claudeauth.StoreMetadataString(&auth.Metadata, "account_uuid", accountUUID)
-		claudeauth.StoreMetadataString(&auth.Metadata, claudeAccountProfileCheckedAtKey, checkedAt)
+	auth.MutateMetadata(func(meta map[string]any) {
+		claudeauth.StoreMetadataStringIn(meta, "account_uuid", accountUUID)
+		claudeauth.StoreMetadataStringIn(meta, claudeAccountProfileCheckedAtKey, checkedAt)
 	})
 }
 
@@ -164,9 +161,9 @@ func (e *ClaudeExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (
 	if auth == nil {
 		return nil, fmt.Errorf("claude executor: auth is nil")
 	}
-	refreshToken := claudeauth.ReadMetadataString(&auth.Metadata, "refresh_token")
+	refreshToken := auth.ReadMetadataString("refresh_token")
 	if refreshToken == "" {
-		refreshToken = claudeauth.ReadMetadataString(&auth.Metadata, "refreshToken")
+		refreshToken = auth.ReadMetadataString("refreshToken")
 	}
 	if refreshToken == "" {
 		return auth, nil
@@ -177,19 +174,18 @@ func (e *ClaudeExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (
 		return nil, err
 	}
 	lastRefresh := time.Now().Format(time.RFC3339)
-	auth.WithMetadataLock(func() {
-		claudeauth.EnsureMetadataMap(&auth.Metadata)
-		claudeauth.StoreMetadataValue(&auth.Metadata, "access_token", td.AccessToken)
-		claudeauth.StoreMetadataString(&auth.Metadata, "refresh_token", td.RefreshToken)
+	auth.MutateMetadata(func(meta map[string]any) {
+		claudeauth.StoreMetadataValueIn(meta, "access_token", td.AccessToken)
+		claudeauth.StoreMetadataStringIn(meta, "refresh_token", td.RefreshToken)
 		// Profile fields are optional when token rotation succeeds but the follow-up
 		// profile lookup fails. Never erase the previously resolved credential identity.
-		claudeauth.StoreMetadataString(&auth.Metadata, "email", td.Email)
-		claudeauth.StoreMetadataString(&auth.Metadata, "account_uuid", td.AccountUUID)
-		claudeauth.StoreMetadataString(&auth.Metadata, "organization_uuid", td.OrganizationUUID)
-		claudeauth.StoreMetadataString(&auth.Metadata, "organization_name", td.OrganizationName)
-		claudeauth.StoreMetadataValue(&auth.Metadata, "expired", td.Expire)
-		claudeauth.StoreMetadataValue(&auth.Metadata, "type", "claude")
-		claudeauth.StoreMetadataValue(&auth.Metadata, "last_refresh", lastRefresh)
+		claudeauth.StoreMetadataStringIn(meta, "email", td.Email)
+		claudeauth.StoreMetadataStringIn(meta, "account_uuid", td.AccountUUID)
+		claudeauth.StoreMetadataStringIn(meta, "organization_uuid", td.OrganizationUUID)
+		claudeauth.StoreMetadataStringIn(meta, "organization_name", td.OrganizationName)
+		claudeauth.StoreMetadataValueIn(meta, "expired", td.Expire)
+		claudeauth.StoreMetadataValueIn(meta, "type", "claude")
+		claudeauth.StoreMetadataValueIn(meta, "last_refresh", lastRefresh)
 	})
 	return auth, nil
 }

@@ -1099,6 +1099,55 @@ func (r *ModelRegistry) GetAvailableModelsForClients(handlerType string, clientI
 	return models
 }
 
+// GetAvailableModelInfosForClients returns cloned ModelInfo values registered by
+// the supplied client IDs. Unlike GetAvailableModelInfos, the catalog stays
+// scoped to those credentials so tenant listings cannot leak Home/global models.
+func (r *ModelRegistry) GetAvailableModelInfosForClients(clientIDs []string) []*ModelInfo {
+	if r == nil || len(clientIDs) == 0 {
+		return []*ModelInfo{}
+	}
+
+	r.mutex.RLock()
+	defer r.mutex.RUnlock()
+
+	models := make([]*ModelInfo, 0)
+	seenModels := make(map[string]struct{})
+	for _, clientID := range clientIDs {
+		clientID = strings.TrimSpace(clientID)
+		if clientID == "" {
+			continue
+		}
+		modelIDs := r.clientModels[clientID]
+		clientInfos := r.clientModelInfos[clientID]
+		for _, modelID := range modelIDs {
+			modelID = strings.TrimSpace(modelID)
+			if modelID == "" {
+				continue
+			}
+			if _, exists := seenModels[modelID]; exists {
+				continue
+			}
+			registration := r.models[modelID]
+			if registration != nil && registration.SuspendedClients != nil {
+				if reason := registration.SuspendedClients[clientID]; reason != "" && !strings.EqualFold(reason, "quota") {
+					continue
+				}
+			}
+			info := clientInfos[modelID]
+			if info == nil && registration != nil {
+				info = registration.Info
+			}
+			cloned := cloneModelInfo(info)
+			if cloned == nil {
+				continue
+			}
+			seenModels[modelID] = struct{}{}
+			models = append(models, cloned)
+		}
+	}
+	return models
+}
+
 func modelRegistrationAvailability(registration *ModelRegistration, now time.Time) (bool, time.Time) {
 	if registration == nil {
 		return false, time.Time{}

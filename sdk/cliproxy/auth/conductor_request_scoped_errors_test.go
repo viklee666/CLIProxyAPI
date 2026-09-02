@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -67,6 +68,7 @@ func TestUnwrapExecutionBoundaryErrorRemovesInternalMarkers(t *testing.T) {
 	}{
 		{name: "attempt inside stop", err: wrapRequestStopError(markUpstreamExecutionAttempt(base))},
 		{name: "stop inside attempt", err: markUpstreamExecutionAttempt(wrapRequestStopError(base))},
+		{name: "fmt wrap around attempt", err: fmt.Errorf("executor: %w", markUpstreamExecutionAttempt(base))},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if got := unwrapExecutionBoundaryError(test.err); got != base {

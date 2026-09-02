@@ -282,6 +282,9 @@ func TestAuthCloneAndAccessTokenFingerprintAreRaceFreeWithMetadataWrites(t *test
 				_ = auth.ReadMetadataBool("skip_account_profile")
 				_ = auth.ReadAttribute("auth_kind")
 				_ = auth.SnapshotMetadata()
+				_ = auth.AuthKind()
+				_, _ = auth.ExpirationTime()
+				_, _ = auth.AccountInfo()
 			}
 		}(i)
 	}
@@ -289,5 +292,24 @@ func TestAuthCloneAndAccessTokenFingerprintAreRaceFreeWithMetadataWrites(t *test
 	wg.Wait()
 	if AccessTokenSHA256(auth) == "" {
 		t.Fatal("access token fingerprint is empty after concurrent metadata writes")
+	}
+}
+
+func TestAuthMutateMetadataDoesNotNestClaudeMetadataHelpers(t *testing.T) {
+	auth := &Auth{ID: "auth-mutate-metadata"}
+	auth.MutateMetadata(func(meta map[string]any) {
+		meta["account_uuid"] = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+		meta["claude_device_ids"] = []string{"0000000000000000000000000000000000000000000000000000000000000000"}
+	})
+	if got := auth.ReadMetadataString("account_uuid"); got != "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" {
+		t.Fatalf("account_uuid = %q", got)
+	}
+	cloned := auth.Clone()
+	if cloned.ReadMetadataString("account_uuid") != "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" {
+		t.Fatal("clone did not copy account_uuid")
+	}
+	auth.StoreMetadataString("email", "user@example.com")
+	if cloned.ReadMetadataString("email") != "" {
+		t.Fatal("clone shared the live metadata map")
 	}
 }

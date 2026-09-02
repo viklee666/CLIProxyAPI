@@ -214,3 +214,22 @@ func TestSelectDeviceIDUsesOneDeviceAcrossSessions(t *testing.T) {
 		t.Fatalf("single device selection = %q then %q, want %q", first, second, deviceIDs[0])
 	}
 }
+
+func TestUnlockedMetadataHelpersDoNotTakeDevicePoolLock(t *testing.T) {
+	metadata := map[string]any{}
+	claudeDevicePoolMu.Lock()
+	StoreMetadataStringIn(metadata, "account_uuid", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+	StoreMetadataValueIn(metadata, "type", "claude")
+	StoreDeviceIDPoolIn(metadata, []string{"0000000000000000000000000000000000000000000000000000000000000000"})
+	deviceIDs, _, errPool := EnsureDeviceIDPoolIn(metadata)
+	claudeDevicePoolMu.Unlock()
+	if errPool != nil {
+		t.Fatalf("EnsureDeviceIDPoolIn() error = %v", errPool)
+	}
+	if ReadDeviceIDPoolFrom(metadata).([]string)[0] != deviceIDs[0] {
+		t.Fatalf("unlocked pool = %#v, want %#v", ReadDeviceIDPoolFrom(metadata), deviceIDs)
+	}
+	if metadata["account_uuid"] != "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" {
+		t.Fatalf("account_uuid = %#v", metadata["account_uuid"])
+	}
+}

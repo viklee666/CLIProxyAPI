@@ -708,8 +708,8 @@ func grokModelsFromRegistryInfos(infos []*registry.ModelInfo) []grokbuild.ModelI
 }
 
 func (s *Server) handleTenantGrokModels(c *gin.Context, openaiHandler *openai.OpenAIAPIHandler) {
-	catalog := openaiHandler.ModelsForRequest(c, "openai")
-	c.JSON(http.StatusOK, grokbuild.BuildResponse(grokModelsFromCatalogMaps(catalog)))
+	catalog := openaiHandler.ModelInfosForRequest(c)
+	c.JSON(http.StatusOK, grokbuild.BuildResponse(grokModelsFromRegistryInfos(catalog)))
 }
 
 func (s *Server) handleGrokModels(c *gin.Context) {

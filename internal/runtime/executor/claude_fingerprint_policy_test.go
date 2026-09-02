@@ -12,7 +12,6 @@ import (
 
 	log "github.com/sirupsen/logrus"
 
-	claudeauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -213,8 +212,7 @@ func TestClaudeFingerprintProfileFromAuthConcurrentMetadata(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for range 1_000 {
-			claudeauth.StoreMetadataString(
-				&auth.Metadata,
+			auth.StoreMetadataString(
 				"account_uuid",
 				"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 			)

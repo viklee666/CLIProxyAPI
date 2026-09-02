@@ -145,35 +145,34 @@ func IsAgentIdentityAuth(auth *Auth) bool {
 }
 
 func authHasOAuthMetadata(auth *Auth) bool {
-	if auth == nil || len(auth.Metadata) == 0 {
+	if auth == nil {
+		return false
+	}
+	meta := auth.SnapshotMetadata()
+	if len(meta) == 0 {
 		return false
 	}
 	for _, key := range []string{"access_token", "refresh_token", "id_token", "email", "token_type", "expires_at", "expired"} {
-		if authMetadataString(auth, key) != "" {
+		if value, ok := meta[key].(string); ok && strings.TrimSpace(value) != "" {
 			return true
 		}
 	}
-	if token, ok := auth.Metadata["token"].(map[string]any); ok && len(token) > 0 {
+	if token, ok := meta["token"].(map[string]any); ok && len(token) > 0 {
 		return true
 	}
 	return false
 }
 
 func authAttribute(auth *Auth, key string) string {
-	if auth == nil || auth.Attributes == nil {
+	if auth == nil {
 		return ""
 	}
-	return strings.TrimSpace(auth.Attributes[key])
+	return strings.TrimSpace(auth.ReadAttribute(key))
 }
 
 func authMetadataString(auth *Auth, key string) string {
-	if auth == nil || auth.Metadata == nil {
+	if auth == nil {
 		return ""
 	}
-	switch value := auth.Metadata[key].(type) {
-	case string:
-		return strings.TrimSpace(value)
-	default:
-		return ""
-	}
+	return strings.TrimSpace(auth.ReadMetadataString(key))
 }

@@ -18,7 +18,6 @@ import (
 	"github.com/andybalholm/brotli"
 	"github.com/google/uuid"
 	"github.com/klauspost/compress/zstd"
-	claudeauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
@@ -1101,12 +1100,10 @@ func claudeCreds(a *cliproxyauth.Auth) (apiKey, baseURL string) {
 	if a == nil {
 		return "", ""
 	}
-	if a.Attributes != nil {
-		apiKey = a.Attributes["api_key"]
-		baseURL = a.Attributes["base_url"]
-	}
+	apiKey = a.ReadAttribute("api_key")
+	baseURL = a.ReadAttribute("base_url")
 	if apiKey == "" {
-		apiKey = claudeauth.ReadMetadataString(&a.Metadata, "access_token")
+		apiKey = a.ReadMetadataString("access_token")
 	}
 	return
 }

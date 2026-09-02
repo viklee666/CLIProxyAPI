@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	claudeauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
@@ -61,13 +60,11 @@ func getCloakConfigFromAuth(auth *cliproxyauth.Auth) (cloakMode string, strictMo
 	// raw metadata blob (e.g. the OAuth/token JSON) so file-based credentials can
 	// carry cloak settings without a matching claude-api-key config entry.
 	lookupCloakAttr := func(key string) string {
-		if auth.Attributes != nil {
-			if value := strings.TrimSpace(auth.Attributes[key]); value != "" {
-				return value
-			}
+		if value := strings.TrimSpace(auth.ReadAttribute(key)); value != "" {
+			return value
 		}
-		if value := claudeauth.ReadMetadataString(&auth.Metadata, key); value != "" {
-			return strings.TrimSpace(value)
+		if value := strings.TrimSpace(auth.ReadMetadataString(key)); value != "" {
+			return value
 		}
 		return ""
 	}
@@ -736,12 +733,10 @@ func claudeCredentialTimezone(auth *cliproxyauth.Auth) string {
 	if auth == nil {
 		return ""
 	}
-	if auth.Attributes != nil {
-		if timezone := strings.TrimSpace(auth.Attributes["timezone"]); timezone != "" {
-			return timezone
-		}
+	if timezone := strings.TrimSpace(auth.ReadAttribute("timezone")); timezone != "" {
+		return timezone
 	}
-	return strings.TrimSpace(claudeauth.ReadMetadataString(&auth.Metadata, "timezone"))
+	return strings.TrimSpace(auth.ReadMetadataString("timezone"))
 }
 
 func claudeCodeCurrentDateReminder(now time.Time) string {

@@ -5,7 +5,6 @@ import (
 	"strings"
 	"sync"
 
-	claudeauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -64,13 +63,11 @@ func claudeFingerprintProfileFromAuth(auth *cliproxyauth.Auth) string {
 	if auth == nil {
 		return claudeFingerprintProfileDefault
 	}
-	if auth.Attributes != nil {
-		if raw, ok := auth.Attributes[claudeFingerprintProfileAttr]; ok && strings.TrimSpace(raw) != "" {
-			return normalizeClaudeFingerprintProfile(raw)
-		}
+	if profile := strings.TrimSpace(auth.ReadAttribute(claudeFingerprintProfileAttr)); profile != "" {
+		return normalizeClaudeFingerprintProfile(profile)
 	}
 	for _, key := range []string{claudeFingerprintProfileAttr, "fingerprint-profile"} {
-		raw := claudeauth.ReadMetadataString(&auth.Metadata, key)
+		raw := auth.ReadMetadataString(key)
 		if strings.TrimSpace(raw) != "" {
 			return normalizeClaudeFingerprintProfile(raw)
 		}

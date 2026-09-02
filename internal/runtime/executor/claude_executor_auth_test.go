@@ -185,14 +185,14 @@ func TestClaudeExecutorPrepareRequestAuthIgnoresFreshTimestampWithoutIdentity(t 
 	if calls != 1 {
 		t.Fatalf("profile calls = %d, want 1", calls)
 	}
-	accountUUID := claudeauth.ReadMetadataString(&prepared.Metadata, "account_uuid")
+	accountUUID := prepared.ReadMetadataString("account_uuid")
 	if accountUUID == "" {
 		t.Fatal("account_uuid is empty after advisory profile fallback")
 	}
 	if executor.ShouldPrepareRequestAuth(prepared) {
 		t.Fatal("ShouldPrepareRequestAuth() = true after advisory identity was populated")
 	}
-	if got := claudeauth.ReadMetadataString(&prepared.Metadata, claudeAccountProfileCheckedAtKey); got == "" || got == previousCheckedAt {
+	if got := prepared.ReadMetadataString(claudeAccountProfileCheckedAtKey); got == "" || got == previousCheckedAt {
 		t.Fatalf("profile checked timestamp = %q, want a fresh fallback timestamp", got)
 	}
 }
@@ -223,7 +223,7 @@ func TestClaudeExecutorPrepareRequestAuthContextCancelStillFails(t *testing.T) {
 	if !executor.ShouldPrepareRequestAuth(auth) {
 		t.Fatal("ShouldPrepareRequestAuth() = false after canceled profile lookup")
 	}
-	if got := claudeauth.ReadMetadataString(&auth.Metadata, "account_uuid"); got != "" {
+	if got := auth.ReadMetadataString("account_uuid"); got != "" {
 		t.Fatalf("account_uuid = %q, want empty when cancel fails closed", got)
 	}
 }
@@ -254,7 +254,7 @@ func TestClaudeExecutorPrepareRequestAuthNonCancelProfileErrorFallsBack(t *testi
 			if errPrepare != nil {
 				t.Fatalf("PrepareRequestAuth() error = %v, want advisory fallback", errPrepare)
 			}
-			if claudeauth.ReadMetadataString(&prepared.Metadata, "account_uuid") == "" {
+			if prepared.ReadMetadataString("account_uuid") == "" {
 				t.Fatal("account_uuid is empty after advisory fallback")
 			}
 			if executor.ShouldPrepareRequestAuth(prepared) {
@@ -291,7 +291,7 @@ func TestClaudeExecutorPrepareRequestAuthSetupTokenBypassesProfile(t *testing.T)
 	if prepared == nil {
 		t.Fatal("prepared auth is nil")
 	}
-	accountUUID := claudeauth.ReadMetadataString(&prepared.Metadata, "account_uuid")
+	accountUUID := prepared.ReadMetadataString("account_uuid")
 	if accountUUID == "" {
 		t.Fatal("account_uuid is empty after setup-token preparation")
 	}
@@ -335,7 +335,7 @@ func TestClaudeExecutorPrepareRequestAuth403ScopeFallback(t *testing.T) {
 	if fetchCalls != 1 {
 		t.Fatalf("fetchCalls = %d, want 1", fetchCalls)
 	}
-	accountUUID := claudeauth.ReadMetadataString(&prepared.Metadata, "account_uuid")
+	accountUUID := prepared.ReadMetadataString("account_uuid")
 	if accountUUID == "" {
 		t.Fatal("account_uuid is empty after 403 fallback")
 	}
@@ -371,7 +371,7 @@ func TestClaudeExecutorPrepareRequestAuthSkipAccountProfileConfig(t *testing.T) 
 	if prepared == nil {
 		t.Fatal("prepared auth is nil")
 	}
-	accountUUID := claudeauth.ReadMetadataString(&prepared.Metadata, "account_uuid")
+	accountUUID := prepared.ReadMetadataString("account_uuid")
 	if accountUUID == "" {
 		t.Fatal("account_uuid is empty after skip_account_profile preparation")
 	}
@@ -407,7 +407,7 @@ func TestClaudeExecutorPrepareRequestAuthEmptyAccountUUIDInProfileFallback(t *te
 	if fetchCalls != 1 {
 		t.Fatalf("fetchCalls = %d, want 1", fetchCalls)
 	}
-	accountUUID := claudeauth.ReadMetadataString(&prepared.Metadata, "account_uuid")
+	accountUUID := prepared.ReadMetadataString("account_uuid")
 	if accountUUID == "" {
 		t.Fatal("account_uuid is empty after fallback")
 	}

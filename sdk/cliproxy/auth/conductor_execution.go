@@ -29,7 +29,7 @@ func newUpstreamAttemptContext(ctx context.Context) context.Context {
 }
 
 func claudeOAuthRequestCancellation(ctx context.Context, auth *Auth, err error) error {
-	if auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "claude") || !strings.EqualFold(strings.TrimSpace(auth.Attributes["auth_kind"]), "oauth") {
+	if auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "claude") || !strings.EqualFold(strings.TrimSpace(auth.ReadAttribute("auth_kind")), "oauth") {
 		return nil
 	}
 	if ctx != nil && errors.Is(ctx.Err(), context.Canceled) {
@@ -82,11 +82,13 @@ func hasUpstreamExecutionAttempt(err error) bool {
 }
 
 func unwrapUpstreamExecutionAttempt(err error) error {
-	marked, ok := err.(*upstreamExecutionAttemptError)
-	if !ok || marked == nil || marked.cause == nil {
-		return err
+	for {
+		var marked *upstreamExecutionAttemptError
+		if !errors.As(err, &marked) || marked == nil || marked.cause == nil || marked.cause == err {
+			return err
+		}
+		err = marked.cause
 	}
-	return marked.cause
 }
 
 func unwrapExecutionBoundaryError(err error) error {

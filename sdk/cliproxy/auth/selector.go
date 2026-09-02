@@ -381,14 +381,14 @@ func authWeight(auth *Auth) int64 {
 	if auth == nil {
 		return credentialweight.Default
 	}
-	if rawWeight, ok := auth.Attributes[AttributeWeight]; ok && strings.TrimSpace(rawWeight) != "" {
+	if rawWeight := strings.TrimSpace(auth.ReadAttribute(AttributeWeight)); rawWeight != "" {
 		weight, errParse := credentialweight.ParseString(rawWeight)
 		if errParse != nil {
 			return 0
 		}
 		return weight
 	}
-	if rawWeight, ok := auth.Metadata[AttributeWeight]; ok {
+	if rawWeight, ok := auth.ReadMetadata(AttributeWeight); ok {
 		weight, errParse := credentialweight.ParseValue(rawWeight)
 		if errParse != nil {
 			return 0
@@ -415,18 +415,13 @@ func authWebsocketsEnabled(auth *Auth) bool {
 	if auth == nil {
 		return false
 	}
-	if len(auth.Attributes) > 0 {
-		if raw := strings.TrimSpace(auth.Attributes["websockets"]); raw != "" {
-			parsed, errParse := strconv.ParseBool(raw)
-			if errParse == nil {
-				return parsed
-			}
+	if raw := strings.TrimSpace(auth.ReadAttribute("websockets")); raw != "" {
+		parsed, errParse := strconv.ParseBool(raw)
+		if errParse == nil {
+			return parsed
 		}
 	}
-	if len(auth.Metadata) == 0 {
-		return false
-	}
-	raw, ok := auth.Metadata["websockets"]
+	raw, ok := auth.ReadMetadata("websockets")
 	if !ok || raw == nil {
 		return false
 	}

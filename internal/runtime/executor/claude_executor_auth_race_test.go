@@ -7,6 +7,7 @@ import (
 
 	claudeauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
@@ -55,10 +56,10 @@ func TestClaudeExecutorPrepareRequestAuthIsRaceFreeOnSharedCredential(t *testing
 	}
 	wg.Wait()
 
-	if got := claudeauth.ReadMetadataString(&auth.Metadata, "account_uuid"); got != "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" {
+	if got := auth.ReadMetadataString("account_uuid"); got != "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" {
 		t.Fatalf("account_uuid = %q, want the fetched profile account", got)
 	}
-	if !claudeauth.HasCanonicalDeviceIDPool(claudeauth.ReadDeviceIDPool(&auth.Metadata)) {
+	if !claudeauth.HasCanonicalDeviceIDPool(helps.ClaudeDeviceIDPool(auth)) {
 		t.Fatal("device ID pool was not established under concurrency")
 	}
 }
@@ -81,8 +82,8 @@ func TestClaudeExecutorSharedCredentialMetadataReadersUseOneLock(t *testing.T) {
 			defer wg.Done()
 			<-start
 			if i%3 == 0 {
-				claudeauth.StoreMetadataValue(&auth.Metadata, "access_token", "sk-ant-oat-race-probe")
-				claudeauth.StoreMetadataValue(&auth.Metadata, "cloak_mode", "always")
+				auth.StoreMetadataValue("access_token", "sk-ant-oat-race-probe")
+				auth.StoreMetadataValue("cloak_mode", "always")
 				return
 			}
 			if i%3 == 1 {
@@ -120,9 +121,9 @@ func TestClaudeExecutorSharedCredentialMetadataMixedAccess(t *testing.T) {
 			case 1:
 				_ = executor.ShouldPrepareRequestAuth(auth)
 			case 2:
-				_ = claudeauth.ReadMetadataString(&auth.Metadata, "account_uuid")
+				_ = auth.ReadMetadataString("account_uuid")
 			default:
-				_ = claudeauth.ReadDeviceIDPool(&auth.Metadata)
+				_ = helps.ClaudeDeviceIDPool(auth)
 			}
 		}(i)
 	}

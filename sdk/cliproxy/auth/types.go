@@ -401,6 +401,73 @@ func (a *Auth) ReadMetadataBool(key string) bool {
 	return flag
 }
 
+// ReadMetadataString returns a string-valued metadata entry under the maps lock.
+func (a *Auth) ReadMetadataString(key string) string {
+	if a == nil {
+		return ""
+	}
+	a.metadataMu.RLock()
+	defer a.metadataMu.RUnlock()
+	if a.Metadata == nil {
+		return ""
+	}
+	value, _ := a.Metadata[key].(string)
+	return value
+}
+
+// MutateMetadata runs fn against Metadata while holding the maps write lock.
+// Callers must not perform network I/O or take claudeDevicePoolMu inside fn.
+func (a *Auth) MutateMetadata(fn func(map[string]any)) {
+	if a == nil || fn == nil {
+		return
+	}
+	a.metadataMu.Lock()
+	defer a.metadataMu.Unlock()
+	if a.Metadata == nil {
+		a.Metadata = make(map[string]any)
+	}
+	fn(a.Metadata)
+}
+
+// StoreMetadataString writes a string-valued metadata entry under the maps lock.
+// Empty values are skipped so callers can forward optional fields without erasing
+// a previously resolved value.
+func (a *Auth) StoreMetadataString(key, value string) {
+	if strings.TrimSpace(value) == "" {
+		return
+	}
+	a.MutateMetadata(func(meta map[string]any) {
+		meta[key] = value
+	})
+}
+
+// StoreMetadataValue writes an arbitrary metadata entry under the maps lock.
+func (a *Auth) StoreMetadataValue(key string, value any) {
+	a.MutateMetadata(func(meta map[string]any) {
+		meta[key] = value
+	})
+}
+
+// ReadMetadataCopy returns a defensive copy of a metadata entry under the maps lock.
+func (a *Auth) ReadMetadataCopy(key string) any {
+	if a == nil {
+		return nil
+	}
+	a.metadataMu.RLock()
+	defer a.metadataMu.RUnlock()
+	if a.Metadata == nil {
+		return nil
+	}
+	switch stored := a.Metadata[key].(type) {
+	case []string:
+		return append([]string(nil), stored...)
+	case []any:
+		return append([]any(nil), stored...)
+	default:
+		return stored
+	}
+}
+
 // ReadAttribute returns an attribute under the maps lock.
 func (a *Auth) ReadAttribute(key string) string {
 	if a == nil {
@@ -443,25 +510,17 @@ func (a *Auth) indexSeed() string {
 		return ""
 	}
 
-	if a.Attributes != nil {
-		if seed := strings.TrimSpace(a.Attributes[AttributeAuthIndexSeed]); seed != "" {
-			return AttributeAuthIndexSeed + ":" + seed
-		}
+	if seed := strings.TrimSpace(a.ReadAttribute(AttributeAuthIndexSeed)); seed != "" {
+		return AttributeAuthIndexSeed + ":" + seed
 	}
 
 	provider := strings.ToLower(strings.TrimSpace(a.Provider))
-	compatName := ""
-	baseURL := ""
-	apiKey := ""
-	filePath := ""
-	if a.Attributes != nil {
-		compatName = strings.TrimSpace(a.Attributes["compat_name"])
-		baseURL = strings.TrimSpace(a.Attributes["base_url"])
-		apiKey = strings.TrimSpace(a.Attributes["api_key"])
-		filePath = strings.TrimSpace(a.Attributes["path"])
-		if filePath == "" {
-			filePath = strings.TrimSpace(a.Attributes["source"])
-		}
+	compatName := strings.TrimSpace(a.ReadAttribute("compat_name"))
+	baseURL := strings.TrimSpace(a.ReadAttribute("base_url"))
+	apiKey := strings.TrimSpace(a.ReadAttribute("api_key"))
+	filePath := strings.TrimSpace(a.ReadAttribute("path"))
+	if filePath == "" {
+		filePath = strings.TrimSpace(a.ReadAttribute("source"))
 	}
 
 	if filePath == "" {
@@ -478,12 +537,7 @@ func (a *Auth) indexSeed() string {
 		}
 		filePath = filepath.Clean(filePath)
 
-		authType := ""
-		if a.Metadata != nil {
-			if rawType, ok := a.Metadata["type"].(string); ok {
-				authType = strings.TrimSpace(rawType)
-			}
-		}
+		authType := strings.TrimSpace(a.ReadMetadataString("type"))
 		if authType == "" {
 			authType = strings.TrimSpace(provider)
 		}
@@ -579,7 +633,12 @@ func (a *Auth) ProxyInfo() string {
 // The value is read from metadata key "disable_cooling" (or legacy "disable-cooling").
 // The second return value distinguishes explicit false from an absent override.
 func (a *Auth) DisableCoolingOverride() (bool, bool) {
-	if a == nil || a.Metadata == nil {
+	if a == nil {
+		return false, false
+	}
+	a.metadataMu.RLock()
+	defer a.metadataMu.RUnlock()
+	if a.Metadata == nil {
 		return false, false
 	}
 	if val, ok := a.Metadata["disable_cooling"]; ok {
@@ -599,7 +658,12 @@ func (a *Auth) DisableCoolingOverride() (bool, bool) {
 // skipped for this auth. When true, tool names are sent to Anthropic unchanged.
 // The value is read from metadata key "tool_prefix_disabled" (or "tool-prefix-disabled").
 func (a *Auth) ToolPrefixDisabled() bool {
-	if a == nil || a.Metadata == nil {
+	if a == nil {
+		return false
+	}
+	a.metadataMu.RLock()
+	defer a.metadataMu.RUnlock()
+	if a.Metadata == nil {
 		return false
 	}
 	for _, key := range []string{"tool_prefix_disabled", "tool-prefix-disabled"} {
@@ -616,7 +680,12 @@ func (a *Auth) ToolPrefixDisabled() bool {
 // The value is read from metadata key "request_retry" (or legacy "request-retry").
 // A negative value is treated as unset and falls back to the global request-retry.
 func (a *Auth) RequestRetryOverride() (int, bool) {
-	if a == nil || a.Metadata == nil {
+	if a == nil {
+		return 0, false
+	}
+	a.metadataMu.RLock()
+	defer a.metadataMu.RUnlock()
+	if a.Metadata == nil {
 		return 0, false
 	}
 	if val, ok := a.Metadata["request_retry"]; ok {
@@ -702,29 +771,16 @@ func (a *Auth) AccountInfo() (string, string) {
 	}
 	switch a.AuthKind() {
 	case AuthKindOAuth:
-		if a.Metadata != nil {
-			if v, ok := a.Metadata["email"].(string); ok {
-				email := strings.TrimSpace(v)
-				if email != "" {
-					return "oauth", email
-				}
-			}
+		if email := strings.TrimSpace(a.ReadMetadataString("email")); email != "" {
+			return "oauth", email
 		}
 		return "oauth", ""
 	case AuthKindAgentIdentity:
-		if a.Metadata != nil {
-			if v, ok := a.Metadata["email"].(string); ok {
-				email := strings.TrimSpace(v)
-				if email != "" {
-					return AuthKindAgentIdentity, email
-				}
-			}
-			if v, ok := a.Metadata["agent_runtime_id"].(string); ok {
-				runtimeID := strings.TrimSpace(v)
-				if runtimeID != "" {
-					return AuthKindAgentIdentity, runtimeID
-				}
-			}
+		if email := strings.TrimSpace(a.ReadMetadataString("email")); email != "" {
+			return AuthKindAgentIdentity, email
+		}
+		if runtimeID := strings.TrimSpace(a.ReadMetadataString("agent_runtime_id")); runtimeID != "" {
+			return AuthKindAgentIdentity, runtimeID
 		}
 		return AuthKindAgentIdentity, ""
 	case AuthKindAPIKey:
@@ -744,10 +800,7 @@ func (a *Auth) ExpirationTime() (time.Time, bool) {
 	if a == nil {
 		return time.Time{}, false
 	}
-	if ts, ok := expirationFromMap(a.Metadata); ok {
-		return ts, true
-	}
-	return time.Time{}, false
+	return expirationFromMap(a.SnapshotMetadata())
 }
 
 var (

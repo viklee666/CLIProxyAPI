@@ -20,9 +20,9 @@ func TestEnsureClaudeCLIFingerprintIdentitySynthesizesStableSources(t *testing.T
 	if account == "" {
 		t.Fatal("account_uuid is empty")
 	}
-	deviceIDs, _, errPool := claudeauth.EnsureDeviceIDPoolFor(&auth.Metadata)
+	deviceIDs, _, errPool := EnsureClaudeDeviceIDPool(auth)
 	if errPool != nil {
-		t.Fatalf("EnsureDeviceIDPoolFor() error = %v", errPool)
+		t.Fatalf("EnsureClaudeDeviceIDPool() error = %v", errPool)
 	}
 	if len(deviceIDs) != 1 || deviceIDs[0] != stableClaudeCLIDeviceID("key-a") {
 		t.Fatalf("device pool = %#v, want stable single device", deviceIDs)
@@ -165,9 +165,9 @@ func TestEnsureClaudeCLIFingerprintIdentityPreservesExistingOAuthSources(t *test
 	if got := ClaudeCredentialAccountUUID(auth); got != "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" {
 		t.Fatalf("account_uuid = %q, want preserved", got)
 	}
-	deviceIDs, _, errPool := claudeauth.EnsureDeviceIDPoolFor(&auth.Metadata)
+	deviceIDs, _, errPool := EnsureClaudeDeviceIDPool(auth)
 	if errPool != nil {
-		t.Fatalf("EnsureDeviceIDPoolFor() error = %v", errPool)
+		t.Fatalf("EnsureClaudeDeviceIDPool() error = %v", errPool)
 	}
 	if deviceIDs[0] != "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" {
 		t.Fatalf("device pool mutated: %#v", deviceIDs)
