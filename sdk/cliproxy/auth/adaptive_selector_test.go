@@ -199,3 +199,44 @@ func TestManagerTracksAdaptiveActiveExecutionLifecycle(t *testing.T) {
 		t.Fatalf("completed scores = %+v", scores)
 	}
 }
+
+func TestSessionAffinityAdaptiveSelectionKeepsPerModelBindings(t *testing.T) {
+	adaptive := NewAdaptiveSelector(internalconfig.AdaptiveRoutingConfig{TopK: 1})
+	selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{Fallback: adaptive, TTL: time.Hour})
+	t.Cleanup(selector.Stop)
+
+	if got := selectionArgForSelector(adaptive, "model-a"); got != "" {
+		t.Fatalf("selectionArgForSelector(bare adaptive) = %q, want empty", got)
+	}
+	if got := selectionArgForSelector(&RoundRobinSelector{}, "model-a"); got != "" {
+		t.Fatalf("selectionArgForSelector(bare round-robin) = %q, want empty", got)
+	}
+	if got := selectionArgForSelector(selector, "model-a"); got != "model-a" {
+		t.Fatalf("selectionArgForSelector(affinity+adaptive) = %q, want model-a", got)
+	}
+
+	authA := adaptiveTestAuth("auth-a", 1)
+	authB := adaptiveTestAuth("auth-b", 1)
+	opts := cliproxyexecutor.Options{Headers: http.Header{"X-Session-ID": []string{"session-models"}}}
+
+	modelA := selectionArgForSelector(selector, "model-a")
+	pickedA, errA := selector.Pick(context.Background(), "codex", modelA, opts, []*Auth{authA})
+	if errA != nil || pickedA == nil || pickedA.ID != "auth-a" {
+		t.Fatalf("model-a Pick() = auth=%v err=%v, want auth-a", pickedA, errA)
+	}
+
+	modelB := selectionArgForSelector(selector, "model-b")
+	pickedB, errB := selector.Pick(context.Background(), "codex", modelB, opts, []*Auth{authB})
+	if errB != nil || pickedB == nil || pickedB.ID != "auth-b" {
+		t.Fatalf("model-b Pick() = auth=%v err=%v, want auth-b", pickedB, errB)
+	}
+
+	pickedA2, errA2 := selector.Pick(context.Background(), "codex", modelA, opts, []*Auth{authA, authB})
+	if errA2 != nil || pickedA2 == nil || pickedA2.ID != "auth-a" {
+		t.Fatalf("model-a sticky Pick() = auth=%v err=%v, want auth-a", pickedA2, errA2)
+	}
+	pickedB2, errB2 := selector.Pick(context.Background(), "codex", modelB, opts, []*Auth{authA, authB})
+	if errB2 != nil || pickedB2 == nil || pickedB2.ID != "auth-b" {
+		t.Fatalf("model-b sticky Pick() = auth=%v err=%v, want auth-b", pickedB2, errB2)
+	}
+}

@@ -439,7 +439,7 @@ func (h *Handler) DownloadAuthFilesBatch(c *gin.Context) {
 		if errOpen != nil {
 			continue
 		}
-		_, _ = io.Copy(entryWriter, source)
+		_, _ = io.Copy(entryWriter, io.LimitReader(source, maxAuthFileBytes))
 		_ = source.Close()
 	}
 	if len(failed) > 0 {

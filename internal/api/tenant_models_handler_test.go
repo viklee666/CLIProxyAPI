@@ -109,6 +109,12 @@ func TestTenantModelCatalogIgnoresHomeAndScopesEveryFormat(t *testing.T) {
 	modelsHandler(ctx)
 	assertScopedResponse("Claude", recorder)
 
+	grokHeaders := make(http.Header)
+	grokHeaders.Set("User-Agent", "grok-shell/0.2.119 (macos; aarch64)")
+	recorder, ctx = tenantContext("/v1/models", grokHeaders)
+	modelsHandler(ctx)
+	assertScopedResponse("Grok shell", recorder)
+
 	recorder, ctx = tenantContext("/v1beta/models", make(http.Header))
 	server.geminiModelsHandler(geminiHandler)(ctx)
 	assertScopedResponse("Gemini", recorder)

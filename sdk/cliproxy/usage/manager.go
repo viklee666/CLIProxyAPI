@@ -28,7 +28,9 @@ type Record struct {
 	APIKey       string
 	AuthID       string
 	AuthIndex    string
-	AuthType     string
+	// AccessTokenSHA256 identifies the OAuth token version without exposing the token.
+	AccessTokenSHA256 string
+	AuthType          string
 	// ClientReservationID correlates advanced client-key token settlement.
 	ClientReservationID string
 	Source              string
@@ -44,7 +46,9 @@ type Record struct {
 	// Generate reports whether the client requested actual generation.
 	// nil or true means generation is enabled; only an explicit false disables generation.
 	// Use GenerateFlag to set the value and GenerateEnabled to read it with the default.
-	Generate    *bool
+	Generate *bool
+	// Stream reports whether the request was executed in streaming mode.
+	Stream      bool
 	RequestedAt time.Time
 	Latency     time.Duration
 	TTFT        time.Duration
@@ -79,6 +83,7 @@ type reasoningEffortContextKey struct{}
 type serviceTierContextKey struct{}
 type clientReservationContextKey struct{}
 type generateContextKey struct{}
+type streamContextKey struct{}
 
 // WithClientReservationID stores a client-access token reservation ID for usage sinks.
 func WithClientReservationID(ctx context.Context, reservationID string) context.Context {
@@ -224,6 +229,29 @@ func GenerateFromContext(ctx context.Context) bool {
 	}
 }
 
+// WithStream stores whether the request was executed in streaming mode for usage sinks.
+func WithStream(ctx context.Context, stream bool) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, streamContextKey{}, stream)
+}
+
+// StreamFromContext returns whether the request was executed in streaming mode.
+// Missing values default to false.
+func StreamFromContext(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	raw := ctx.Value(streamContextKey{})
+	switch value := raw.(type) {
+	case bool:
+		return value
+	default:
+		return false
+	}
+}
+
 // GenerateFlag returns a pointer suitable for Record.Generate.
 func GenerateFlag(generate bool) *bool {
 	return &generate
@@ -353,6 +381,40 @@ func (m *Manager) RegisterNamed(name string, plugin Plugin) {
 	m.pluginsMu.Unlock()
 }
 
+// UnregisterNamed removes a plugin previously registered by name.
+// Remaining named plugin indexes are compacted so later RegisterNamed replacements stay unique.
+func (m *Manager) UnregisterNamed(name string) Plugin {
+	if m == nil {
+		return nil
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+
+	m.pluginsMu.Lock()
+	defer m.pluginsMu.Unlock()
+	if m.named == nil {
+		return nil
+	}
+	index, exists := m.named[name]
+	if !exists {
+		return nil
+	}
+	delete(m.named, name)
+	if index < 0 || index >= len(m.plugins) {
+		return nil
+	}
+	plugin := m.plugins[index]
+	m.plugins = append(m.plugins[:index], m.plugins[index+1:]...)
+	for named, namedIndex := range m.named {
+		if namedIndex > index {
+			m.named[named] = namedIndex - 1
+		}
+	}
+	return plugin
+}
+
 // Publish enqueues a usage record for processing. If no plugin is registered
 // the record will be discarded downstream.
 func (m *Manager) Publish(ctx context.Context, record Record) {
@@ -424,6 +486,9 @@ func RegisterPlugin(plugin Plugin) { DefaultManager().Register(plugin) }
 
 // RegisterNamedPlugin registers or replaces a named plugin on the default manager.
 func RegisterNamedPlugin(name string, plugin Plugin) { DefaultManager().RegisterNamed(name, plugin) }
+
+// UnregisterNamedPlugin removes a named plugin from the default manager.
+func UnregisterNamedPlugin(name string) Plugin { return DefaultManager().UnregisterNamed(name) }
 
 // PublishRecord publishes a record using the default manager.
 func PublishRecord(ctx context.Context, record Record) { DefaultManager().Publish(ctx, record) }

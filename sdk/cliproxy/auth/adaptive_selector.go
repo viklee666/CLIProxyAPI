@@ -157,39 +157,6 @@ type adaptiveCandidateScore struct {
 	score float64
 }
 
-func getAvailableAuthsAcrossPriorities(auths []*Auth, provider, model string, now time.Time) ([]*Auth, error) {
-	if len(auths) == 0 {
-		return nil, &Error{Code: "auth_not_found", Message: "no auth candidates"}
-	}
-	available := make([]*Auth, 0, len(auths))
-	cooldownCount := 0
-	earliest := time.Time{}
-	for _, auth := range auths {
-		blocked, reason, next := isAuthBlockedForModel(auth, model, now)
-		if !blocked {
-			available = append(available, auth)
-			continue
-		}
-		if reason == blockReasonCooldown {
-			cooldownCount++
-			if !next.IsZero() && (earliest.IsZero() || next.Before(earliest)) {
-				earliest = next
-			}
-		}
-	}
-	if len(available) > 0 {
-		return available, nil
-	}
-	if cooldownCount == len(auths) && !earliest.IsZero() {
-		providerForError := provider
-		if providerForError == "mixed" {
-			providerForError = ""
-		}
-		return nil, newModelCooldownError(model, providerForError, earliest.Sub(now))
-	}
-	return nil, &Error{Code: "auth_unavailable", Message: "no auth available"}
-}
-
 func (s *AdaptiveSelector) scoreEligible(auths []*Auth) []adaptiveCandidateScore {
 	if s == nil || len(auths) == 0 {
 		return nil

@@ -1,15 +1,19 @@
 // Package xai provides OAuth2 authentication helpers for xAI Grok.
 package xai
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 const (
 	// DefaultAPIBaseURL is the default official xAI API base URL.
-	// Used for OAuth credential defaults, websocket, media (image/video),
-	// and non-media HTTP chat when auth using_api is true or non-OAuth.
+	// Used for OAuth credential defaults, websocket, compact, and media
+	// (image/video). HTTP chat uses this when auth using_api is true or non-OAuth.
 	DefaultAPIBaseURL = "https://api.x.ai/v1"
-	// CLIChatProxyBaseURL is the Grok CLI chat-proxy base URL for non-image/video
-	// HTTP chat when auth using_api is false, including the OAuth default.
+	// CLIChatProxyBaseURL is the Grok CLI chat-proxy base URL for HTTP chat/stream
+	// when auth using_api is false, including the OAuth default.
+	// Image/video must not use this host; they stay on DefaultAPIBaseURL.
 	CLIChatProxyBaseURL = "https://cli-chat-proxy.grok.com/v1"
 	// Issuer is xAI's OAuth issuer.
 	Issuer = "https://auth.x.ai"
@@ -72,4 +76,56 @@ type AuthBundle struct {
 	BaseURL       string
 	RedirectURI   string
 	TokenEndpoint string
+}
+
+func normalizeBaseURL(baseURL string) string {
+	return strings.TrimRight(strings.TrimSpace(baseURL), "/")
+}
+
+func isDefaultAPIBaseURL(baseURL string) bool {
+	return normalizeBaseURL(baseURL) == normalizeBaseURL(DefaultAPIBaseURL)
+}
+
+func isCLIChatProxyBaseURL(baseURL string) bool {
+	return normalizeBaseURL(baseURL) == normalizeBaseURL(CLIChatProxyBaseURL)
+}
+
+// SelectChatBaseURL returns the base URL for xAI HTTP chat/stream requests.
+// When usingAPI is false (including the OAuth default), an empty or official
+// default base_url is rewritten to the CLI chat-proxy. An explicit non-default
+// base_url is still honored.
+func SelectChatBaseURL(baseURL string, usingAPI bool) string {
+	baseURL = strings.TrimSpace(baseURL)
+	if usingAPI {
+		if baseURL == "" {
+			return DefaultAPIBaseURL
+		}
+		return baseURL
+	}
+	if baseURL != "" && !isDefaultAPIBaseURL(baseURL) {
+		return baseURL
+	}
+	return CLIChatProxyBaseURL
+}
+
+// SelectMediaBaseURL returns the base URL for xAI image/video requests.
+// Media stays on the official API host (or an explicit custom base_url) even
+// when usingAPI is false. The CLI chat-proxy does not serve image/video
+// endpoints, so an empty, official-default, or CLI-proxy base_url is pinned
+// to DefaultAPIBaseURL.
+func SelectMediaBaseURL(baseURL string, usingAPI bool) string {
+	baseURL = strings.TrimSpace(baseURL)
+	if usingAPI {
+		if baseURL == "" {
+			return DefaultAPIBaseURL
+		}
+		if isCLIChatProxyBaseURL(baseURL) {
+			return DefaultAPIBaseURL
+		}
+		return baseURL
+	}
+	if baseURL == "" || isDefaultAPIBaseURL(baseURL) || isCLIChatProxyBaseURL(baseURL) {
+		return DefaultAPIBaseURL
+	}
+	return baseURL
 }

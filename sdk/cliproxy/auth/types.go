@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -47,6 +48,10 @@ func GetRequestInfo(ctx context.Context) *RequestInfo {
 type Auth struct {
 	// ID uniquely identifies the auth record across restarts.
 	ID string `json:"id"`
+	// RegistrationEpoch tracks monotonic registration cycles across unregister/re-register.
+	RegistrationEpoch uint64 `json:"registration_epoch,omitempty"`
+	// Generation tracks monotonic mutations to resolve scheduler/reconcile snapshot races.
+	Generation uint64 `json:"generation,omitempty"`
 	// Index is a stable runtime identifier derived from auth metadata (not persisted).
 	Index string `json:"-"`
 	// Provider is the upstream provider key (e.g. "gemini", "claude").
@@ -98,6 +103,10 @@ type Auth struct {
 
 	recentRequests recentRequestRing `json:"-"`
 	indexAssigned  bool              `json:"-"`
+
+	// metadataMu guards Metadata and Attributes. Clone, fingerprint reads, and
+	// short metadata snapshots must take it; never hold it across network I/O.
+	metadataMu sync.RWMutex
 }
 
 const (
@@ -179,6 +188,27 @@ type QuotaState struct {
 	NextRecoverAt time.Time `json:"next_recover_at"`
 	// BackoffLevel stores the progressive cooldown exponent used for rate limits.
 	BackoffLevel int `json:"backoff_level,omitempty"`
+	// ObservedAt is the time the current Signals snapshot was observed.
+	ObservedAt time.Time `json:"observed_at,omitempty"`
+	// Signals stores bounded, provider-specific quota watermark values observed
+	// from upstream response headers or websocket quota events. It is a snapshot
+	// of one upstream response, not an accumulation across responses, so an
+	// expired watermark cannot linger after the response that produced it.
+	// Cooldown transitions must use applyCooldownFields so they cannot replace
+	// this snapshot.
+	Signals map[string]string `json:"signals,omitempty"`
+}
+
+// Clone returns an independent copy of the quota state.
+func (q QuotaState) Clone() QuotaState {
+	copyQuota := q
+	if len(q.Signals) > 0 {
+		copyQuota.Signals = make(map[string]string, len(q.Signals))
+		for key, value := range q.Signals {
+			copyQuota.Signals[key] = value
+		}
+	}
+	return copyQuota
 }
 
 // ModelState captures the execution state for a specific model under an auth entry.
@@ -268,18 +298,45 @@ func (a *Auth) Clone() *Auth {
 	if a == nil {
 		return nil
 	}
-	copyAuth := *a
+	a.metadataMu.RLock()
+	defer a.metadataMu.RUnlock()
+	return a.cloneLocked()
+}
+
+func (a *Auth) cloneLocked() *Auth {
+	copyAuth := &Auth{
+		ID:                a.ID,
+		RegistrationEpoch: a.RegistrationEpoch,
+		Generation:        a.Generation,
+		Index:             a.Index,
+		Provider:          a.Provider,
+		Prefix:            a.Prefix,
+		FileName:          a.FileName,
+		Storage:           a.Storage,
+		Label:             a.Label,
+		Status:            a.Status,
+		StatusMessage:     a.StatusMessage,
+		Disabled:          a.Disabled,
+		Unavailable:       a.Unavailable,
+		ProxyURL:          a.ProxyURL,
+		Quota:             a.Quota.Clone(),
+		LastError:         a.LastError,
+		CreatedAt:         a.CreatedAt,
+		UpdatedAt:         a.UpdatedAt,
+		LastRefreshedAt:   a.LastRefreshedAt,
+		NextRefreshAfter:  a.NextRefreshAfter,
+		NextRetryAfter:    a.NextRetryAfter,
+		Runtime:           a.Runtime,
+		Success:           a.Success,
+		Failed:            a.Failed,
+		recentRequests:    a.recentRequests,
+		indexAssigned:     a.indexAssigned,
+	}
 	if len(a.Attributes) > 0 {
-		copyAuth.Attributes = make(map[string]string, len(a.Attributes))
-		for key, value := range a.Attributes {
-			copyAuth.Attributes[key] = value
-		}
+		copyAuth.Attributes = maps.Clone(a.Attributes)
 	}
 	if len(a.Metadata) > 0 {
-		copyAuth.Metadata = make(map[string]any, len(a.Metadata))
-		for key, value := range a.Metadata {
-			copyAuth.Metadata[key] = value
-		}
+		copyAuth.Metadata = maps.Clone(a.Metadata)
 	}
 	if len(a.ModelStates) > 0 {
 		copyAuth.ModelStates = make(map[string]*ModelState, len(a.ModelStates))
@@ -287,8 +344,89 @@ func (a *Auth) Clone() *Auth {
 			copyAuth.ModelStates[key] = state.Clone()
 		}
 	}
-	copyAuth.Runtime = a.Runtime
-	return &copyAuth
+	return copyAuth
+}
+
+// SnapshotMetadata returns a shallow copy of Metadata under the maps lock.
+func (a *Auth) SnapshotMetadata() map[string]any {
+	if a == nil {
+		return nil
+	}
+	a.metadataMu.RLock()
+	defer a.metadataMu.RUnlock()
+	if len(a.Metadata) == 0 {
+		return nil
+	}
+	return maps.Clone(a.Metadata)
+}
+
+// SnapshotAttributes returns a shallow copy of Attributes under the maps lock.
+func (a *Auth) SnapshotAttributes() map[string]string {
+	if a == nil {
+		return nil
+	}
+	a.metadataMu.RLock()
+	defer a.metadataMu.RUnlock()
+	if len(a.Attributes) == 0 {
+		return nil
+	}
+	return maps.Clone(a.Attributes)
+}
+
+// ReadMetadata returns a metadata entry under the maps lock.
+func (a *Auth) ReadMetadata(key string) (any, bool) {
+	if a == nil {
+		return nil, false
+	}
+	a.metadataMu.RLock()
+	defer a.metadataMu.RUnlock()
+	if a.Metadata == nil {
+		return nil, false
+	}
+	value, ok := a.Metadata[key]
+	return value, ok
+}
+
+// ReadMetadataBool returns a bool-valued metadata entry under the maps lock.
+func (a *Auth) ReadMetadataBool(key string) bool {
+	if a == nil {
+		return false
+	}
+	a.metadataMu.RLock()
+	defer a.metadataMu.RUnlock()
+	if a.Metadata == nil {
+		return false
+	}
+	flag, _ := a.Metadata[key].(bool)
+	return flag
+}
+
+// ReadAttribute returns an attribute under the maps lock.
+func (a *Auth) ReadAttribute(key string) string {
+	if a == nil {
+		return ""
+	}
+	a.metadataMu.RLock()
+	defer a.metadataMu.RUnlock()
+	if a.Attributes == nil {
+		return ""
+	}
+	return a.Attributes[key]
+}
+
+// WithMetadataLock runs fn while holding the maps write lock. Callers must not
+// perform network I/O inside fn.
+func (a *Auth) WithMetadataLock(fn func()) {
+	if fn == nil {
+		return
+	}
+	if a == nil {
+		fn()
+		return
+	}
+	a.metadataMu.Lock()
+	defer a.metadataMu.Unlock()
+	fn()
 }
 
 func stableAuthIndex(seed string) string {
@@ -411,6 +549,7 @@ func (m *ModelState) Clone() *ModelState {
 		return nil
 	}
 	copyState := *m
+	copyState.Quota = m.Quota.Clone()
 	if m.LastError != nil {
 		copyState.LastError = &Error{
 			Code:       m.LastError.Code,
@@ -436,28 +575,20 @@ func (a *Auth) ProxyInfo() string {
 	return "via proxy"
 }
 
-// DisableCoolingOverride returns the auth scoped disable_cooling override when present.
+// DisableCoolingOverride returns the auth-scoped disable_cooling override when present.
 // The value is read from metadata key "disable_cooling" (or legacy "disable-cooling").
-//
-// NOTE: This override is intentionally "true-only". When the metadata value is false, it is treated
-// as "not set" so the global disable-cooling flag can still take effect.
+// The second return value distinguishes explicit false from an absent override.
 func (a *Auth) DisableCoolingOverride() (bool, bool) {
 	if a == nil || a.Metadata == nil {
 		return false, false
 	}
 	if val, ok := a.Metadata["disable_cooling"]; ok {
 		if parsed, okParse := parseBoolAny(val); okParse {
-			if !parsed {
-				return false, false
-			}
 			return parsed, true
 		}
 	}
 	if val, ok := a.Metadata["disable-cooling"]; ok {
 		if parsed, okParse := parseBoolAny(val); okParse {
-			if !parsed {
-				return false, false
-			}
 			return parsed, true
 		}
 	}
@@ -481,8 +612,9 @@ func (a *Auth) ToolPrefixDisabled() bool {
 	return false
 }
 
-// RequestRetryOverride returns the auth-file scoped request_retry override when present.
+// RequestRetryOverride returns the auth-scoped request_retry override when present.
 // The value is read from metadata key "request_retry" (or legacy "request-retry").
+// A negative value is treated as unset and falls back to the global request-retry.
 func (a *Auth) RequestRetryOverride() (int, bool) {
 	if a == nil || a.Metadata == nil {
 		return 0, false
@@ -490,7 +622,7 @@ func (a *Auth) RequestRetryOverride() (int, bool) {
 	if val, ok := a.Metadata["request_retry"]; ok {
 		if parsed, okParse := parseIntAny(val); okParse {
 			if parsed < 0 {
-				parsed = 0
+				return 0, false
 			}
 			return parsed, true
 		}
@@ -498,7 +630,7 @@ func (a *Auth) RequestRetryOverride() (int, bool) {
 	if val, ok := a.Metadata["request-retry"]; ok {
 		if parsed, okParse := parseIntAny(val); okParse {
 			if parsed < 0 {
-				parsed = 0
+				return 0, false
 			}
 			return parsed, true
 		}
@@ -606,8 +738,8 @@ func (a *Auth) AccountInfo() (string, string) {
 }
 
 // ExpirationTime attempts to extract the credential expiration timestamp from metadata.
-// It inspects common keys such as "expired", "expire", "expires_at", and also
-// nested "token" objects to remain compatible with legacy auth file formats.
+// It inspects common absolute expiry keys, expires_in plus timestamp, and nested
+// token objects to remain compatible with legacy auth file formats.
 func (a *Auth) ExpirationTime() (time.Time, bool) {
 	if a == nil {
 		return time.Time{}, false
@@ -646,6 +778,11 @@ func expirationFromMap(meta map[string]any) (time.Time, bool) {
 			}
 		}
 	}
+	if expiresIn, okExpiresIn := parseRelativeExpirySeconds(meta); okExpiresIn {
+		if timestamp, okTimestamp := parseRelativeExpiryTimestamp(meta); okTimestamp {
+			return timestamp.Add(time.Duration(expiresIn) * time.Second), true
+		}
+	}
 	for _, nestedKey := range []string{"token", "Token"} {
 		if nested, ok := meta[nestedKey]; ok {
 			switch val := nested.(type) {
@@ -661,6 +798,28 @@ func expirationFromMap(meta map[string]any) (time.Time, bool) {
 				if ts, ok1 := expirationFromMap(temp); ok1 {
 					return ts, true
 				}
+			}
+		}
+	}
+	return time.Time{}, false
+}
+
+func parseRelativeExpirySeconds(meta map[string]any) (int, bool) {
+	for _, key := range []string{"expires_in", "expiresIn"} {
+		if value, ok := meta[key]; ok {
+			if seconds, okSeconds := parseIntAny(value); okSeconds && seconds > 0 {
+				return seconds, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func parseRelativeExpiryTimestamp(meta map[string]any) (time.Time, bool) {
+	for _, key := range []string{"timestamp", "issued_at", "issuedAt"} {
+		if value, ok := meta[key]; ok {
+			if timestamp, okTimestamp := parseTimeValue(value); okTimestamp && !timestamp.IsZero() {
+				return timestamp, true
 			}
 		}
 	}
@@ -711,6 +870,10 @@ func parseTimeValue(v any) (time.Time, bool) {
 			return normaliseUnix(unix), true
 		}
 	case float64:
+		return normaliseUnix(int64(value)), true
+	case int:
+		return normaliseUnix(int64(value)), true
+	case int32:
 		return normaliseUnix(int64(value)), true
 	case int64:
 		return normaliseUnix(value), true

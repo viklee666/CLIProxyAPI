@@ -40,16 +40,19 @@ type openAICompatibilityAPIKeyWithAuthIndex struct {
 }
 
 type openAICompatibilityWithAuthIndex struct {
-	Name           string                                   `json:"name"`
-	Priority       int                                      `json:"priority,omitempty"`
-	Disabled       bool                                     `json:"disabled"`
-	Prefix         string                                   `json:"prefix,omitempty"`
-	BaseURL        string                                   `json:"base-url"`
-	APIKeyEntries  []openAICompatibilityAPIKeyWithAuthIndex `json:"api-key-entries,omitempty"`
-	Models         []config.OpenAICompatibilityModel        `json:"models,omitempty"`
-	Headers        map[string]string                        `json:"headers,omitempty"`
-	DisableCooling bool                                     `json:"disable-cooling"`
-	AuthIndex      string                                   `json:"auth-index,omitempty"`
+	Name                  string                                   `json:"name"`
+	Priority              int                                      `json:"priority,omitempty"`
+	Disabled              bool                                     `json:"disabled"`
+	Prefix                string                                   `json:"prefix,omitempty"`
+	BaseURL               string                                   `json:"base-url"`
+	APIKeyEntries         []openAICompatibilityAPIKeyWithAuthIndex `json:"api-key-entries,omitempty"`
+	Models                []config.OpenAICompatibilityModel        `json:"models,omitempty"`
+	Headers               map[string]string                        `json:"headers,omitempty"`
+	SupportPromptCacheKey bool                                     `json:"support-prompt-cache-key,omitempty"`
+	DisableCooling        *bool                                    `json:"disable-cooling,omitempty"`
+	RequestRetry          *int                                     `json:"request-retry,omitempty"`
+	RequestScopedErrors   []config.RequestScopedErrorRule          `json:"request-scoped-errors,omitempty"`
+	AuthIndex             string                                   `json:"auth-index,omitempty"`
 }
 
 func (h *Handler) liveAuthIndexByID() map[string]string {
@@ -194,6 +197,45 @@ func (s openAICompatibilityAuthIndexSet) all() []string {
 		if authIndex != "" {
 			out = append(out, authIndex)
 		}
+	}
+	return out
+}
+
+func allOpenAICompatibilityAuthIndices(entries []config.OpenAICompatibility, liveIndexByID map[string]string) []string {
+	sets := openAICompatibilityAuthIndexSets(entries, liveIndexByID)
+	out := make([]string, 0, len(sets))
+	for i := range sets {
+		out = append(out, sets[i].all()...)
+	}
+	return out
+}
+
+// deletedAuthIndices returns live auth indices present in oldIndices but absent
+// from newIndices so client-group bindings can be dropped with a full replace.
+func deletedAuthIndices(oldIndices, newIndices []string) []string {
+	keep := make(map[string]struct{}, len(newIndices))
+	for _, idx := range newIndices {
+		idx = strings.TrimSpace(idx)
+		if idx == "" {
+			continue
+		}
+		keep[idx] = struct{}{}
+	}
+	out := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, idx := range oldIndices {
+		idx = strings.TrimSpace(idx)
+		if idx == "" {
+			continue
+		}
+		if _, ok := keep[idx]; ok {
+			continue
+		}
+		if _, dup := seen[idx]; dup {
+			continue
+		}
+		seen[idx] = struct{}{}
+		out = append(out, idx)
 	}
 	return out
 }
@@ -396,15 +438,18 @@ func (h *Handler) openAICompatibilityWithAuthIndex() []openAICompatibilityWithAu
 		entry := normalized[i]
 
 		response := openAICompatibilityWithAuthIndex{
-			Name:           entry.Name,
-			Priority:       entry.Priority,
-			Disabled:       entry.Disabled,
-			Prefix:         entry.Prefix,
-			BaseURL:        entry.BaseURL,
-			Models:         entry.Models,
-			Headers:        entry.Headers,
-			DisableCooling: entry.DisableCooling,
-			AuthIndex:      authIndexSets[i].AuthIndex,
+			Name:                  entry.Name,
+			Priority:              entry.Priority,
+			Disabled:              entry.Disabled,
+			Prefix:                entry.Prefix,
+			BaseURL:               entry.BaseURL,
+			Models:                entry.Models,
+			Headers:               entry.Headers,
+			SupportPromptCacheKey: entry.SupportPromptCacheKey,
+			DisableCooling:        entry.DisableCooling,
+			RequestRetry:          entry.RequestRetry,
+			RequestScopedErrors:   entry.RequestScopedErrors,
+			AuthIndex:             authIndexSets[i].AuthIndex,
 		}
 		if len(entry.APIKeyEntries) > 0 {
 			response.APIKeyEntries = make([]openAICompatibilityAPIKeyWithAuthIndex, len(entry.APIKeyEntries))

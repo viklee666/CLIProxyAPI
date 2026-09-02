@@ -16,46 +16,43 @@ import (
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
 
-type apiCallAgentIdentityExecutor struct {
-	authorization string
-	accountID     string
-}
+func TestAPICallUsesRequestProxyURL(t *testing.T) {
+	t.Parallel()
 
-func (e *apiCallAgentIdentityExecutor) Identifier() string { return "codex" }
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte("proxied"))
+	}))
+	defer proxyServer.Close()
 
-func (e *apiCallAgentIdentityExecutor) Execute(context.Context, *coreauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	return cliproxyexecutor.Response{}, nil
-}
-
-func (e *apiCallAgentIdentityExecutor) ExecuteStream(context.Context, *coreauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
-	return nil, nil
-}
-
-func (e *apiCallAgentIdentityExecutor) Refresh(_ context.Context, auth *coreauth.Auth) (*coreauth.Auth, error) {
-	return auth, nil
-}
-
-func (e *apiCallAgentIdentityExecutor) CountTokens(context.Context, *coreauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	return cliproxyexecutor.Response{}, nil
-}
-
-func (e *apiCallAgentIdentityExecutor) PrepareRequest(req *http.Request, _ *coreauth.Auth) error {
-	req.Header.Set("Authorization", "AgentAssertion signed-for-management-request")
-	req.Header.Set("Chatgpt-Account-Id", "acct-management")
-	return nil
-}
-
-func (e *apiCallAgentIdentityExecutor) HttpRequest(_ context.Context, auth *coreauth.Auth, req *http.Request) (*http.Response, error) {
-	if errPrepare := e.PrepareRequest(req, auth); errPrepare != nil {
-		return nil, errPrepare
+	h := &Handler{
+		cfg: &config.Config{
+			SDKConfig: sdkconfig.SDKConfig{ProxyURL: "http://127.0.0.1:1"},
+		},
 	}
-	e.authorization = req.Header.Get("Authorization")
-	e.accountID = req.Header.Get("Chatgpt-Account-Id")
-	return &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     make(http.Header),
-		Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
-	}, nil
+	router := gin.New()
+	router.POST("/", h.APICall)
+
+	body := `{"method":"GET","url":"http://upstream.invalid/test","proxy_url":"` + proxyServer.URL + `"}`
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+
+	var response apiCallResponse
+	if errDecode := json.NewDecoder(recorder.Body).Decode(&response); errDecode != nil {
+		t.Fatalf("decode response: %v", errDecode)
+	}
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("upstream status code = %d, want %d", response.StatusCode, http.StatusCreated)
+	}
+	if response.Body != "proxied" {
+		t.Fatalf("upstream body = %q, want %q", response.Body, "proxied")
+	}
 }
 
 func TestAPICallTransportDirectBypassesGlobalProxy(t *testing.T) {
@@ -67,7 +64,7 @@ func TestAPICallTransportDirectBypassesGlobalProxy(t *testing.T) {
 		},
 	}
 
-	transport := h.apiCallTransport(&coreauth.Auth{ProxyURL: "direct"})
+	transport := h.apiCallTransport(&coreauth.Auth{ProxyURL: "direct"}, "")
 	httpTransport, ok := transport.(*http.Transport)
 	if !ok {
 		t.Fatalf("transport type = %T, want *http.Transport", transport)
@@ -86,7 +83,7 @@ func TestAPICallTransportInvalidAuthFallsBackToGlobalProxy(t *testing.T) {
 		},
 	}
 
-	transport := h.apiCallTransport(&coreauth.Auth{ProxyURL: "bad-value"})
+	transport := h.apiCallTransport(&coreauth.Auth{ProxyURL: "bad-value"}, "")
 	httpTransport, ok := transport.(*http.Transport)
 	if !ok {
 		t.Fatalf("transport type = %T, want *http.Transport", transport)
@@ -103,6 +100,56 @@ func TestAPICallTransportInvalidAuthFallsBackToGlobalProxy(t *testing.T) {
 	}
 	if proxyURL == nil || proxyURL.String() != "http://global-proxy.example.com:8080" {
 		t.Fatalf("proxy URL = %v, want http://global-proxy.example.com:8080", proxyURL)
+	}
+}
+
+func TestAPICallTransportRequestProxyOverridesCredentialAndGlobalProxy(t *testing.T) {
+	t.Parallel()
+
+	h := &Handler{
+		cfg: &config.Config{
+			SDKConfig: sdkconfig.SDKConfig{ProxyURL: "http://global-proxy.example.com:8080"},
+		},
+	}
+	auth := &coreauth.Auth{ProxyURL: "http://credential-proxy.example.com:8080"}
+
+	transport := h.apiCallTransport(auth, " http://request-proxy.example.com:8080 ")
+	httpTransport, ok := transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport type = %T, want *http.Transport", transport)
+	}
+
+	req, errRequest := http.NewRequest(http.MethodGet, "https://example.com", nil)
+	if errRequest != nil {
+		t.Fatalf("http.NewRequest returned error: %v", errRequest)
+	}
+
+	proxyURL, errProxy := httpTransport.Proxy(req)
+	if errProxy != nil {
+		t.Fatalf("httpTransport.Proxy returned error: %v", errProxy)
+	}
+	if proxyURL == nil || proxyURL.String() != "http://request-proxy.example.com:8080" {
+		t.Fatalf("proxy URL = %v, want http://request-proxy.example.com:8080", proxyURL)
+	}
+}
+
+func TestAPICallTransportInvalidRequestProxyDoesNotFallBack(t *testing.T) {
+	t.Parallel()
+
+	h := &Handler{
+		cfg: &config.Config{
+			SDKConfig: sdkconfig.SDKConfig{ProxyURL: "http://global-proxy.example.com:8080"},
+		},
+	}
+	auth := &coreauth.Auth{ProxyURL: "http://credential-proxy.example.com:8080"}
+
+	transport := h.apiCallTransport(auth, "bad-value")
+	httpTransport, ok := transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport type = %T, want *http.Transport", transport)
+	}
+	if httpTransport.Proxy != nil {
+		t.Fatal("expected invalid request proxy to avoid lower-priority proxy settings")
 	}
 }
 
@@ -195,7 +242,7 @@ func TestAPICallTransportAPIKeyAuthFallsBackToConfigProxyURL(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			transport := h.apiCallTransport(tc.auth)
+			transport := h.apiCallTransport(tc.auth, "")
 			httpTransport, ok := transport.(*http.Transport)
 			if !ok {
 				t.Fatalf("transport type = %T, want *http.Transport", transport)
@@ -269,6 +316,48 @@ func TestAuthByIndexDistinguishesSharedAPIKeysAcrossProviders(t *testing.T) {
 	if gotCompat.ID != compatAuth.ID {
 		t.Fatalf("authByIndex(compat) returned %q, want %q", gotCompat.ID, compatAuth.ID)
 	}
+}
+
+type apiCallAgentIdentityExecutor struct {
+	authorization string
+	accountID     string
+}
+
+func (e *apiCallAgentIdentityExecutor) Identifier() string { return "codex" }
+
+func (e *apiCallAgentIdentityExecutor) Execute(context.Context, *coreauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	return cliproxyexecutor.Response{}, nil
+}
+
+func (e *apiCallAgentIdentityExecutor) ExecuteStream(context.Context, *coreauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	return nil, nil
+}
+
+func (e *apiCallAgentIdentityExecutor) Refresh(_ context.Context, auth *coreauth.Auth) (*coreauth.Auth, error) {
+	return auth, nil
+}
+
+func (e *apiCallAgentIdentityExecutor) CountTokens(context.Context, *coreauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	return cliproxyexecutor.Response{}, nil
+}
+
+func (e *apiCallAgentIdentityExecutor) PrepareRequest(req *http.Request, _ *coreauth.Auth) error {
+	req.Header.Set("Authorization", "AgentAssertion signed-for-management-request")
+	req.Header.Set("Chatgpt-Account-Id", "acct-management")
+	return nil
+}
+
+func (e *apiCallAgentIdentityExecutor) HttpRequest(_ context.Context, auth *coreauth.Auth, req *http.Request) (*http.Response, error) {
+	if errPrepare := e.PrepareRequest(req, auth); errPrepare != nil {
+		return nil, errPrepare
+	}
+	e.authorization = req.Header.Get("Authorization")
+	e.accountID = req.Header.Get("Chatgpt-Account-Id")
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+	}, nil
 }
 
 func TestAPICallAgentIdentityDoesNotRequireOAuthToken(t *testing.T) {

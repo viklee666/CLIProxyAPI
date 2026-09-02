@@ -355,6 +355,7 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 	// tool_use_id → tool_name lookup, populated incrementally during the main loop.
 	// Claude's tool_result references tool_use by ID; Gemini requires functionResponse.name.
 	toolNameByID := make(map[string]string)
+	var pendingToolUseIDs []string
 
 	messagesResult := gjson.GetBytes(rawJSON, "messages")
 	if messagesResult.IsArray() {
@@ -367,6 +368,11 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 				continue
 			}
 			originalRole := roleResult.String()
+			var precedingToolUseIDs []string
+			if originalRole != "system" {
+				precedingToolUseIDs = pendingToolUseIDs
+				pendingToolUseIDs = nil
+			}
 			role := originalRole
 			if role == "assistant" {
 				role = "model"
@@ -403,6 +409,9 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 				continue
 			}
 			if contentsResult.IsArray() {
+				if originalRole == "user" {
+					contentsResult = translatorcommon.AlignClaudeToolResults(contentsResult, precedingToolUseIDs)
+				}
 				contentResults := contentsResult.Array()
 				numContents := len(contentResults)
 				for j := 0; j < numContents; j++ {
@@ -574,15 +583,24 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 							toolNameByID[functionID] = originalFunctionName
 						}
 
-						// Handle both object and string input formats
+						// Preserve every present input as valid JSON for the function call.
 						var argsRaw string
 						if argsResult.IsObject() {
 							argsRaw = argsResult.Raw
-						} else if argsResult.Type == gjson.String {
-							// Input is a JSON string, parse and validate it
-							parsed := gjson.Parse(argsResult.String())
-							if parsed.IsObject() {
-								argsRaw = parsed.Raw
+						} else if argsResult.Exists() {
+							switch argsResult.Type {
+							case gjson.String:
+								// Parse JSON-encoded object strings while preserving other strings as JSON strings.
+								parsed := gjson.Parse(argsResult.String())
+								if parsed.IsObject() {
+									argsRaw = parsed.Raw
+								} else {
+									argsRaw = argsResult.Raw
+								}
+							case gjson.Null:
+								argsRaw = `{}`
+							default:
+								argsRaw = argsResult.Raw
 							}
 						}
 
@@ -611,6 +629,9 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 							partJSON, _ = sjson.SetBytes(partJSON, "functionCall.name", functionName)
 							partJSON, _ = sjson.SetRawBytes(partJSON, "functionCall.args", []byte(argsRaw))
 							partItems = append(partItems, partJSON)
+							if originalRole == "assistant" {
+								pendingToolUseIDs = append(pendingToolUseIDs, functionID)
+							}
 						}
 					} else if contentTypeResult.Type == gjson.String && contentTypeResult.String() == "tool_result" {
 						toolCallID := contentResult.Get("tool_use_id").String()
@@ -845,7 +866,7 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 		out, _ = sjson.SetRawBytes(out, "request.systemInstruction", antigravityClaudeContent("user", systemParts))
 	}
 	if len(contentItems) > 0 {
-		out = translatorcommon.SetRawArrayItems(out, "request.contents", contentItems)
+		out = translatorcommon.SetRawArrayItems(out, "request.contents", translatorcommon.MergeAdjacentGeminiContents(contentItems))
 	}
 	if toolDeclCount > 0 {
 		out, _ = sjson.SetRawBytes(out, "request.tools", toolsJSON)
@@ -885,7 +906,6 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 			if b := t.Get("budget_tokens"); b.Exists() && b.Type == gjson.Number {
 				budget := int(b.Int())
 				out, _ = sjson.SetBytes(out, "request.generationConfig.thinkingConfig.thinkingBudget", budget)
-				out, _ = sjson.SetBytes(out, "request.generationConfig.thinkingConfig.includeThoughts", true)
 			}
 		case "adaptive", "auto":
 			// For adaptive thinking:
@@ -901,7 +921,6 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 			} else {
 				out, _ = sjson.SetBytes(out, "request.generationConfig.thinkingConfig.thinkingLevel", "high")
 			}
-			out, _ = sjson.SetBytes(out, "request.generationConfig.thinkingConfig.includeThoughts", true)
 		}
 	}
 	if v := gjson.GetBytes(rawJSON, "temperature"); v.Exists() && v.Type == gjson.Number {

@@ -6,8 +6,6 @@ package cliproxy
 import (
 	"context"
 	"fmt"
-	"strings"
-	"time"
 
 	configaccess "github.com/router-for-me/CLIProxyAPI/v7/internal/access/config_access"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
@@ -21,41 +19,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
-
-const adaptiveUsagePluginName = "adaptive-routing"
-
-func newRoutingSelector(cfg *config.Config) coreauth.Selector {
-	strategy := ""
-	sessionAffinity := false
-	sessionAffinityTTL := time.Hour
-	if cfg != nil {
-		strategy = strings.ToLower(strings.TrimSpace(cfg.Routing.Strategy))
-		sessionAffinity = cfg.Routing.SessionAffinity
-		if ttlStr := strings.TrimSpace(cfg.Routing.SessionAffinityTTL); ttlStr != "" {
-			if parsed, errParse := time.ParseDuration(ttlStr); errParse == nil && parsed > 0 {
-				sessionAffinityTTL = parsed
-			}
-		}
-	}
-	var selector coreauth.Selector
-	switch strategy {
-	case "fill-first", "fillfirst", "ff":
-		selector = &coreauth.FillFirstSelector{}
-	case "adaptive":
-		adaptive := coreauth.NewAdaptiveSelector(cfg.Routing.Adaptive)
-		usage.RegisterNamedPlugin(adaptiveUsagePluginName, adaptive)
-		selector = adaptive
-	default:
-		selector = &coreauth.RoundRobinSelector{}
-	}
-	if sessionAffinity {
-		selector = coreauth.NewSessionAffinitySelectorWithConfig(coreauth.SessionAffinityConfig{
-			Fallback: selector,
-			TTL:      sessionAffinityTTL,
-		})
-	}
-	return selector
-}
 
 // Builder constructs a Service instance with customizable providers.
 // It provides a fluent interface for configuring all aspects of the service
@@ -225,6 +188,9 @@ func (b *Builder) Build() (*Service, error) {
 	if b.configPath == "" {
 		return nil, fmt.Errorf("cliproxy: configuration path is required")
 	}
+	if errValidate := b.cfg.ValidateCredentialWeights(); errValidate != nil {
+		return nil, fmt.Errorf("cliproxy: validate credential weights: %w", errValidate)
+	}
 	b.cfg.NormalizePluginsConfig()
 	if errResolvePluginsDir := b.cfg.ResolvePluginsDir(); errResolvePluginsDir != nil && b.cfg.Plugins.Enabled {
 		return nil, fmt.Errorf("cliproxy: %w", errResolvePluginsDir)
@@ -285,11 +251,19 @@ func (b *Builder) Build() (*Service, error) {
 	tenantService, errTenant := tenant.New(tenant.ResolveDatabasePath(b.configPath))
 	if errTenant != nil {
 		if clientAccessService != nil {
+			sdkaccess.UnregisterProvider(clientaccess.ProviderType)
+			usage.UnregisterNamedPlugin("client-access")
 			_ = clientAccessService.Close()
 		}
 		return nil, fmt.Errorf("cliproxy: initialize tenant store: %w", errTenant)
 	}
 
+	routingState := normalizedRoutingRuntimeState(b.cfg)
+	var appliedRoutingState *routingRuntimeState
+	var cooldownStateStore coreauth.CooldownStateStore
+	if provider, ok := sdkAuth.GetTokenStore().(coreauth.CooldownStateStoreProvider); ok && provider != nil {
+		cooldownStateStore = provider.CooldownStateStore()
+	}
 	coreManager := b.coreManager
 	if coreManager == nil {
 		tokenStore := sdkAuth.GetTokenStore()
@@ -297,7 +271,8 @@ func (b *Builder) Build() (*Service, error) {
 			dirSetter.SetBaseDir(b.cfg.AuthDir)
 		}
 
-		coreManager = coreauth.NewManager(tokenStore, newRoutingSelector(b.cfg), nil)
+		coreManager = coreauth.NewManager(tokenStore, newRoutingSelector(routingState), nil)
+		appliedRoutingState = &routingState
 	}
 	// Attach a default RoundTripper provider so providers can opt-in per-auth transports.
 	coreManager.SetRoundTripperProvider(newDefaultRoundTripperProvider())
@@ -312,19 +287,21 @@ func (b *Builder) Build() (*Service, error) {
 	}
 
 	service := &Service{
-		cfg:            b.cfg,
-		configPath:     b.configPath,
-		tokenProvider:  tokenProvider,
-		apiKeyProvider: apiKeyProvider,
-		watcherFactory: watcherFactory,
-		hooks:          b.hooks,
-		authManager:    authManager,
-		accessManager:  accessManager,
-		coreManager:    coreManager,
-		pluginHost:     pluginHost,
-		clientAccess:   clientAccessService,
-		tenant:         tenantService,
-		serverOptions:  append([]api.ServerOption(nil), b.serverOptions...),
+		cfg:                 b.cfg,
+		configPath:          b.configPath,
+		tokenProvider:       tokenProvider,
+		apiKeyProvider:      apiKeyProvider,
+		watcherFactory:      watcherFactory,
+		hooks:               b.hooks,
+		authManager:         authManager,
+		accessManager:       accessManager,
+		coreManager:         coreManager,
+		pluginHost:          pluginHost,
+		clientAccess:        clientAccessService,
+		tenant:              tenantService,
+		appliedRoutingState: appliedRoutingState,
+		cooldownStateStore:  cooldownStateStore,
+		serverOptions:       append([]api.ServerOption(nil), b.serverOptions...),
 	}
 	if b.postAuthHook != nil {
 		service.serverOptions = append(service.serverOptions, api.WithPostAuthHook(b.postAuthHook))

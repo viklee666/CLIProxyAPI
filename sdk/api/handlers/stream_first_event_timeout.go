@@ -12,6 +12,28 @@ import (
 
 type firstEventStreamOpen func(context.Context) (*coreexecutor.StreamResult, error)
 
+// prependStreamChunks replays chunks that the first-event probe already consumed
+// before handing the remainder of the upstream stream to the caller.
+func prependStreamChunks(pending []coreexecutor.StreamChunk, closed bool, rest <-chan coreexecutor.StreamChunk) <-chan coreexecutor.StreamChunk {
+	if len(pending) == 0 && !closed {
+		return rest
+	}
+	merged := make(chan coreexecutor.StreamChunk)
+	go func() {
+		defer close(merged)
+		for _, chunk := range pending {
+			merged <- chunk
+		}
+		if closed || rest == nil {
+			return
+		}
+		for chunk := range rest {
+			merged <- chunk
+		}
+	}()
+	return merged
+}
+
 type firstEventStreamOutcome struct {
 	result  *coreexecutor.StreamResult
 	pending []coreexecutor.StreamChunk

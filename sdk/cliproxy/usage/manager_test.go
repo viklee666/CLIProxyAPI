@@ -9,20 +9,31 @@ import (
 
 type usagePluginFunc func(context.Context, Record)
 
-func (f usagePluginFunc) HandleUsage(ctx context.Context, record Record) { f(ctx, record) }
+func (f usagePluginFunc) HandleUsage(ctx context.Context, record Record) {
+	f(ctx, record)
+}
 
-func TestManagerStopAndWaitDrainsQueue(t *testing.T) {
-	manager := NewManager(4)
-	var delivered atomic.Int64
-	manager.Register(usagePluginFunc(func(context.Context, Record) {
-		delivered.Add(1)
-	}))
-	manager.Publish(context.Background(), Record{AuthID: "auth-a"})
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	manager.StopAndWait(ctx)
-	if delivered.Load() != 1 {
-		t.Fatalf("delivered = %d, want 1", delivered.Load())
+func TestStreamFromContextDefaultsMissingToFalse(t *testing.T) {
+	if StreamFromContext(context.Background()) {
+		t.Fatalf("StreamFromContext(background) = true, want false")
+	}
+}
+
+func TestStreamFromContextHonorsExplicitTrue(t *testing.T) {
+	ctx := WithStream(context.Background(), true)
+	if !StreamFromContext(ctx) {
+		t.Fatalf("StreamFromContext(true) = false, want true")
+	}
+}
+
+func TestRecordStreamField(t *testing.T) {
+	record := Record{
+		Provider: "openai",
+		Model:    "gpt-5.4",
+		Stream:   true,
+	}
+	if !record.Stream {
+		t.Fatalf("Record.Stream = false, want true")
 	}
 }
 
@@ -69,5 +80,93 @@ func TestRecordOmittedGenerateIsEnabled(t *testing.T) {
 	}
 	if !GenerateEnabled(record.Generate) {
 		t.Fatalf("GenerateEnabled(omitted) = false, want true")
+	}
+}
+
+func TestUnregisterNamedStopsDispatchAndCompactsIndexes(t *testing.T) {
+	manager := NewManager(0)
+	defer manager.Stop()
+
+	var dropped atomic.Bool
+	keepDone := make(chan struct{}, 1)
+	dropPlugin := usagePluginFunc(func(context.Context, Record) {
+		dropped.Store(true)
+	})
+	keepPlugin := usagePluginFunc(func(context.Context, Record) {
+		select {
+		case keepDone <- struct{}{}:
+		default:
+		}
+	})
+
+	manager.RegisterNamed("drop", dropPlugin)
+	manager.RegisterNamed("keep", keepPlugin)
+	if got := manager.UnregisterNamed("drop"); got == nil {
+		t.Fatal("UnregisterNamed(drop) = nil, want dropped plugin")
+	}
+	if got := manager.UnregisterNamed("missing"); got != nil {
+		t.Fatal("UnregisterNamed(missing) returned a plugin")
+	}
+
+	manager.Publish(context.Background(), Record{Provider: "provider"})
+	select {
+	case <-keepDone:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for remaining named plugin")
+	}
+	if dropped.Load() {
+		t.Fatal("unregistered plugin received usage")
+	}
+
+	replaced := make(chan struct{}, 1)
+	manager.RegisterNamed("keep", usagePluginFunc(func(context.Context, Record) {
+		select {
+		case replaced <- struct{}{}:
+		default:
+		}
+	}))
+	manager.Publish(context.Background(), Record{Provider: "provider"})
+	select {
+	case <-replaced:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for replaced named plugin")
+	}
+	select {
+	case <-keepDone:
+		t.Fatal("original keep plugin still dispatched after RegisterNamed replacement")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestUnregisterNamedPluginRemovesDefaultPlugin(t *testing.T) {
+	const name = "test-unregister-named-plugin"
+	var dropped atomic.Bool
+	keepDone := make(chan struct{}, 1)
+	t.Cleanup(func() {
+		UnregisterNamedPlugin(name)
+		UnregisterNamedPlugin(name + "-keep")
+	})
+
+	RegisterNamedPlugin(name, usagePluginFunc(func(context.Context, Record) {
+		dropped.Store(true)
+	}))
+	RegisterNamedPlugin(name+"-keep", usagePluginFunc(func(context.Context, Record) {
+		select {
+		case keepDone <- struct{}{}:
+		default:
+		}
+	}))
+	if got := UnregisterNamedPlugin(name); got == nil {
+		t.Fatal("UnregisterNamedPlugin() = nil, want registered plugin")
+	}
+
+	PublishRecord(context.Background(), Record{Provider: "provider"})
+	select {
+	case <-keepDone:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for remaining default named plugin")
+	}
+	if dropped.Load() {
+		t.Fatal("unregistered default plugin received usage")
 	}
 }

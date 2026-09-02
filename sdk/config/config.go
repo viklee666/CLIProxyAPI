@@ -11,6 +11,7 @@ type SDKConfig = internalconfig.SDKConfig
 type Config = internalconfig.Config
 
 type StreamingConfig = internalconfig.StreamingConfig
+type ClaudeCodeConfig = internalconfig.ClaudeCodeConfig
 type ClientAccessConfig = internalconfig.ClientAccessConfig
 type AdaptiveRoutingConfig = internalconfig.AdaptiveRoutingConfig
 type AdaptiveRoutingWeights = internalconfig.AdaptiveRoutingWeights

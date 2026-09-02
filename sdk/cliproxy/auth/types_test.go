@@ -4,9 +4,57 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+func TestRequestRetryOverride(t *testing.T) {
+	var unset *Auth
+	if got, ok := unset.RequestRetryOverride(); ok || got != 0 {
+		t.Fatalf("nil auth override = (%d, %t), want (0, false)", got, ok)
+	}
+
+	auth := &Auth{}
+	if got, ok := auth.RequestRetryOverride(); ok || got != 0 {
+		t.Fatalf("empty auth override = (%d, %t), want (0, false)", got, ok)
+	}
+
+	auth = &Auth{Metadata: map[string]any{"request_retry": 0}}
+	if got, ok := auth.RequestRetryOverride(); !ok || got != 0 {
+		t.Fatalf("request_retry=0 override = (%d, %t), want (0, true)", got, ok)
+	}
+
+	auth = &Auth{Metadata: map[string]any{"request_retry": 3}}
+	if got, ok := auth.RequestRetryOverride(); !ok || got != 3 {
+		t.Fatalf("request_retry=3 override = (%d, %t), want (3, true)", got, ok)
+	}
+
+	auth = &Auth{Metadata: map[string]any{"request_retry": -1}}
+	if got, ok := auth.RequestRetryOverride(); ok || got != 0 {
+		t.Fatalf("request_retry=-1 override = (%d, %t), want (0, false)", got, ok)
+	}
+
+	auth = &Auth{Metadata: map[string]any{"request-retry": 2}}
+	if got, ok := auth.RequestRetryOverride(); !ok || got != 2 {
+		t.Fatalf("legacy request-retry=2 override = (%d, %t), want (2, true)", got, ok)
+	}
+
+	auth = &Auth{Metadata: map[string]any{"request-retry": -2}}
+	if got, ok := auth.RequestRetryOverride(); ok || got != 0 {
+		t.Fatalf("legacy request-retry=-2 override = (%d, %t), want (0, false)", got, ok)
+	}
+
+	auth = &Auth{Metadata: map[string]any{"request_retry": 0, "request-retry": 2}}
+	if got, ok := auth.RequestRetryOverride(); !ok || got != 0 {
+		t.Fatalf("canonical request_retry precedence = (%d, %t), want (0, true)", got, ok)
+	}
+
+	auth = &Auth{Metadata: map[string]any{"request_retry": "0"}}
+	if got, ok := auth.RequestRetryOverride(); !ok || got != 0 {
+		t.Fatalf("request_retry string 0 override = (%d, %t), want (0, true)", got, ok)
+	}
+}
 
 func TestToolPrefixDisabled(t *testing.T) {
 	var a *Auth
@@ -201,5 +249,45 @@ func TestRecentRequestsSnapshotBucketAdvanceMovesCounts(t *testing.T) {
 	}
 	if newest.Success != 0 || newest.Failed != 1 {
 		t.Fatalf("newest bucket = success=%d failed=%d, want 0/1", newest.Success, newest.Failed)
+	}
+}
+
+func TestAuthCloneAndAccessTokenFingerprintAreRaceFreeWithMetadataWrites(t *testing.T) {
+	auth := &Auth{
+		ID:         "auth-metadata-race",
+		Attributes: map[string]string{"auth_kind": "oauth"},
+		Metadata:   map[string]any{"access_token": "token-0", "skip_account_profile": false},
+	}
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			switch i % 4 {
+			case 0:
+				auth.WithMetadataLock(func() {
+					if auth.Metadata == nil {
+						auth.Metadata = make(map[string]any)
+					}
+					auth.Metadata["access_token"] = "token-write"
+					auth.Metadata["skip_account_profile"] = i%8 == 0
+				})
+			case 1:
+				_ = auth.Clone()
+			case 2:
+				_ = AccessTokenSHA256(auth)
+			default:
+				_ = auth.ReadMetadataBool("skip_account_profile")
+				_ = auth.ReadAttribute("auth_kind")
+				_ = auth.SnapshotMetadata()
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	if AccessTokenSHA256(auth) == "" {
+		t.Fatal("access token fingerprint is empty after concurrent metadata writes")
 	}
 }

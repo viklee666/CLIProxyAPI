@@ -16,7 +16,7 @@ import (
 
 type providerExtra struct {
 	ExcludedModels          []string
-	DisableCooling          bool
+	DisableCooling          *bool
 	Websockets              bool
 	RebuildMidSystemMessage bool
 	Cloak                   *config.CloakConfig
@@ -275,9 +275,11 @@ func decodeProviderExtra(rawValue string) (providerExtra, error) {
 		}
 	}
 	if value := firstJSONValue(values, "disable_cooling", "disable-cooling"); value != nil {
-		if errUnmarshal := json.Unmarshal(value, &extra.DisableCooling); errUnmarshal != nil {
+		var disableCooling *bool
+		if errUnmarshal := json.Unmarshal(value, &disableCooling); errUnmarshal != nil {
 			return providerExtra{}, errors.New("invalid tenant provider disable cooling")
 		}
+		extra.DisableCooling = disableCooling
 	}
 	if value := firstJSONValue(values, "websockets"); value != nil {
 		if errUnmarshal := json.Unmarshal(value, &extra.Websockets); errUnmarshal != nil {

@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -266,8 +267,8 @@ func isAgentIdentityTaskInvalidError(err error) bool {
 	if err == nil {
 		return false
 	}
-	statusErr, ok := err.(interface{ StatusCode() int })
-	if !ok || statusErr.StatusCode() != http.StatusUnauthorized {
+	var statusCoder interface{ StatusCode() int }
+	if !errors.As(err, &statusCoder) || statusCoder == nil || statusCoder.StatusCode() != http.StatusUnauthorized {
 		return false
 	}
 	lower := strings.ToLower(err.Error())

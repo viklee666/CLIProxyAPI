@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -287,5 +288,160 @@ func TestDeleteAIProviderRemovesClientAccessCredentialBindings(t *testing.T) {
 			}
 			assertNoClientAccessCredentialBindings(t, service)
 		})
+	}
+}
+
+func TestPutAIProviderRemovesClientAccessCredentialBindings(t *testing.T) {
+	tests := []struct {
+		name      string
+		configure func(*config.Config) []testProviderAuth
+		target    string
+		replace   func(*Handler, *gin.Context)
+	}{
+		{
+			name: "gemini",
+			configure: func(cfg *config.Config) []testProviderAuth {
+				cfg.GeminiKey = []config.GeminiKey{{APIKey: "gemini-key", BaseURL: "https://gemini.example.com"}}
+				id, _ := synthesizer.NewStableIDGenerator().Next("gemini:apikey", "gemini-key", "https://gemini.example.com")
+				return []testProviderAuth{{id: id, index: "auth-gemini"}}
+			},
+			target:  "/v0/management/gemini-api-key",
+			replace: (*Handler).PutGeminiKeys,
+		},
+		{
+			name: "interactions",
+			configure: func(cfg *config.Config) []testProviderAuth {
+				cfg.InteractionsKey = []config.GeminiKey{{APIKey: "interactions-key", BaseURL: "https://interactions.example.com"}}
+				id, _ := synthesizer.NewStableIDGenerator().Next("gemini-interactions:apikey", "interactions-key", "https://interactions.example.com")
+				return []testProviderAuth{{id: id, index: "auth-interactions"}}
+			},
+			target:  "/v0/management/interactions-api-key",
+			replace: (*Handler).PutInteractionsKeys,
+		},
+		{
+			name: "claude",
+			configure: func(cfg *config.Config) []testProviderAuth {
+				cfg.ClaudeKey = []config.ClaudeKey{{APIKey: "claude-key", BaseURL: "https://claude.example.com"}}
+				id, _ := synthesizer.NewStableIDGenerator().Next("claude:apikey", "claude-key", "https://claude.example.com")
+				return []testProviderAuth{{id: id, index: "auth-claude"}}
+			},
+			target:  "/v0/management/claude-api-key",
+			replace: (*Handler).PutClaudeKeys,
+		},
+		{
+			name: "codex",
+			configure: func(cfg *config.Config) []testProviderAuth {
+				cfg.CodexKey = []config.CodexKey{{APIKey: "codex-key", BaseURL: "https://codex.example.com"}}
+				id, _ := synthesizer.NewStableIDGenerator().Next("codex:apikey", "codex-key", "https://codex.example.com")
+				return []testProviderAuth{{id: id, index: "auth-codex"}}
+			},
+			target:  "/v0/management/codex-api-key",
+			replace: (*Handler).PutCodexKeys,
+		},
+		{
+			name: "xai",
+			configure: func(cfg *config.Config) []testProviderAuth {
+				cfg.XAIKey = []config.XAIKey{{APIKey: "xai-key", BaseURL: "https://xai.example.com"}}
+				id, _ := synthesizer.NewStableIDGenerator().Next("xai:apikey", "xai-key", "https://xai.example.com")
+				return []testProviderAuth{{id: id, index: "auth-xai"}}
+			},
+			target:  "/v0/management/xai-api-key",
+			replace: (*Handler).PutXAIKeys,
+		},
+		{
+			name: "vertex",
+			configure: func(cfg *config.Config) []testProviderAuth {
+				cfg.VertexCompatAPIKey = []config.VertexCompatKey{{APIKey: "vertex-key", BaseURL: "https://vertex.example.com", ProxyURL: "https://proxy.example.com"}}
+				id, _ := synthesizer.NewStableIDGenerator().Next("vertex:apikey", "vertex-key", "https://vertex.example.com", "https://proxy.example.com")
+				return []testProviderAuth{{id: id, index: "auth-vertex"}}
+			},
+			target:  "/v0/management/vertex-api-key",
+			replace: (*Handler).PutVertexCompatKeys,
+		},
+		{
+			name: "openai compatibility",
+			configure: func(cfg *config.Config) []testProviderAuth {
+				cfg.OpenAICompatibility = []config.OpenAICompatibility{{
+					Name:    "Custom",
+					BaseURL: "https://openai.example.com",
+					APIKeyEntries: []config.OpenAICompatibilityAPIKey{
+						{APIKey: "openai-key-a"},
+						{APIKey: "openai-key-b", ProxyURL: "https://proxy.example.com"},
+					},
+				}}
+				idGen := synthesizer.NewStableIDGenerator()
+				idA, _ := idGen.Next("openai-compatibility:custom", "openai-key-a", "https://openai.example.com", "")
+				idB, _ := idGen.Next("openai-compatibility:custom", "openai-key-b", "https://openai.example.com", "https://proxy.example.com")
+				return []testProviderAuth{{id: idA, index: "auth-openai-a"}, {id: idB, index: "auth-openai-b"}}
+			},
+			target:  "/v0/management/openai-compatibility",
+			replace: (*Handler).PutOpenAICompat,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.Config{}
+			manager := coreauth.NewManager(nil, nil, nil)
+			authIndices := registerTestProviderAuths(t, manager, tt.configure(cfg))
+			service := newBoundClientAccessService(t, authIndices)
+			h := NewHandler(cfg, writeTestConfigFile(t), manager)
+			h.SetClientAccessService(service)
+
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPut, tt.target, strings.NewReader(`[]`))
+			c.Request.Header.Set("Content-Type", "application/json")
+			tt.replace(h, c)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+			}
+			assertNoClientAccessCredentialBindings(t, service)
+		})
+	}
+}
+
+func TestPatchOpenAICompatAPIKeyEntriesRemovesDroppedBindings(t *testing.T) {
+	cfg := &config.Config{
+		OpenAICompatibility: []config.OpenAICompatibility{{
+			Name:    "Custom",
+			BaseURL: "https://openai.example.com",
+			APIKeyEntries: []config.OpenAICompatibilityAPIKey{
+				{APIKey: "openai-key-a"},
+				{APIKey: "openai-key-b", ProxyURL: "https://proxy.example.com"},
+			},
+		}},
+	}
+	idGen := synthesizer.NewStableIDGenerator()
+	idA, _ := idGen.Next("openai-compatibility:custom", "openai-key-a", "https://openai.example.com", "")
+	idB, _ := idGen.Next("openai-compatibility:custom", "openai-key-b", "https://openai.example.com", "https://proxy.example.com")
+	manager := coreauth.NewManager(nil, nil, nil)
+	authIndices := registerTestProviderAuths(t, manager, []testProviderAuth{
+		{id: idA, index: "auth-openai-a"},
+		{id: idB, index: "auth-openai-b"},
+	})
+	service := newBoundClientAccessService(t, authIndices)
+	h := NewHandler(cfg, writeTestConfigFile(t), manager)
+	h.SetClientAccessService(service)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPatch, "/v0/management/openai-compatibility", strings.NewReader(`{
+		"name": "Custom",
+		"value": {"api-key-entries":[{"api-key":"openai-key-a"}]}
+	}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	h.PatchOpenAICompat(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	page, errList := service.ListCredentialBindings(context.Background(), clientaccess.ListOptions{Page: 1, PageSize: 20})
+	if errList != nil {
+		t.Fatalf("ListCredentialBindings() error = %v", errList)
+	}
+	if page.Total != 1 || len(page.Items) != 1 || page.Items[0].AuthIndex != "auth-openai-a" {
+		t.Fatalf("credential bindings after api-key-entries replace = %+v", page)
 	}
 }

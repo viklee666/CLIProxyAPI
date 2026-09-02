@@ -44,7 +44,7 @@ func TestPostGeminiKeyAppendsOneRecord(t *testing.T) {
 		t.Fatalf("existing record changed: %#v", h.cfg.GeminiKey[0])
 	}
 	created := h.cfg.GeminiKey[1]
-	if created.Name != "Primary route" || created.APIKey != "new-key" || created.Priority != 7 || !created.DisableCooling {
+	if created.Name != "Primary route" || created.APIKey != "new-key" || created.Priority != 7 || created.DisableCooling == nil || !*created.DisableCooling {
 		t.Fatalf("created record = %#v", created)
 	}
 }
@@ -150,7 +150,7 @@ func TestPatchCodexKeyMatchesAuthIndexAndUpdatesAllExecutionFields(t *testing.T)
 			BaseURL:        baseURL,
 			Priority:       1,
 			Websockets:     true,
-			DisableCooling: false,
+			DisableCooling: nil,
 			Headers:        map[string]string{"X-Old": "keep-until-replaced"},
 		}}},
 		configFilePath: writeTestConfigFile(t),
@@ -180,7 +180,7 @@ func TestPatchCodexKeyMatchesAuthIndexAndUpdatesAllExecutionFields(t *testing.T)
 		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 	entry := h.cfg.CodexKey[0]
-	if entry.Name != "Display only" || entry.Priority != 9 || entry.Prefix != "team-a" || entry.Websockets || !entry.DisableCooling {
+	if entry.Name != "Display only" || entry.Priority != 9 || entry.Prefix != "team-a" || entry.Websockets || entry.DisableCooling == nil || !*entry.DisableCooling {
 		t.Fatalf("patched record = %#v", entry)
 	}
 	if len(entry.Headers) != 0 || len(entry.Models) != 0 || len(entry.ExcludedModels) != 0 {
@@ -193,11 +193,12 @@ func TestPatchCodexKeyMatchesAuthIndexAndUpdatesAllExecutionFields(t *testing.T)
 }
 
 func TestGetOpenAICompatIncludesFalseDisableCooling(t *testing.T) {
+	disableCooling := false
 	h := NewHandlerWithoutConfigFilePath(&config.Config{
 		OpenAICompatibility: []config.OpenAICompatibility{{
 			Name:           "provider",
 			BaseURL:        "https://provider.example/v1",
-			DisableCooling: false,
+			DisableCooling: &disableCooling,
 		}},
 	}, nil)
 

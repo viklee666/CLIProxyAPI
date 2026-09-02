@@ -112,8 +112,8 @@ func (e *CodexExecutor) executeOpenAIImage(ctx context.Context, auth *cliproxyau
 	if errCache != nil {
 		return resp, errCache
 	}
-	if err := applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg); err != nil {
-		return resp, err
+	if errHeaders := applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg, opts.Headers); errHeaders != nil {
+		return resp, errHeaders
 	}
 	applyModelHeaderOverrides(httpReq.Header, mainModel)
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
@@ -211,8 +211,8 @@ func (e *CodexExecutor) executeOpenAIImageStream(ctx context.Context, auth *clip
 	if errCache != nil {
 		return nil, errCache
 	}
-	if err := applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg); err != nil {
-		return nil, err
+	if errHeaders := applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg, opts.Headers); errHeaders != nil {
+		return nil, errHeaders
 	}
 	applyModelHeaderOverrides(httpReq.Header, mainModel)
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
@@ -340,8 +340,8 @@ func (e *CodexExecutor) executeDirectOpenAIImage(ctx context.Context, auth *clip
 	if errCache != nil {
 		return resp, errCache
 	}
-	if err := applyCodexDirectImageHeaders(httpReq, auth, apiKey, false, e.cfg); err != nil {
-		return resp, err
+	if errHeaders := applyCodexDirectImageHeaders(httpReq, auth, apiKey, false, e.cfg); errHeaders != nil {
+		return resp, errHeaders
 	}
 	applyModelHeaderOverrides(httpReq.Header, model)
 	if contentType != "" {
@@ -403,8 +403,8 @@ func (e *CodexExecutor) executeDirectOpenAIImageStream(ctx context.Context, auth
 	if errCache != nil {
 		return nil, errCache
 	}
-	if err := applyCodexDirectImageHeaders(httpReq, auth, apiKey, true, e.cfg); err != nil {
-		return nil, err
+	if errHeaders := applyCodexDirectImageHeaders(httpReq, auth, apiKey, true, e.cfg); errHeaders != nil {
+		return nil, errHeaders
 	}
 	applyModelHeaderOverrides(httpReq.Header, model)
 	if contentType != "" {
@@ -682,7 +682,7 @@ func (e *CodexExecutor) prepareCodexOpenAIImageBody(body []byte, req cliproxyexe
 		mainModel = codexOpenAIImagesMainModel
 	}
 	var errThinking error
-	out, errThinking = thinking.ApplyThinking(out, mainModel, codexOpenAIImageSourceFormat, "codex", e.Identifier())
+	out, errThinking = helps.ApplyThinkingWithSourcePayload(out, body, body, mainModel, codexOpenAIImageSourceFormat, "codex", e.Identifier())
 	if errThinking != nil {
 		return nil, errThinking
 	}

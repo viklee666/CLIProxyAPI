@@ -58,3 +58,23 @@ func TestDownloadAuthFile_RejectsPathSeparators(t *testing.T) {
 		}
 	}
 }
+
+func TestDownloadAuthFile_RejectsOversizedFile(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+
+	authDir := t.TempDir()
+	fileName := "too-large.json"
+	if err := os.WriteFile(filepath.Join(authDir, fileName), make([]byte, maxAuthFileBytes+1), 0o600); err != nil {
+		t.Fatalf("failed to write oversized auth file: %v", err)
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, nil)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v0/management/auth-files/download?name="+url.QueryEscape(fileName), nil)
+	h.DownloadAuthFile(ctx)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusRequestEntityTooLarge, rec.Body.String())
+	}
+}

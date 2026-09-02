@@ -693,6 +693,9 @@ func (h *Handler) authFileQueryEntry(candidate authFileCandidate, view string) g
 	if websockets, ok := authWebsocketsValue(auth); ok {
 		entry["websockets"] = websockets
 	}
+	if requestRetry, ok := auth.RequestRetryOverride(); ok {
+		entry["request_retry"] = requestRetry
+	}
 	if !auth.UpdatedAt.IsZero() {
 		entry["modtime"] = auth.UpdatedAt
 		entry["updated_at"] = auth.UpdatedAt

@@ -89,7 +89,6 @@ func TestNextRefreshCheckAt_AgentIdentityUnschedule(t *testing.T) {
 	}
 }
 
-
 func TestNextRefreshCheckAt_NextRefreshAfterGate(t *testing.T) {
 	now := time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC)
 	nextAfter := now.Add(30 * time.Minute)
@@ -156,6 +155,34 @@ func TestNextRefreshCheckAt_ProviderLead_Expiry(t *testing.T) {
 	want := expiry.Add(-lead)
 	if !got.Equal(want) {
 		t.Fatalf("nextRefreshCheckAt() = %s, want %s", got, want)
+	}
+}
+
+func TestNextRefreshCheckAt_RelativeExpiry(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC)
+	issuedAt := now.Add(-15 * time.Minute)
+	lead := 30 * time.Minute
+	setRefreshLeadFactory(t, "relative-expiry", func() *time.Duration {
+		d := lead
+		return &d
+	})
+
+	auth := &Auth{
+		ID:       "relative-expiry-auth",
+		Provider: "relative-expiry",
+		Metadata: map[string]any{
+			"access_token": "test-access",
+			"expires_in":   3600,
+			"timestamp":    int(issuedAt.UnixMilli()),
+		},
+	}
+
+	got, ok := nextRefreshCheckAt(now, auth, 15*time.Minute)
+	want := issuedAt.Add(time.Hour - lead)
+	if !ok || !got.Equal(want) {
+		t.Fatalf("nextRefreshCheckAt() = (%s, %t), want (%s, true)", got, ok, want)
 	}
 }
 

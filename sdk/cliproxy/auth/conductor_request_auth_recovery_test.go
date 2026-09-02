@@ -49,6 +49,7 @@ type requestAuthRecoveryExecutor struct {
 	refreshCalls  int
 	observed      int
 	alwaysInvalid bool
+	markUpstream  bool
 	httpBodies    []string
 }
 
@@ -66,22 +67,30 @@ func requestAuthInvalidTaskError() error {
 	return &Error{HTTPStatus: http.StatusUnauthorized, Message: `{"error":{"code":"invalid_task_id"}}`}
 }
 
-func (e *requestAuthRecoveryExecutor) Execute(_ context.Context, auth *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+func (e *requestAuthRecoveryExecutor) Execute(ctx context.Context, auth *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	e.mu.Lock()
 	e.executeCalls++
 	alwaysInvalid := e.alwaysInvalid
+	markUpstream := e.markUpstream
 	e.mu.Unlock()
+	if markUpstream {
+		cliproxyexecutor.MarkUpstreamAttempt(ctx)
+	}
 	if alwaysInvalid || requestAuthTask(auth) != "task-new" {
 		return cliproxyexecutor.Response{}, requestAuthInvalidTaskError()
 	}
 	return cliproxyexecutor.Response{Payload: []byte("task-new")}, nil
 }
 
-func (e *requestAuthRecoveryExecutor) ExecuteStream(_ context.Context, auth *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+func (e *requestAuthRecoveryExecutor) ExecuteStream(ctx context.Context, auth *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
 	e.mu.Lock()
 	e.streamCalls++
 	alwaysInvalid := e.alwaysInvalid
+	markUpstream := e.markUpstream
 	e.mu.Unlock()
+	if markUpstream {
+		cliproxyexecutor.MarkUpstreamAttempt(ctx)
+	}
 	chunks := make(chan cliproxyexecutor.StreamChunk, 1)
 	if alwaysInvalid || requestAuthTask(auth) != "task-new" {
 		chunks <- cliproxyexecutor.StreamChunk{Err: requestAuthInvalidTaskError()}
@@ -145,7 +154,13 @@ func (e *requestAuthRecoveryExecutor) PrepareRequestAuth(_ context.Context, auth
 }
 
 func (e *requestAuthRecoveryExecutor) ShouldRecoverRequestAuth(_ *Auth, execErr error) bool {
-	return statusCodeFromError(execErr) == http.StatusUnauthorized
+	if execErr == nil {
+		return false
+	}
+	// Match Codex Agent Identity: a direct StatusCode() assert, not errors.As. Recovery
+	// must therefore unwrap upstreamExecutionAttemptError before calling this method.
+	statusErr, ok := execErr.(interface{ StatusCode() int })
+	return ok && statusErr.StatusCode() == http.StatusUnauthorized
 }
 
 func (e *requestAuthRecoveryExecutor) RequestAuthRecoveryState(auth *Auth) string {
@@ -370,5 +385,67 @@ func TestManagerHttpRequestRecoversInvalidTaskAtMostOnce(t *testing.T) {
 	_, _, recoverCalls, _, _ := executor.counts()
 	if httpCalls != 2 || recoverCalls != 1 {
 		t.Fatalf("http calls=%d recover calls=%d, want 2 and 1", httpCalls, recoverCalls)
+	}
+}
+
+func TestManagerExecuteStreamRecoversUpstreamWrappedInvalidTask(t *testing.T) {
+	manager, executor, _, _, model := newRequestAuthRecoveryFixture(t, false)
+	executor.mu.Lock()
+	executor.markUpstream = true
+	executor.mu.Unlock()
+
+	result, err := manager.ExecuteStream(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{Stream: true})
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+	var payload string
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream chunk error = %v", chunk.Err)
+		}
+		payload += string(chunk.Payload)
+	}
+	if payload != "task-new" {
+		t.Fatalf("stream payload = %q, want task-new", payload)
+	}
+	_, stream, recover, refresh, _ := executor.counts()
+	if stream != 2 || recover != 1 || refresh != 0 {
+		t.Fatalf("counts stream=%d recover=%d refresh=%d, want 2, 1, 0", stream, recover, refresh)
+	}
+}
+
+func TestManagerTryRecoverRequestAuthUnwrapsUpstreamAttempt(t *testing.T) {
+	manager, executor, _, auth, _ := newRequestAuthRecoveryFixture(t, false)
+	wrapped := markUpstreamExecutionAttempt(requestAuthInvalidTaskError())
+	updated, attempted, err := manager.tryRecoverRequestAuth(context.Background(), executor, auth, wrapped, false)
+	if err != nil {
+		t.Fatalf("tryRecoverRequestAuth() error = %v", err)
+	}
+	if !attempted || requestAuthTask(updated) != "task-new" {
+		t.Fatalf("attempted=%v task_id=%q, want recovered task-new", attempted, requestAuthTask(updated))
+	}
+	_, _, recover, _, _ := executor.counts()
+	if recover != 1 {
+		t.Fatalf("recover=%d, want 1", recover)
+	}
+}
+
+func TestManagerTryRecoverRequestAuthIgnoresOAuth401(t *testing.T) {
+	manager, executor, _, auth, _ := newRequestAuthRecoveryFixture(t, false)
+	oauthAuth := auth.Clone()
+	oauthAuth.Metadata["auth_kind"] = AuthKindOAuth
+	updated, attempted, err := manager.tryRecoverRequestAuth(context.Background(), executor, oauthAuth, requestAuthInvalidTaskError(), false)
+	if err != nil {
+		t.Fatalf("tryRecoverRequestAuth() error = %v", err)
+	}
+	if attempted {
+		t.Fatal("tryRecoverRequestAuth() attempted OAuth recovery")
+	}
+	if requestAuthTask(updated) != "task-old" {
+		t.Fatalf("task_id = %q, want unchanged task-old", requestAuthTask(updated))
+	}
+	_, _, recover, _, _ := executor.counts()
+	if recover != 0 {
+		t.Fatalf("recover=%d, want 0", recover)
 	}
 }

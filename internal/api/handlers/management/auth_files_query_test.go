@@ -15,6 +15,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/clientaccess"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
@@ -561,5 +562,34 @@ func TestCachedAuthFileCandidatesReuseSnapshotUntilInvalidated(t *testing.T) {
 	third, _ := h.cachedAuthFileCandidatesFromManager(now.Add(time.Second))
 	if len(third) != 1 || third[0].auth == first[0].auth {
 		t.Fatalf("candidate cache was not rebuilt after invalidation")
+	}
+}
+
+func TestSaveTokenRecordInvalidatesAuthFileCandidateCatalog(t *testing.T) {
+	manager := coreauth.NewManager(nil, nil, nil)
+	if _, errRegister := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "cached.json",
+		FileName: "cached.json",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"path": filepath.Join(t.TempDir(), "cached.json"),
+		},
+	}); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
+	h.tokenStore = &memoryAuthStore{}
+	now := time.Now()
+	first, _ := h.cachedAuthFileCandidatesFromManager(now)
+	if _, errSave := h.saveTokenRecord(context.Background(), &coreauth.Auth{
+		ID:       "new.json",
+		FileName: "new.json",
+		Provider: "codex",
+	}); errSave != nil {
+		t.Fatalf("saveTokenRecord error: %v", errSave)
+	}
+	second, _ := h.cachedAuthFileCandidatesFromManager(now.Add(time.Second))
+	if len(first) != 1 || len(second) != 1 || second[0].auth == first[0].auth {
+		t.Fatalf("candidate cache was not rebuilt after saveTokenRecord")
 	}
 }

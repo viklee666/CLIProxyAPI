@@ -11,13 +11,14 @@ import (
 )
 
 func TestPatchXAIKeyUpdatesExecutionFields(t *testing.T) {
+	disableCooling := false
 	h := &Handler{
 		cfg: &config.Config{XAIKey: []config.XAIKey{{
 			APIKey:         "xai-key",
 			Priority:       1,
 			BaseURL:        "https://api.x.ai/v1",
 			Websockets:     true,
-			DisableCooling: false,
+			DisableCooling: &disableCooling,
 		}}},
 		configFilePath: writeTestConfigFile(t),
 	}
@@ -27,9 +28,11 @@ func TestPatchXAIKeyUpdatesExecutionFields(t *testing.T) {
 	ctx.Request = httptest.NewRequest(http.MethodPatch, "/v0/management/xai-api-key", strings.NewReader(`{
 		"index": 0,
 		"value": {
+			"name": "prod-xai",
 			"priority": 7,
 			"websockets": false,
-			"disable-cooling": true
+			"disable-cooling": true,
+			"request-retry": 0
 		}
 	}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
@@ -40,13 +43,19 @@ func TestPatchXAIKeyUpdatesExecutionFields(t *testing.T) {
 		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 	entry := h.cfg.XAIKey[0]
+	if entry.Name != "prod-xai" {
+		t.Fatalf("name = %q, want prod-xai", entry.Name)
+	}
 	if entry.Priority != 7 {
 		t.Fatalf("priority = %d, want 7", entry.Priority)
 	}
 	if entry.Websockets {
 		t.Fatal("websockets = true, want false")
 	}
-	if !entry.DisableCooling {
-		t.Fatal("disable-cooling = false, want true")
+	if entry.DisableCooling == nil || !*entry.DisableCooling {
+		t.Fatalf("disable-cooling = %v, want true", entry.DisableCooling)
+	}
+	if entry.RequestRetry == nil || *entry.RequestRetry != 0 {
+		t.Fatalf("request-retry = %v, want 0", entry.RequestRetry)
 	}
 }

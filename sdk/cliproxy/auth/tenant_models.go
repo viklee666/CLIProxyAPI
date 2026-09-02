@@ -5,7 +5,38 @@ import (
 	"strings"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 )
+
+// compileAPIKeyModelAliasEntries builds the alias lookup table for tenant model
+// definitions, which are carried on the auth instead of global configuration.
+func compileAPIKeyModelAliasEntries(out map[string]string, models []modelAliasEntry) {
+	if out == nil {
+		return
+	}
+	for i := range models {
+		alias := strings.TrimSpace(models[i].GetAlias())
+		name := strings.TrimSpace(models[i].GetName())
+		if alias == "" || name == "" {
+			continue
+		}
+		aliasKey := strings.ToLower(thinking.ParseSuffix(alias).ModelName)
+		if aliasKey == "" {
+			aliasKey = strings.ToLower(alias)
+		}
+		if _, exists := out[aliasKey]; exists {
+			continue
+		}
+		out[aliasKey] = name
+		nameKey := strings.ToLower(thinking.ParseSuffix(name).ModelName)
+		if nameKey == "" {
+			nameKey = strings.ToLower(name)
+		}
+		if _, exists := out[nameKey]; !exists {
+			out[nameKey] = name
+		}
+	}
+}
 
 // TenantModelPayload returns the per-provider model definition carried by a
 // runtime-only tenant auth. It never falls back to global configuration.

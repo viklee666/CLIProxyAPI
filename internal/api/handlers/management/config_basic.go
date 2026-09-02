@@ -153,7 +153,7 @@ func boundedConfigCollectionLength(total int) int {
 	return total
 }
 
-func projectProviderConfigIdentity(name, apiKey, prefix, baseURL string, excludedModels []string, disableCooling bool) gin.H {
+func projectProviderConfigIdentity(name, apiKey, prefix, baseURL string, excludedModels []string, disableCooling *bool) gin.H {
 	item := gin.H{"api-key": apiKey}
 	if name != "" {
 		item["name"] = name
@@ -167,8 +167,10 @@ func projectProviderConfigIdentity(name, apiKey, prefix, baseURL string, exclude
 	if len(excludedModels) > 0 {
 		item["excluded-models"] = append([]string(nil), excludedModels...)
 	}
-	if disableCooling {
-		item["disable-cooling"] = true
+	// disable-cooling is tri-state: unset inherits the global policy, so only an
+	// explicit override is projected.
+	if disableCooling != nil {
+		item["disable-cooling"] = *disableCooling
 	}
 	return item
 }
@@ -208,7 +210,7 @@ func projectVertexConfigIdentities(items []config.VertexCompatKey) []gin.H {
 	out := make([]gin.H, 0, len(items))
 	for i := range items {
 		item := items[i]
-		out = append(out, projectProviderConfigIdentity(item.Name, item.APIKey, item.Prefix, item.BaseURL, item.ExcludedModels, false))
+		out = append(out, projectProviderConfigIdentity(item.Name, item.APIKey, item.Prefix, item.BaseURL, item.ExcludedModels, nil))
 	}
 	return out
 }
@@ -245,6 +247,14 @@ type releaseInfo struct {
 	Name    string `json:"name"`
 }
 
+func setLatestReleaseRequestHeaders(req *http.Request) {
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", latestReleaseUserAgent)
+	if token := util.ResolveGitHubToken(); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+}
+
 // GetLatestVersion returns the latest release version from GitHub without downloading assets.
 func (h *Handler) GetLatestVersion(c *gin.Context) {
 	client := &http.Client{Timeout: 10 * time.Second}
@@ -262,8 +272,7 @@ func (h *Handler) GetLatestVersion(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "request_create_failed", "message": err.Error()})
 		return
 	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", latestReleaseUserAgent)
+	setLatestReleaseRequestHeaders(req)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -501,6 +510,14 @@ func (h *Handler) GetRequestRetry(c *gin.Context) {
 }
 func (h *Handler) PutRequestRetry(c *gin.Context) {
 	h.updateIntField(c, func(v int) { h.cfg.RequestRetry = v })
+}
+
+// Max retry credentials
+func (h *Handler) GetMaxRetryCredentials(c *gin.Context) {
+	c.JSON(200, gin.H{"max-retry-credentials": h.cfg.MaxRetryCredentials})
+}
+func (h *Handler) PutMaxRetryCredentials(c *gin.Context) {
+	h.updateIntField(c, func(v int) { h.cfg.MaxRetryCredentials = v })
 }
 
 // Max retry interval
