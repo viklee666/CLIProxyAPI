@@ -185,10 +185,10 @@ func TestAntigravityRefresh_DeduplicatesConcurrentRefresh(t *testing.T) {
 		if updated == nil {
 			t.Fatal("expected refreshed auth, got nil")
 		}
-		if got := metaStringValue(updated.Metadata, "access_token"); got != "new-access" {
+		if got := updated.ReadMetadataString("access_token"); got != "new-access" {
 			t.Fatalf("access_token = %q, want new-access", got)
 		}
-		if got := metaStringValue(updated.Metadata, "refresh_token"); got != "new-refresh" {
+		if got := updated.ReadMetadataString("refresh_token"); got != "new-refresh" {
 			t.Fatalf("refresh_token = %q, want new-refresh", got)
 		}
 		if projectID := strings.TrimSpace(updated.Metadata["project_id"].(string)); projectID == "" {

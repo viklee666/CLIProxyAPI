@@ -313,3 +313,21 @@ func TestAuthMutateMetadataDoesNotNestClaudeMetadataHelpers(t *testing.T) {
 		t.Fatal("clone shared the live metadata map")
 	}
 }
+
+func TestSnapshotNormalizedMetadataForPersistCopiesDisabledFlag(t *testing.T) {
+	auth := &Auth{Metadata: map[string]any{"request-retry": 2, "email": "user@example.com"}}
+	snap := auth.SnapshotNormalizedMetadataForPersist(true)
+	if snap["disabled"] != true {
+		t.Fatalf("snapshot disabled = %#v, want true", snap["disabled"])
+	}
+	if _, ok := snap["request-retry"]; ok {
+		t.Fatal("legacy request-retry key was not canonicalized")
+	}
+	if snap["request_retry"] != 2 {
+		t.Fatalf("canonical request_retry = %#v, want 2", snap["request_retry"])
+	}
+	snap["email"] = "other@example.com"
+	if auth.ReadMetadataString("email") != "user@example.com" {
+		t.Fatal("persist snapshot was not a copy")
+	}
+}

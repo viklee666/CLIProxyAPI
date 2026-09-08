@@ -25,7 +25,7 @@ func (failingCooldownStore) Save(context.Context, []coreauth.CooldownStateRecord
 	return errors.New("persist failed")
 }
 
-func TestNewRoutingSelectorUnregistersAdaptiveUsagePlugin(t *testing.T) {
+func TestNewRoutingSelectorDoesNotUnregisterAdaptiveUsagePlugin(t *testing.T) {
 	dropped := stubUsagePlugin{}
 	usage.RegisterNamedPlugin(adaptiveUsagePluginName, dropped)
 	t.Cleanup(func() {
@@ -36,8 +36,8 @@ func TestNewRoutingSelectorUnregistersAdaptiveUsagePlugin(t *testing.T) {
 	if _, ok := selector.(*coreauth.WeightedRoundRobinSelector); !ok {
 		t.Fatalf("selector type = %T, want *WeightedRoundRobinSelector", selector)
 	}
-	if got := usage.UnregisterNamedPlugin(adaptiveUsagePluginName); got != nil {
-		t.Fatal("adaptive usage plugin still registered after switching to WRR")
+	if got := usage.UnregisterNamedPlugin(adaptiveUsagePluginName); got != dropped {
+		t.Fatal("newRoutingSelector dropped the adaptive usage plugin before SetSelector")
 	}
 }
 

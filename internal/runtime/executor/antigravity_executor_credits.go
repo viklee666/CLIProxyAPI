@@ -357,7 +357,7 @@ func (e *AntigravityExecutor) maybeRefreshAntigravityCreditsHint(ctx context.Con
 		return
 	}
 	if strings.TrimSpace(accessToken) == "" {
-		accessToken = metaStringValue(auth.Metadata, "access_token")
+		accessToken = auth.ReadMetadataString("access_token")
 	}
 	if strings.TrimSpace(accessToken) == "" {
 		return
@@ -433,7 +433,7 @@ func (e *AntigravityExecutor) updateAntigravityCreditsBalance(ctx context.Contex
 	}
 	token := strings.TrimSpace(accessToken)
 	if token == "" {
-		token = metaStringValue(auth.Metadata, "access_token")
+		token = auth.ReadMetadataString("access_token")
 	}
 	if token == "" {
 		return

@@ -89,10 +89,8 @@ func newRoutingSelector(state routingRuntimeState) coreauth.Selector {
 	var selector coreauth.Selector
 	switch state.strategy {
 	case "weighted-round-robin":
-		unregisterAdaptiveUsagePlugin()
 		selector = &coreauth.WeightedRoundRobinSelector{}
 	case "fill-first":
-		unregisterAdaptiveUsagePlugin()
 		selector = &coreauth.FillFirstSelector{}
 	case "adaptive":
 		// The adaptive selector also consumes usage records to track TTFT.
@@ -101,7 +99,6 @@ func newRoutingSelector(state routingRuntimeState) coreauth.Selector {
 		usage.RegisterNamedPlugin(adaptiveUsagePluginName, adaptive)
 		selector = adaptive
 	default:
-		unregisterAdaptiveUsagePlugin()
 		selector = &coreauth.RoundRobinSelector{}
 	}
 	if state.sessionAffinity {
@@ -252,6 +249,9 @@ func (s *Service) applyManagerConfig(ctx context.Context, commit configCommit) b
 	if s.appliedRoutingState == nil || !routingRuntimeStateEqual(*s.appliedRoutingState, routingState) {
 		s.coreManager.SetSelector(newRoutingSelector(routingState))
 		s.appliedRoutingState = &routingState
+		if routingState.strategy != "adaptive" {
+			unregisterAdaptiveUsagePlugin()
+		}
 	}
 	return true
 }

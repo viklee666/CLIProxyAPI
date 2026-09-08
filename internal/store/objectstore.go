@@ -160,7 +160,6 @@ func (s *ObjectTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (s
 	if auth == nil {
 		return "", fmt.Errorf("object store: auth is nil")
 	}
-	cliproxyauth.NormalizeCredentialMetadata(auth.Metadata)
 	if errWeight := cliproxyauth.ValidateAuthWeight(auth); errWeight != nil {
 		return "", fmt.Errorf("object store: %w", errWeight)
 	}
@@ -188,19 +187,16 @@ func (s *ObjectTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (s
 
 	switch {
 	case auth.Storage != nil:
-		if auth.Metadata == nil {
-			auth.Metadata = make(map[string]any)
-		}
-		auth.Metadata["disabled"] = auth.Disabled
+		snap := auth.SnapshotNormalizedMetadataForPersist(auth.Disabled)
 		if setter, ok := auth.Storage.(interface{ SetMetadata(map[string]any) }); ok {
-			setter.SetMetadata(auth.Metadata)
+			setter.SetMetadata(snap)
 		}
 		if err = auth.Storage.SaveTokenToFile(path); err != nil {
 			return "", err
 		}
-	case auth.Metadata != nil:
-		auth.Metadata["disabled"] = auth.Disabled
-		raw, errMarshal := json.Marshal(auth.Metadata)
+	case auth.HasMetadata():
+		snap := auth.SnapshotNormalizedMetadataForPersist(auth.Disabled)
+		raw, errMarshal := json.Marshal(snap)
 		if errMarshal != nil {
 			return "", fmt.Errorf("object store: marshal metadata: %w", errMarshal)
 		}
@@ -222,11 +218,10 @@ func (s *ObjectTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (s
 		return "", fmt.Errorf("object store: nothing to persist for %s", auth.ID)
 	}
 
-	if auth.Attributes == nil {
-		auth.Attributes = make(map[string]string)
-	}
-	auth.Attributes[cliproxyauth.AttributePath] = path
-	auth.Attributes[cliproxyauth.AttributeSourceBackend] = cliproxyauth.AuthSourceObjectStore
+	auth.MutateAttributes(func(attrs map[string]string) {
+		attrs[cliproxyauth.AttributePath] = path
+		attrs[cliproxyauth.AttributeSourceBackend] = cliproxyauth.AuthSourceObjectStore
+	})
 
 	if strings.TrimSpace(auth.FileName) == "" {
 		auth.FileName = auth.ID

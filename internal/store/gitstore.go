@@ -408,7 +408,6 @@ func (s *GitTokenStore) Save(_ context.Context, auth *cliproxyauth.Auth) (string
 	if auth == nil {
 		return "", fmt.Errorf("auth filestore: auth is nil")
 	}
-	cliproxyauth.NormalizeCredentialMetadata(auth.Metadata)
 	if errWeight := cliproxyauth.ValidateAuthWeight(auth); errWeight != nil {
 		return "", fmt.Errorf("auth filestore: %w", errWeight)
 	}
@@ -443,19 +442,16 @@ func (s *GitTokenStore) Save(_ context.Context, auth *cliproxyauth.Auth) (string
 
 	switch {
 	case auth.Storage != nil:
-		if auth.Metadata == nil {
-			auth.Metadata = make(map[string]any)
-		}
-		auth.Metadata["disabled"] = auth.Disabled
+		snap := auth.SnapshotNormalizedMetadataForPersist(auth.Disabled)
 		if setter, ok := auth.Storage.(interface{ SetMetadata(map[string]any) }); ok {
-			setter.SetMetadata(auth.Metadata)
+			setter.SetMetadata(snap)
 		}
 		if err = auth.Storage.SaveTokenToFile(path); err != nil {
 			return "", err
 		}
-	case auth.Metadata != nil:
-		auth.Metadata["disabled"] = auth.Disabled
-		raw, errMarshal := json.Marshal(auth.Metadata)
+	case auth.HasMetadata():
+		snap := auth.SnapshotNormalizedMetadataForPersist(auth.Disabled)
+		raw, errMarshal := json.Marshal(snap)
 		if errMarshal != nil {
 			return "", fmt.Errorf("auth filestore: marshal metadata failed: %w", errMarshal)
 		}
@@ -478,11 +474,10 @@ func (s *GitTokenStore) Save(_ context.Context, auth *cliproxyauth.Auth) (string
 		return "", fmt.Errorf("auth filestore: nothing to persist for %s", auth.ID)
 	}
 
-	if auth.Attributes == nil {
-		auth.Attributes = make(map[string]string)
-	}
-	auth.Attributes[cliproxyauth.AttributePath] = path
-	auth.Attributes[cliproxyauth.AttributeSourceBackend] = cliproxyauth.AuthSourceGit
+	auth.MutateAttributes(func(attrs map[string]string) {
+		attrs[cliproxyauth.AttributePath] = path
+		attrs[cliproxyauth.AttributeSourceBackend] = cliproxyauth.AuthSourceGit
+	})
 
 	if strings.TrimSpace(auth.FileName) == "" {
 		auth.FileName = auth.ID

@@ -3,6 +3,7 @@ package auth
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/credentialweight"
 )
@@ -12,12 +13,12 @@ func ValidateAuthWeight(auth *Auth) error {
 	if auth == nil {
 		return nil
 	}
-	if rawWeight, ok := auth.Attributes[AttributeWeight]; ok {
+	if rawWeight := strings.TrimSpace(auth.ReadAttribute(AttributeWeight)); rawWeight != "" {
 		if _, errParse := credentialweight.ParseString(rawWeight); errParse != nil {
 			return fmt.Errorf("invalid attributes weight: %w", errParse)
 		}
 	}
-	if rawWeight, ok := auth.Metadata[AttributeWeight]; ok {
+	if rawWeight, ok := auth.ReadMetadata(AttributeWeight); ok {
 		if _, errParse := credentialweight.ParseValue(rawWeight); errParse != nil {
 			return fmt.Errorf("invalid metadata weight: %w", errParse)
 		}
@@ -41,9 +42,8 @@ func ApplyAuthWeightMetadata(auth *Auth, metadata map[string]any) error {
 	if errParse != nil {
 		return fmt.Errorf("invalid metadata weight: %w", errParse)
 	}
-	if auth.Attributes == nil {
-		auth.Attributes = make(map[string]string)
-	}
-	auth.Attributes[AttributeWeight] = strconv.FormatInt(weight, 10)
+	auth.MutateAttributes(func(attrs map[string]string) {
+		attrs[AttributeWeight] = strconv.FormatInt(weight, 10)
+	})
 	return nil
 }

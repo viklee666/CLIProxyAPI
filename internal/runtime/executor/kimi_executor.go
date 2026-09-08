@@ -651,14 +651,8 @@ func (e *KimiExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 		return nil, fmt.Errorf("kimi executor: auth is nil")
 	}
 	// Expect refresh_token in metadata for OAuth-based accounts
-	var refreshToken string
-	if auth.Metadata != nil {
-		if v, ok := auth.Metadata["refresh_token"].(string); ok && strings.TrimSpace(v) != "" {
-			refreshToken = v
-		}
-	}
-	if strings.TrimSpace(refreshToken) == "" {
-		// Nothing to refresh
+	refreshToken := strings.TrimSpace(auth.ReadMetadataString("refresh_token"))
+	if refreshToken == "" {
 		return auth, nil
 	}
 
@@ -667,20 +661,18 @@ func (e *KimiExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 	if err != nil {
 		return nil, err
 	}
-	if auth.Metadata == nil {
-		auth.Metadata = make(map[string]any)
-	}
-	auth.Metadata["access_token"] = td.AccessToken
-	if td.RefreshToken != "" {
-		auth.Metadata["refresh_token"] = td.RefreshToken
-	}
-	if td.ExpiresAt > 0 {
-		exp := time.Unix(td.ExpiresAt, 0).UTC().Format(time.RFC3339)
-		auth.Metadata["expired"] = exp
-	}
-	auth.Metadata["type"] = "kimi"
 	now := time.Now().Format(time.RFC3339)
-	auth.Metadata["last_refresh"] = now
+	auth.MutateMetadata(func(meta map[string]any) {
+		meta["access_token"] = td.AccessToken
+		if td.RefreshToken != "" {
+			meta["refresh_token"] = td.RefreshToken
+		}
+		if td.ExpiresAt > 0 {
+			meta["expired"] = time.Unix(td.ExpiresAt, 0).UTC().Format(time.RFC3339)
+		}
+		meta["type"] = "kimi"
+		meta["last_refresh"] = now
+	})
 	return auth, nil
 }
 

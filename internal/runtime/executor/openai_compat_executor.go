@@ -740,16 +740,13 @@ func (e *OpenAICompatExecutor) Refresh(ctx context.Context, auth *cliproxyauth.A
 }
 
 func openAICompatAuthHasRefreshToken(auth *cliproxyauth.Auth) bool {
-	if auth == nil || auth.Metadata == nil {
+	if auth == nil {
 		return false
 	}
-	if token, _ := auth.Metadata["refresh_token"].(string); strings.TrimSpace(token) != "" {
+	if strings.TrimSpace(auth.ReadMetadataString("refresh_token")) != "" {
 		return true
 	}
-	if token, _ := auth.Metadata["refreshToken"].(string); strings.TrimSpace(token) != "" {
-		return true
-	}
-	return false
+	return strings.TrimSpace(auth.ReadMetadataString("refreshToken")) != ""
 }
 
 func openAICompatImageEndpointPath(opts cliproxyexecutor.Options) string {

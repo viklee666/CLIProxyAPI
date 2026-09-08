@@ -412,20 +412,19 @@ func (h *Handler) refreshAntigravityOAuthAccessToken(ctx context.Context, auth *
 		return "", fmt.Errorf("antigravity oauth token refresh returned empty access_token")
 	}
 
-	if auth.Metadata == nil {
-		auth.Metadata = make(map[string]any)
-	}
 	now := time.Now()
-	auth.Metadata["access_token"] = strings.TrimSpace(tokenResp.AccessToken)
-	if strings.TrimSpace(tokenResp.RefreshToken) != "" {
-		auth.Metadata["refresh_token"] = strings.TrimSpace(tokenResp.RefreshToken)
-	}
-	if tokenResp.ExpiresIn > 0 {
-		auth.Metadata["expires_in"] = tokenResp.ExpiresIn
-		auth.Metadata["timestamp"] = now.UnixMilli()
-		auth.Metadata["expired"] = now.Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339)
-	}
-	auth.Metadata["type"] = "antigravity"
+	auth.MutateMetadata(func(meta map[string]any) {
+		meta["access_token"] = strings.TrimSpace(tokenResp.AccessToken)
+		if strings.TrimSpace(tokenResp.RefreshToken) != "" {
+			meta["refresh_token"] = strings.TrimSpace(tokenResp.RefreshToken)
+		}
+		if tokenResp.ExpiresIn > 0 {
+			meta["expires_in"] = tokenResp.ExpiresIn
+			meta["timestamp"] = now.UnixMilli()
+			meta["expired"] = now.Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339)
+		}
+		meta["type"] = "antigravity"
+	})
 
 	if h != nil && h.authManager != nil {
 		auth.LastRefreshedAt = now

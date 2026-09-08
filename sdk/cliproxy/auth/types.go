@@ -429,6 +429,41 @@ func (a *Auth) MutateMetadata(fn func(map[string]any)) {
 	fn(a.Metadata)
 }
 
+// HasMetadata reports whether Metadata is non-nil.
+func (a *Auth) HasMetadata() bool {
+	if a == nil {
+		return false
+	}
+	a.metadataMu.RLock()
+	defer a.metadataMu.RUnlock()
+	return a.Metadata != nil
+}
+
+// MutateAttributes runs fn against Attributes while holding the maps write lock.
+func (a *Auth) MutateAttributes(fn func(map[string]string)) {
+	if a == nil || fn == nil {
+		return
+	}
+	a.metadataMu.Lock()
+	defer a.metadataMu.Unlock()
+	if a.Attributes == nil {
+		a.Attributes = make(map[string]string)
+	}
+	fn(a.Attributes)
+}
+
+// SnapshotNormalizedMetadataForPersist canonicalizes legacy metadata keys, records
+// the disabled flag, and returns a shallow copy for token-store persistence.
+func (a *Auth) SnapshotNormalizedMetadataForPersist(disabled bool) map[string]any {
+	var snap map[string]any
+	a.MutateMetadata(func(meta map[string]any) {
+		NormalizeCredentialMetadata(meta)
+		meta["disabled"] = disabled
+		snap = maps.Clone(meta)
+	})
+	return snap
+}
+
 // StoreMetadataString writes a string-valued metadata entry under the maps lock.
 // Empty values are skipped so callers can forward optional fields without erasing
 // a previously resolved value.
