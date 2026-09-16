@@ -124,6 +124,7 @@ const buildOpenAIBaseline = (form: OpenAIFormState, testModel: string): OpenAIEd
   prefix: String(form.prefix ?? '').trim(),
   baseUrl: String(form.baseUrl ?? '').trim(),
   disableCooling: Boolean(form.disableCooling),
+  nimCompat: Boolean(form.nimCompat),
   headers: normalizeHeaderEntries(form.headers),
   apiKeyEntries: normalizeApiKeyEntries(form.apiKeyEntries),
   models: normalizeModelEntries(form.modelEntries),
@@ -325,6 +326,7 @@ export function AiProvidersOpenAIEditLayout() {
           ? initialData.apiKeyEntries
           : [buildApiKeyEntry()],
         disableCooling: initialData.disableCooling,
+        nimCompat: initialData.nimCompat,
       };
 
       const available = modelEntries.map((entry) => entry.name.trim()).filter(Boolean);
@@ -452,6 +454,7 @@ export function AiProvidersOpenAIEditLayout() {
       baseline.prefix !== form.prefix.trim() ||
       baseline.baseUrl !== form.baseUrl.trim() ||
       baseline.disableCooling !== Boolean(form.disableCooling) ||
+      baseline.nimCompat !== Boolean(form.nimCompat) ||
       baseline.testModel !== normalizedTestModel ||
       isHeadersDirty ||
       isApiKeyEntriesDirty ||
@@ -509,6 +512,7 @@ export function AiProvidersOpenAIEditLayout() {
       if (form.disableCooling !== undefined) {
         payload.disableCooling = form.disableCooling;
       }
+      payload.nimCompat = Boolean(form.nimCompat);
       if (initialData?.disabled !== undefined) {
         payload.disabled = initialData.disabled;
       }

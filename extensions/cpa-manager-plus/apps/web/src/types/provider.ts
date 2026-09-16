@@ -73,5 +73,6 @@ export interface OpenAIProviderConfig {
   testModel?: string;
   authIndex?: string;
   disableCooling?: boolean;
+  nimCompat?: boolean;
   [key: string]: unknown;
 }

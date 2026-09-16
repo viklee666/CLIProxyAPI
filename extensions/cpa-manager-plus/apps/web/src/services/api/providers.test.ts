@@ -214,6 +214,7 @@ describe('providersApi v1.16 provider fields', () => {
           name: 'openai-compatible',
           'base-url': 'https://api.example.com/v1',
           'disable-cooling': true,
+          'nim-compat': true,
           models: [
             {
               name: 'gpt-image',
@@ -230,6 +231,7 @@ describe('providersApi v1.16 provider fields', () => {
     expect(providers[0]).toMatchObject({
       name: 'openai-compatible',
       disableCooling: true,
+      nimCompat: true,
       models: [{ name: 'gpt-image', image: true, thinking: { effort: 'high' } }],
     });
   });
@@ -250,6 +252,7 @@ describe('providersApi v1.16 provider fields', () => {
     expect(providers[0]).toMatchObject({
       name: 'openai-compatible',
       disableCooling: false,
+      nimCompat: false,
     });
     expect(mocks.get).toHaveBeenCalledTimes(1);
     expect(mocks.get).toHaveBeenCalledWith('/openai-compatibility');
@@ -331,6 +334,7 @@ describe('providersApi v1.16 provider fields', () => {
         name: 'openai-compatible',
         baseUrl: 'https://api.example.com/v1',
         disableCooling: true,
+        nimCompat: true,
         apiKeyEntries: [],
         models: [
           {
@@ -351,6 +355,7 @@ describe('providersApi v1.16 provider fields', () => {
         'base-url': 'https://api.example.com/v1',
         'api-key-entries': [],
         'disable-cooling': true,
+        'nim-compat': true,
         models: [
           {
             name: 'gpt-image',
@@ -478,6 +483,7 @@ describe('providersApi v1.16 provider fields', () => {
           'base-url': 'https://api.example.com/v1',
           'api-key-entries': [],
           'disable-cooling': true,
+          'nim-compat': true,
           models: [
             {
               name: 'openai-model',
@@ -507,6 +513,7 @@ describe('providersApi v1.16 provider fields', () => {
         'base-url': 'https://api.example.com/v1',
         'api-key-entries': [],
         'disable-cooling': true,
+        'nim-compat': true,
         models: [
           {
             name: 'openai-model',
@@ -580,6 +587,7 @@ describe('providersApi v1.16 provider fields', () => {
           'base-url': 'https://api.example.com/v1',
           'api-key-entries': [],
           'disable-cooling': true,
+          'nim-compat': true,
         },
       ],
     });
@@ -591,6 +599,7 @@ describe('providersApi v1.16 provider fields', () => {
         baseUrl: 'https://api.example.com/v1',
         apiKeyEntries: [],
         disableCooling: false,
+        nimCompat: false,
       },
     ]);
 
@@ -600,6 +609,7 @@ describe('providersApi v1.16 provider fields', () => {
         'base-url': 'https://api.example.com/v1',
         'api-key-entries': [],
         'disable-cooling': false,
+        'nim-compat': false,
       },
     ]);
   });

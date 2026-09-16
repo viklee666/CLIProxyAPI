@@ -46,6 +46,7 @@ type ProviderForm = {
   cloakStrictMode: boolean;
   cloakSensitiveWords: string;
   cloakCacheUserID: boolean;
+  nimCompat: boolean;
   weight: string;
   extra: ProviderExtra;
 };
@@ -71,6 +72,7 @@ const emptyForm = (): ProviderForm => ({
   cloakStrictMode: false,
   cloakSensitiveWords: '',
   cloakCacheUserID: false,
+  nimCompat: false,
   weight: '',
   extra: {},
 });
@@ -176,6 +178,8 @@ const withoutKnownExtra = (extra: ProviderExtra) => {
     'experimental_cch_signing',
     'experimental-cch-signing',
     'weight',
+    'nim_compat',
+    'nim-compat',
   ]) {
     delete next[key];
   }
@@ -187,6 +191,7 @@ const serializeExtra = (form: ProviderForm): ProviderExtra => {
   const excludedModels = textList(form.excludedModels);
   if (excludedModels.length) extra.excluded_models = excludedModels;
   if (form.channel !== 'vertex' && form.disableCooling) extra.disable_cooling = true;
+  if (form.channel === 'openai-compat' && form.nimCompat) extra['nim-compat'] = true;
   if ((form.channel === 'codex' || form.channel === 'xai') && form.websockets) extra.websockets = true;
   if (form.channel === 'claude') {
     if (form.rebuildMidSystemMessage) extra.rebuild_mid_system_message = true;
@@ -259,6 +264,7 @@ const formForProvider = (provider: TenantProvider): ProviderForm => {
     cloakStrictMode: cloak['strict-mode'] === true || cloak.strictMode === true,
     cloakSensitiveWords: stringList(cloak['sensitive-words'] ?? cloak.sensitiveWords).join('\n'),
     cloakCacheUserID: cloak['cache-user-id'] === true || cloak.cacheUserId === true,
+    nimCompat: booleanExtra(extra, 'nim_compat', 'nim-compat'),
     weight: numberText(readExtra(extra, 'weight')),
     extra,
   };
@@ -655,6 +661,15 @@ export function TenantProvidersPage() {
                 checked={form.disableCooling}
                 onChange={(disableCooling) => setForm((current) => ({ ...current, disableCooling }))}
                 label="禁用冷却"
+              />
+            </div>
+          ) : null}
+          {form.channel === 'openai-compat' ? (
+            <div className={styles.fullWidth}>
+              <ToggleSwitch
+                checked={form.nimCompat}
+                onChange={(nimCompat) => setForm((current) => ({ ...current, nimCompat }))}
+                label="NVIDIA NIM 兼容模式"
               />
             </div>
           ) : null}

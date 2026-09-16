@@ -920,6 +920,36 @@ export function AiProvidersPage() {
     }
   };
 
+  const setProviderNIMCompatEnabled = async (index: number, enabled: boolean) => {
+    const current = openaiProviders[index];
+    if (!current) return;
+
+    const switchingKey = `openai:${current.name}:${index}:nim-compat`;
+    setConfigSwitchingKey(switchingKey);
+
+    const previousList = openaiProviders;
+    const nextItem: OpenAIProviderConfig = { ...current, nimCompat: enabled };
+    const nextList = previousList.map((item, idx) => (idx === index ? nextItem : item));
+
+    setOpenaiProviders(nextList);
+    updateConfigValue('openai-compatibility', nextList);
+    clearCache('openai-compatibility');
+
+    try {
+      await providersApi.updateOpenAIProvider(current.name, index, nextItem);
+      await loadConfigs();
+      showNotification(t('notification.openai_provider_updated'), 'success');
+    } catch (err: unknown) {
+      const message = getErrorMessage(err);
+      setOpenaiProviders(previousList);
+      updateConfigValue('openai-compatibility', previousList);
+      clearCache('openai-compatibility');
+      showNotification(`${t('notification.update_failed')}: ${message}`, 'error');
+    } finally {
+      setConfigSwitchingKey(null);
+    }
+  };
+
   const setProviderPriority = async (row: ProviderRow, priority: number) => {
     const nextPriority = Math.trunc(priority);
     const switchingKey = `${row.key}:priority`;
@@ -1237,6 +1267,11 @@ export function AiProvidersPage() {
     void setProviderDisableCoolingEnabled(row.kind, row.originalIndex, enabled);
   };
 
+  const handleRowNIMCompatToggle = (row: ProviderRow, enabled: boolean) => {
+    if (row.kind !== 'openai') return;
+    void setProviderNIMCompatEnabled(row.originalIndex, enabled);
+  };
+
   const handleRowPriorityChange = (row: ProviderRow, priority: number) => {
     void setProviderPriority(row, priority);
   };
@@ -1407,6 +1442,7 @@ export function AiProvidersPage() {
         onToggleWebsockets={handleRowWebsocketsToggle}
         onToggleCloak={handleRowCloakToggle}
         onToggleDisableCooling={handleRowDisableCoolingToggle}
+        onToggleNIMCompat={handleRowNIMCompatToggle}
       />
       <ProviderHealthCheckDrawer
         open={healthCheckOpen}

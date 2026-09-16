@@ -345,6 +345,10 @@ const normalizeOpenAIProvider = (provider: unknown): OpenAIProviderConfig | null
     provider['disable-cooling'] ?? provider.disableCooling ?? provider.disable_cooling
   );
   if (disableCooling !== undefined) result.disableCooling = disableCooling;
+  const nimCompat = normalizeBoolean(
+    provider['nim-compat'] ?? provider.nimCompat ?? provider.nim_compat
+  );
+  if (nimCompat !== undefined) result.nimCompat = nimCompat;
   const prefix = normalizePrefix(provider.prefix ?? provider['prefix']);
   if (prefix) result.prefix = prefix;
   if (headers) result.headers = headers;

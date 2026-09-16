@@ -780,6 +780,8 @@
     "openai_test_all_partial": "Test completed: {{success}} passed, {{failed}} failed",
     "disable_cooling_label": "Disable Cooling",
     "disable_cooling_hint": "Globally disable auth/model cooldown windows after failures.",
+    "nim_compat_label": "NVIDIA NIM Compatibility",
+    "nim_compat_hint": "Use non-streaming upstream, send Claude SSE immediately with 15s pings, and rewrite NIM thinking fields / 96-character function names. For NVIDIA NIM (e.g. integrate.api.nvidia.com).",
     "rebuild_mid_system_message_label": "Rebuild Mid-conversation System Messages",
     "rebuild_mid_system_message_hint": "Move Claude messages with role system into the top-level system field before forwarding.",
     "force_mapping_label": "Rewrite response model to alias",

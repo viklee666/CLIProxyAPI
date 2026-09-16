@@ -101,6 +101,7 @@ const buildOpenAIBaseline = (form: OpenAIFormState) => ({
   prefix: String(form.prefix ?? '').trim(),
   baseUrl: String(form.baseUrl ?? '').trim(),
   disableCooling: Boolean(form.disableCooling),
+  nimCompat: Boolean(form.nimCompat),
   headers: normalizeHeaderEntries(form.headers),
   apiKeyEntries: normalizeApiKeyEntries(form.apiKeyEntries),
   models: normalizeModelEntries(form.modelEntries),
@@ -238,6 +239,7 @@ export function OpenAIEditDrawer({
           ? initialData.apiKeyEntries
           : [buildApiKeyEntry()],
         disableCooling: initialData.disableCooling,
+        nimCompat: initialData.nimCompat,
       };
       setForm(seededForm);
       setBaseline(buildOpenAIBaseline(seededForm));
@@ -281,6 +283,7 @@ export function OpenAIEditDrawer({
       baseline.prefix !== form.prefix.trim() ||
       baseline.baseUrl !== form.baseUrl.trim() ||
       baseline.disableCooling !== Boolean(form.disableCooling) ||
+      baseline.nimCompat !== Boolean(form.nimCompat) ||
       !areKeyValueEntriesEqual(baseline.headers, normalizeHeaderEntries(form.headers)) ||
       !areNormalizedApiKeyEntriesEqual(
         baseline.apiKeyEntries,
@@ -646,6 +649,7 @@ export function OpenAIEditDrawer({
       if (form.priority !== undefined && Number.isFinite(form.priority))
         payload.priority = Math.trunc(form.priority);
       if (form.disableCooling !== undefined) payload.disableCooling = form.disableCooling;
+      payload.nimCompat = Boolean(form.nimCompat);
       if (initialData?.disabled !== undefined) payload.disabled = initialData.disabled;
       const resolvedTestModel = testModel.trim();
       if (resolvedTestModel) payload.testModel = resolvedTestModel;
@@ -901,6 +905,16 @@ export function OpenAIEditDrawer({
                 ariaLabel={t('ai_providers.disable_cooling_label')}
               />
               <div className="hint">{t('ai_providers.disable_cooling_hint')}</div>
+            </div>
+            <div className="form-group">
+              <label>{t('ai_providers.nim_compat_label')}</label>
+              <ToggleSwitch
+                checked={Boolean(form.nimCompat)}
+                onChange={(value) => setForm((prev) => ({ ...prev, nimCompat: value }))}
+                disabled={saving || disabled || isTestingKeys}
+                ariaLabel={t('ai_providers.nim_compat_label')}
+              />
+              <div className="hint">{t('ai_providers.nim_compat_hint')}</div>
             </div>
 
             <div className={styles.keyEntriesSection}>

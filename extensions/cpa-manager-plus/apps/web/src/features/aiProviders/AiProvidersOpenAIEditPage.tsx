@@ -536,6 +536,16 @@ export function AiProvidersOpenAIEditPage() {
               />
               <div className="hint">{t('ai_providers.disable_cooling_hint')}</div>
             </div>
+            <div className="form-group">
+              <label>{t('ai_providers.nim_compat_label')}</label>
+              <ToggleSwitch
+                checked={Boolean(form.nimCompat)}
+                onChange={(value) => setForm((prev) => ({ ...prev, nimCompat: value }))}
+                disabled={saving || disableControls || isTestingKeys}
+                ariaLabel={t('ai_providers.nim_compat_label')}
+              />
+              <div className="hint">{t('ai_providers.nim_compat_hint')}</div>
+            </div>
 
             {/* 模型配置区域 - 统一布局 */}
             <div className={styles.modelConfigSection}>

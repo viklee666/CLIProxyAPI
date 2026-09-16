@@ -29,6 +29,7 @@ interface ProviderDetailDrawerProps {
   onToggleWebsockets: (row: ProviderRow, enabled: boolean) => void;
   onToggleCloak: (row: ProviderRow, enabled: boolean) => void;
   onToggleDisableCooling: (row: ProviderRow, enabled: boolean) => void;
+  onToggleNIMCompat: (row: ProviderRow, enabled: boolean) => void;
 }
 
 interface FieldRowProps {
@@ -60,6 +61,7 @@ export function ProviderDetailDrawer({
   onToggleWebsockets,
   onToggleCloak,
   onToggleDisableCooling,
+  onToggleNIMCompat,
 }: ProviderDetailDrawerProps) {
   const { t } = useTranslation();
 
@@ -71,7 +73,8 @@ export function ProviderDetailDrawer({
     const showCloak =
       supportsProviderKeySwitches && (row.kind === 'claude' || row.raw.cloak !== undefined);
     const showDisableCooling = row.kind !== 'vertex';
-    if (!showWebsockets && !showCloak && !showDisableCooling) return null;
+    const showNIMCompat = row.kind === 'openai';
+    if (!showWebsockets && !showCloak && !showDisableCooling && !showNIMCompat) return null;
 
     return (
       <section className={styles.section}>
@@ -128,6 +131,24 @@ export function ProviderDetailDrawer({
                 disabled={toggleDisabled}
                 onChange={(value) => onToggleDisableCooling(row, value)}
                 ariaLabel={t('ai_providers.disable_cooling_label')}
+              />
+            </div>
+          )}
+          {showNIMCompat && (
+            <div className={styles.quickSwitchRow}>
+              <div className={styles.quickSwitchText}>
+                <span className={styles.quickSwitchLabel}>
+                  {t('ai_providers.nim_compat_label')}
+                </span>
+                <span className={styles.quickSwitchHint}>
+                  {t('ai_providers.nim_compat_hint')}
+                </span>
+              </div>
+              <ToggleSwitch
+                checked={Boolean(row.raw.nimCompat)}
+                disabled={toggleDisabled}
+                onChange={(value) => onToggleNIMCompat(row, value)}
+                ariaLabel={t('ai_providers.nim_compat_label')}
               />
             </div>
           )}

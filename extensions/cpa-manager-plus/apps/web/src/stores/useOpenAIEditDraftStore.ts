@@ -26,6 +26,7 @@ export type OpenAIEditBaseline = {
   prefix: string;
   baseUrl: string;
   disableCooling: boolean;
+  nimCompat: boolean;
   headers: Array<{ key: string; value: string }>;
   apiKeyEntries: Array<{
     apiKey: string;

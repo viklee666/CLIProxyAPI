@@ -780,6 +780,8 @@
     "openai_test_all_partial": "Тест завершен: {{success}} прошло, {{failed}} не прошло",
     "disable_cooling_label": "Отключить cooldown",
     "disable_cooling_hint": "Глобально отключить окна cooldown после сбоев аутентификации или моделей.",
+    "nim_compat_label": "Совместимость NVIDIA NIM",
+    "nim_compat_hint": "Отключить потоковую передачу вверх, сразу отправлять Claude SSE с ping каждые 15 с и преобразовывать поля thinking NIM / имена функций до 96 символов. Для NVIDIA NIM (например integrate.api.nvidia.com).",
     "rebuild_mid_system_message_label": "Переносить промежуточные system-сообщения",
     "rebuild_mid_system_message_hint": "Перед отправкой переносить сообщения Claude с ролью system в верхнее поле system.",
     "force_mapping_label": "Переписывать модель ответа в alias",

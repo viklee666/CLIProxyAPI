@@ -780,6 +780,8 @@
     "openai_test_all_partial": "测试完成：{{success}} 个通过，{{failed}} 个失败",
     "disable_cooling_label": "禁用冷却调度",
     "disable_cooling_hint": "全局禁用认证或模型失败后的冷却窗口。",
+    "nim_compat_label": "NVIDIA NIM 兼容模式",
+    "nim_compat_hint": "关闭上游流式、立即发送 Claude SSE 并每 15 秒发送心跳，同时处理 NIM thinking 字段和 96 字符函数名限制。适用于 NVIDIA NIM（如 integrate.api.nvidia.com）。",
     "rebuild_mid_system_message_label": "重建对话中途的 System 消息",
     "rebuild_mid_system_message_hint": "转发前将 Claude 对话中 role 为 system 的消息移动到顶层 system 字段。",
     "force_mapping_label": "将响应模型名回写为别名",

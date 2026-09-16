@@ -780,6 +780,8 @@
     "openai_test_all_partial": "測試完成：{{success}} 個通過，{{failed}} 個失敗",
     "disable_cooling_label": "停用冷卻調度",
     "disable_cooling_hint": "全域停用驗證或模型失敗後的冷卻視窗。",
+    "nim_compat_label": "NVIDIA NIM 相容模式",
+    "nim_compat_hint": "關閉上游串流、立即傳送 Claude SSE 並每 15 秒傳送心跳，同時處理 NIM thinking 欄位與 96 字元函數名稱限制。適用於 NVIDIA NIM（例如 integrate.api.nvidia.com）。",
     "rebuild_mid_system_message_label": "重建對話中途的 System 訊息",
     "rebuild_mid_system_message_hint": "轉送前將 Claude 對話中 role 為 system 的訊息移動到頂層 system 欄位。",
     "force_mapping_label": "將回應模型名稱回寫為別名",

@@ -24,6 +24,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const AUTH_INDEX_FIELDS = ['auth-index', 'authIndex', 'auth_index'] as const;
 const DISABLE_COOLING_FIELDS = ['disable-cooling', 'disableCooling', 'disable_cooling'] as const;
+const NIM_COMPAT_FIELDS = ['nim-compat', 'nimCompat', 'nim_compat'] as const;
 
 const COMMON_PROVIDER_KEY_FIELDS = [
   'name',
@@ -87,6 +88,7 @@ const OPENAI_PROVIDER_FIELDS = [
   'disable-cooling',
   'disableCooling',
   'disable_cooling',
+  ...NIM_COMPAT_FIELDS,
 ] as const;
 
 const MODEL_ALIAS_FIELDS = [
@@ -316,6 +318,7 @@ const mergeProviderKeyPayload = (
 const mergeOpenAIProviderPayload = (raw: unknown, payload: Record<string, unknown>) => {
   const next = mergeKnownFields(raw, payload, OPENAI_PROVIDER_FIELDS);
   preserveOmittedRawField(raw, payload, next, DISABLE_COOLING_FIELDS);
+  preserveOmittedRawField(raw, payload, next, NIM_COMPAT_FIELDS);
   const rawApiKeyEntries = isRecord(raw)
     ? (raw['api-key-entries'] ?? raw.apiKeyEntries)
     : undefined;
@@ -633,6 +636,7 @@ const serializeOpenAIProvider = (provider: OpenAIProviderConfig) => {
   if (provider.prefix?.trim()) payload.prefix = provider.prefix.trim();
   if (provider.disabled !== undefined) payload.disabled = provider.disabled;
   if (provider.disableCooling !== undefined) payload['disable-cooling'] = provider.disableCooling;
+  if (provider.nimCompat !== undefined) payload['nim-compat'] = provider.nimCompat;
   const headers = serializeHeaders(provider.headers);
   if (headers) payload.headers = headers;
   const models = serializeModelAliases(provider.models);
@@ -650,6 +654,7 @@ const serializeOpenAIProviderPatch = (provider: OpenAIProviderConfig) => ({
   headers: serializeHeaders(provider.headers) ?? {},
   models: serializeModelAliases(provider.models) ?? [],
   'disable-cooling': provider.disableCooling ?? false,
+  'nim-compat': provider.nimCompat ?? false,
 });
 
 export const providersApi = {
@@ -822,6 +827,7 @@ export const providersApi = {
     return providers.map((provider) => ({
       ...provider,
       disableCooling: provider.disableCooling ?? false,
+      nimCompat: provider.nimCompat ?? false,
     }));
   },
 
