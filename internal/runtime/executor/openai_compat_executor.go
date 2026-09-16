@@ -142,6 +142,13 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		}
 		translated = sanitizeOpenAIResponsesReasoningEncryptedContent(ctx, "openai compat executor", translated)
 	}
+	var nimToolNames map[string]string
+	if helps.OpenAICompatibilityNIMCompat(e.resolveCompatConfig(auth)) {
+		rewritten := helps.ApplyOpenAINIMCompat(translated, originalPayload)
+		translated = rewritten.Payload
+		nimToolNames = rewritten.ToolNames
+		translated = helps.SetBoolIfDifferent(translated, "stream", false)
+	}
 	reporter.SetTranslatedReasoningEffort(translated, to.String())
 
 	url := strings.TrimSuffix(baseURL, "/") + endpoint
@@ -203,6 +210,7 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		return resp, err
 	}
 	helps.AppendAPIResponseChunk(ctx, e.cfg, body)
+	body = helps.RestoreOpenAINIMToolNames(body, nimToolNames)
 	reporter.Publish(ctx, helps.ParseOpenAIUsage(body))
 	// Ensure we at least record the request even if upstream doesn't return usage
 	reporter.EnsurePublished(ctx)
@@ -350,6 +358,14 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		if err != nil {
 			return nil, err
 		}
+	}
+
+	if helps.OpenAICompatibilityNIMCompat(e.resolveCompatConfig(auth)) {
+		rewritten := helps.ApplyOpenAINIMCompat(translated, originalPayload)
+		translated = rewritten.Payload
+		translated = helps.SetBoolIfDifferent(translated, "stream", false)
+		reporter.SetTranslatedReasoningEffort(translated, to.String())
+		return e.executeOpenAINIMStream(ctx, auth, req, opts, baseURL, apiKey, from, to, responseFormat, translated, rewritten.ToolNames, reporter)
 	}
 
 	// Request usage data in the final streaming chunk so that token statistics

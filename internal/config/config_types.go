@@ -810,6 +810,12 @@ type OpenAICompatibility struct {
 	// SupportPromptCacheKey enables derived prompt_cache_key injection for supported requests.
 	SupportPromptCacheKey bool `yaml:"support-prompt-cache-key,omitempty" json:"support-prompt-cache-key,omitempty"`
 
+	// NIMCompat enables hosted NVIDIA NIM workarounds for this provider:
+	// non-stream upstream chat/completions (avoids silent tool-call SSE stalls),
+	// Claude eager message_start plus ping keepalives, thinking via
+	// chat_template_kwargs/nvext, and 96-character function name truncation.
+	NIMCompat bool `yaml:"nim-compat,omitempty" json:"nim-compat,omitempty"`
+
 	// DisableCooling overrides the global cooling policy for this provider when set.
 	// True disables auth/model cooldowns; false explicitly enables them.
 	DisableCooling *bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
