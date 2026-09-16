@@ -29,16 +29,18 @@ type configCommit struct {
 }
 
 type routingRuntimeState struct {
-	strategy           string
-	sessionAffinity    bool
-	sessionAffinityTTL time.Duration
-	adaptive           internalconfig.AdaptiveRoutingConfig
+	strategy                 string
+	sessionAffinity          bool
+	sessionAffinityTTL       time.Duration
+	sessionAffinitySubagents bool
+	adaptive                 internalconfig.AdaptiveRoutingConfig
 }
 
 func normalizedRoutingRuntimeState(cfg *config.Config) routingRuntimeState {
 	state := routingRuntimeState{
-		strategy:           "round-robin",
-		sessionAffinityTTL: time.Hour,
+		strategy:                 "round-robin",
+		sessionAffinityTTL:       time.Hour,
+		sessionAffinitySubagents: true,
 	}
 	if cfg == nil {
 		return state
@@ -62,6 +64,9 @@ func normalizedRoutingRuntimeState(cfg *config.Config) routingRuntimeState {
 			state.sessionAffinityTTL = parsed
 		}
 	}
+	if state.sessionAffinity && cfg.Routing.SessionAffinitySubagents != nil {
+		state.sessionAffinitySubagents = *cfg.Routing.SessionAffinitySubagents
+	}
 	return state
 }
 
@@ -73,6 +78,9 @@ func routingRuntimeStateEqual(prev, next routingRuntimeState) bool {
 		return false
 	}
 	if prev.sessionAffinity && prev.sessionAffinityTTL != next.sessionAffinityTTL {
+		return false
+	}
+	if prev.sessionAffinity && prev.sessionAffinitySubagents != next.sessionAffinitySubagents {
 		return false
 	}
 	return true
@@ -102,9 +110,11 @@ func newRoutingSelector(state routingRuntimeState) coreauth.Selector {
 		selector = &coreauth.RoundRobinSelector{}
 	}
 	if state.sessionAffinity {
+		subagents := state.sessionAffinitySubagents
 		selector = coreauth.NewSessionAffinitySelectorWithConfig(coreauth.SessionAffinityConfig{
-			Fallback: selector,
-			TTL:      state.sessionAffinityTTL,
+			Fallback:         selector,
+			TTL:              state.sessionAffinityTTL,
+			SubagentAffinity: &subagents,
 		})
 	}
 	return selector
@@ -184,6 +194,7 @@ func (s *Service) applyConfigRuntime(ctx context.Context, commit configCommit, s
 	if !s.applyPprofConfigContext(ctx, cfg) {
 		return false
 	}
+	s.applyDiscoveryConfigContext(ctx, cfg)
 	if errContext := ctx.Err(); errContext != nil {
 		return false
 	}

@@ -204,6 +204,7 @@ func (h *Handler) GetAuthFileModels(c *gin.Context) {
 
 // List auth files from disk when the auth manager is unavailable.
 func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
+	observedAt := time.Now().UTC()
 	nameFilter := strings.TrimSpace(c.Query("name"))
 	authIndexFilter := strings.TrimSpace(c.Query("auth_index"))
 	entries, err := os.ReadDir(h.cfg.AuthDir)
@@ -213,7 +214,7 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 	}
 	files := make([]gin.H, 0)
 	if authIndexFilter != "" {
-		c.JSON(200, gin.H{"files": files})
+		c.JSON(200, gin.H{"observed_at": observedAt, "files": files})
 		return
 	}
 	for _, e := range entries {
@@ -228,7 +229,7 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 			continue
 		}
 		if info, errInfo := e.Info(); errInfo == nil {
-			fileData := gin.H{"name": name, "size": info.Size(), "modtime": info.ModTime()}
+			fileData := gin.H{"name": name, "size": info.Size(), "modtime": info.ModTime(), "cooldowns": nil}
 
 			// Read file to get type field
 			full := filepath.Join(h.cfg.AuthDir, name)
@@ -289,16 +290,16 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 			files = append(files, fileData)
 		}
 	}
-	c.JSON(200, gin.H{"files": files})
+	c.JSON(200, gin.H{"observed_at": observedAt, "files": files})
 }
 
-func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
+func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth, quotaSupported ...map[string]struct{}) gin.H {
 	authFileEntryMu.Lock()
 	defer authFileEntryMu.Unlock()
-	return h.buildAuthFileEntryLocked(auth)
+	return h.buildAuthFileEntryLocked(auth, quotaSupported...)
 }
 
-func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth) gin.H {
+func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quotaSupported ...map[string]struct{}) gin.H {
 	if auth == nil {
 		return nil
 	}
@@ -336,6 +337,30 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth) gin.H {
 	entry["quota"] = quotaObservationPayloadForProvider(auth.Provider, auth.Quota)
 	if modelQuotas := modelQuotaObservationPayload(auth.Provider, auth.ModelStates); len(modelQuotas) > 0 {
 		entry["model_quotas"] = modelQuotas
+	}
+	var quotaSupportedMap map[string]struct{}
+	if len(quotaSupported) > 0 {
+		quotaSupportedMap = quotaSupported[0]
+	}
+	if quotaSupportedMap != nil {
+		if _, ok := quotaSupportedMap[strings.ToLower(strings.TrimSpace(auth.Provider))]; ok {
+			entry["supports_quota"] = true
+			entry["quota_provider"] = auth.Provider
+		}
+	} else {
+		h.mu.Lock()
+		host := h.pluginHost
+		h.mu.Unlock()
+		if host != nil && host.HasQuotaProvider(auth.Provider) {
+			entry["supports_quota"] = true
+			entry["quota_provider"] = auth.Provider
+		}
+	}
+	if auth.Metadata != nil {
+		if probe, okProbe := auth.Metadata["quota_probe"]; okProbe && probe != nil {
+			entry["supports_quota"] = true
+			entry["quota_probe"] = probe
+		}
 	}
 	if email := authEmail(auth); email != "" {
 		entry["email"] = email

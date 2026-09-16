@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -85,14 +86,18 @@ func (h *Handler) patchAuthFileStatusTarget(ctx context.Context, name, authIndex
 		if !isPluginVirtualSourceDelete(name, targetAuth) {
 			return nil, http.StatusConflict, errPluginVirtualAuth
 		}
-		if errPatch := h.patchPluginVirtualSourceStatus(ctx, targetAuth, disabled); errPatch != nil {
+		hookAuths, errPatch := h.patchPluginVirtualSourceStatus(ctx, targetAuth, disabled)
+		if errPatch != nil {
 			status := http.StatusInternalServerError
-			if os.IsNotExist(errPatch) {
+			if errors.Is(errPatch, errAuthFileNotFound) || os.IsNotExist(errPatch) {
 				status = http.StatusNotFound
 			}
 			return nil, status, errPatch
 		}
 		h.invalidateAuthFileCandidateCatalog()
+		if errHook := h.invokePostAuthPersistHooks(ctx, hookAuths); errHook != nil {
+			return nil, http.StatusInternalServerError, fmt.Errorf("failed to synchronize plugin virtual auth: %w", errHook)
+		}
 		return gin.H{"status": "ok", "name": name, "auth_index": targetAuth.Index, "disabled": disabled}, http.StatusOK, nil
 	}
 

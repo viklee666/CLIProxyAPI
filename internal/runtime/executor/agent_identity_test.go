@@ -262,7 +262,7 @@ func TestCodexPrepareRequestOAuthWithIncompleteAgentIdentityKeepsBearer(t *testi
 func TestApplyCodexWebsocketHeadersDefersAssertionToDial(t *testing.T) {
 	auth, _ := agentIdentityTestAuth(t, "agent_private_key")
 
-	headers, err := applyCodexWebsocketHeaders(context.Background(), nil, auth, "", nil)
+	headers, err := applyCodexWebsocketHeaders(context.Background(), nil, auth, "", nil, false)
 	if err != nil {
 		t.Fatalf("applyCodexWebsocketHeaders() error = %v", err)
 	}
@@ -297,7 +297,7 @@ func TestDialCodexWebsocketMintsFreshAssertionPerDial(t *testing.T) {
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
 	executor := NewCodexWebsocketsExecutor(nil)
-	baseHeaders, err := applyCodexWebsocketHeaders(context.Background(), nil, auth, "", nil)
+	baseHeaders, err := applyCodexWebsocketHeaders(context.Background(), nil, auth, "", nil, false)
 	if err != nil {
 		t.Fatalf("applyCodexWebsocketHeaders() error = %v", err)
 	}
@@ -352,7 +352,7 @@ func TestApplyCodexWebsocketHeadersOAuthKeepsBearer(t *testing.T) {
 		Provider: "codex",
 		Metadata: map[string]any{"type": "codex", "access_token": "tok", "account_id": "acct-oauth"},
 	}
-	headers, err := applyCodexWebsocketHeaders(context.Background(), nil, auth, "tok", nil)
+	headers, err := applyCodexWebsocketHeaders(context.Background(), nil, auth, "tok", nil, false)
 	if err != nil {
 		t.Fatalf("applyCodexWebsocketHeaders() error = %v", err)
 	}
@@ -395,7 +395,7 @@ func TestApplyCodexWebsocketHeadersReturnsAssertionError(t *testing.T) {
 			"task_id":           "task-test",
 		},
 	}
-	headers, err := applyCodexWebsocketHeaders(context.Background(), nil, auth, "", nil)
+	headers, err := applyCodexWebsocketHeaders(context.Background(), nil, auth, "", nil, false)
 	if err == nil {
 		t.Fatal("expected assertion generation error")
 	}

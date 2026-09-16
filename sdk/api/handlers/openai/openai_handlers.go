@@ -63,10 +63,10 @@ func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 		clientVersion := c.Query("client_version")
 		if h.IsTenantRequest(c) {
 			optimizeMultiAgentV2 := h != nil && h.Cfg != nil && h.Cfg.CodexOptimizeMultiAgentV2
-			c.JSON(http.StatusOK, CodexClientModelsResponseWithMultiAgentV2(h.ModelsForRequest(c, "openai"), optimizeMultiAgentV2))
+			h.WriteModelListResponse(c, h.HandlerType(), CodexClientModelsResponseWithMultiAgentV2(h.ModelsForRequest(c, "openai"), optimizeMultiAgentV2))
 			return
 		}
-		c.JSON(http.StatusOK, h.codexClientModelsResponse(clientVersion))
+		h.WriteModelListResponse(c, h.HandlerType(), h.codexClientModelsResponse(clientVersion))
 		return
 	}
 
@@ -94,7 +94,7 @@ func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 		filteredModels[i] = filteredModel
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	h.WriteModelListResponse(c, h.HandlerType(), gin.H{
 		"object": "list",
 		"data":   filteredModels,
 	})

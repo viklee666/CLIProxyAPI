@@ -303,6 +303,11 @@ func (h *Handler) listAuthFilesQuery(c *gin.Context) {
 		for i := start; i < end; i++ {
 			entry := h.authFileQueryEntry(filtered[i], q.view)
 			if entry != nil {
+				if filtered[i].auth != nil && h.authManager != nil && !h.authManager.HomeEnabled() {
+					entry["cooldowns"] = coreauth.CooldownSnapshotForAuth(filtered[i].auth, responseTime.UTC())
+				} else {
+					entry["cooldowns"] = nil
+				}
 				files = append(files, entry)
 			}
 		}
@@ -313,6 +318,7 @@ func (h *Handler) listAuthFilesQuery(c *gin.Context) {
 		"total":          total,
 		"facets":         gin.H{"providers": providerCounts, "plan_types": planTypeCounts},
 		"server_time_ms": responseTime.UnixMilli(),
+		"observed_at":    responseTime.UTC(),
 	}
 	if q.view == "snapshot" {
 		if snapshotETag == "" {

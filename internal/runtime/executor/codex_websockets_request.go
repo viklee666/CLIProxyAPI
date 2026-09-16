@@ -68,7 +68,7 @@ func applyCodexPromptCacheHeadersWithContext(ctx context.Context, from sdktransl
 // applyCodexWebsocketHeaders fails closed for Agent Identity credentials. The assertion
 // itself is not published here: dialCodexWebsocket mints a fresh one immediately before
 // each DialContext, so this only validates that the material can produce one.
-func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *cliproxyauth.Auth, token string, cfg *config.Config, clientHeaders ...http.Header) (http.Header, error) {
+func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *cliproxyauth.Auth, token string, cfg *config.Config, nativeRequest bool, clientHeaders ...http.Header) (http.Header, error) {
 	if headers == nil {
 		headers = http.Header{}
 	}
@@ -98,6 +98,9 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 	misc.EnsureHeader(headers, ginHeaders, "x-client-request-id", "")
 	misc.EnsureHeader(headers, ginHeaders, "x-responsesapi-include-timing-metrics", "")
 	misc.EnsureHeader(headers, ginHeaders, "Version", "")
+	if nativeRequest {
+		misc.EnsureHeader(headers, ginHeaders, codexResponsesLiteHeader, "")
+	}
 	if isAPIKey {
 		ensureHeaderWithPriority(headers, ginHeaders, "User-Agent", "", "")
 	} else {
@@ -117,6 +120,17 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 		sessionFallback = uuid.NewString()
 	}
 	ensureCodexWebsocketSessionHeader(headers, ginHeaders, sessionFallback)
+	if nativeRequest && cfg != nil && cfg.Codex.DisableCodexCloaking {
+		deleteHeaderCaseInsensitive(headers, "session_id")
+		deleteHeaderCaseInsensitive(headers, "conversation_id")
+		for key, values := range ginHeaders {
+			switch strings.ToLower(key) {
+			case "session-id", "session_id", "conversation_id", "thread-id", "x-codex-routing-hint", "x-codex-window-id":
+				deleteHeaderCaseInsensitive(headers, key)
+				headers[key] = append([]string(nil), values...)
+			}
+		}
+	}
 	if originator := strings.TrimSpace(ginHeaders.Get("Originator")); originator != "" {
 		headers.Set("Originator", originator)
 	} else if !isAPIKey {
@@ -124,10 +138,8 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 	}
 	if !isAPIKey {
 		accountID := ""
-		if auth != nil && auth.Metadata != nil {
-			if value, ok := auth.Metadata["account_id"].(string); ok {
-				accountID = strings.TrimSpace(value)
-			}
+		if auth != nil {
+			accountID = strings.TrimSpace(auth.ReadMetadataString("account_id"))
 		}
 		if accountID == "" {
 			accountID = agentIdentityAccountID(auth)
@@ -141,7 +153,8 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 	if auth != nil {
 		attrs = auth.Attributes
 	}
-	util.ApplyCustomHeadersFromAttrs(&http.Request{Header: headers}, attrs, ginHeaders)
+	req := (&http.Request{Header: headers}).WithContext(ctx)
+	util.ApplyCustomHeadersFromAttrs(req, attrs, ginHeaders)
 	applyCodexCloakingHeaders(headers, cfg)
 
 	return headers, nil
