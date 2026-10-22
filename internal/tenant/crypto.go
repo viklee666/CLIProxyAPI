@@ -49,7 +49,7 @@ func (p *Protector) ProtectString(value string) (string, error) {
 	if p == nil {
 		return "", errors.New("tenant protector is unavailable")
 	}
-	if value == "" || strings.HasPrefix(value, tenantEncryptedPrefix) {
+	if value == "" {
 		return value, nil
 	}
 	nonce := make([]byte, 12)
@@ -86,6 +86,9 @@ func (p *Protector) UnprotectString(value string) (string, error) {
 	aead, errAEAD := p.aead()
 	if errAEAD != nil {
 		return "", errAEAD
+	}
+	if len(nonce) != aead.NonceSize() {
+		return "", errors.New("invalid tenant provider secret nonce length")
 	}
 	plaintext, errOpen := aead.Open(nil, nonce, ciphertext, []byte(tenantProtectorAAD))
 	if errOpen != nil {

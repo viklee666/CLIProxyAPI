@@ -354,7 +354,7 @@ func (s *Store) deleteCredentialOwnershipForTenant(ctx context.Context, tenantID
 }
 
 func (s *Store) listCredentialOwnership(ctx context.Context) (map[string]int64, error) {
-	rows, errQuery := s.db.QueryContext(ctx, `SELECT auth_index, tenant_id FROM credential_ownership`)
+	rows, errQuery := s.db.QueryContext(ctx, `SELECT o.auth_index, o.tenant_id FROM credential_ownership o JOIN tenants t ON t.id = o.tenant_id WHERE t.enabled = 1`)
 	if errQuery != nil {
 		return nil, fmt.Errorf("list credential ownership: %w", errQuery)
 	}

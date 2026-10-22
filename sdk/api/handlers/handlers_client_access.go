@@ -1,6 +1,9 @@
 package handlers
 
 import (
+	"context"
+	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -8,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -43,9 +47,9 @@ func StreamingFirstEventTimeoutRetries(cfg *config.SDKConfig) int {
 	return retries
 }
 
-// accessMetadataFromGinContext lifts the client-access identity resolved by the
+// ClientAccessMetadata lifts the client-access identity resolved by the
 // auth middleware into executor metadata keys.
-func accessMetadataFromGinContext(c *gin.Context) map[string]any {
+func ClientAccessMetadata(c *gin.Context) map[string]any {
 	meta := make(map[string]any)
 	if c == nil {
 		return meta
@@ -81,26 +85,50 @@ func accessMetadataFromGinContext(c *gin.Context) map[string]any {
 	return meta
 }
 
-// ModelsForRequest returns a tenant-scoped catalog for client-access tenant
-// keys and the existing global catalog for all other callers.
-func (h *BaseAPIHandler) ModelsForRequest(c *gin.Context, handlerType string) []map[string]any {
-	modelRegistry := registry.GetGlobalRegistry()
-	metadata := accessMetadataFromGinContext(c)
-	if h == nil || h.AuthManager == nil || coreauth.TenantIDFromMetadata(metadata) <= 0 {
-		return modelRegistry.GetAvailableModels(handlerType)
+// pluginExecutorAccessError blocks direct plugin execution when it would skip
+// mandatory credential selection. Provider routes still use the auth manager.
+func pluginExecutorAccessError(ctx context.Context) *interfaces.ErrorMessage {
+	metadata := requestExecutionMetadata(ctx)
+	allowAll, _ := metadata[coreexecutor.ClientAllowAllGroupsMetadataKey].(bool)
+	_, hasClientKey := metadata[coreexecutor.ClientKeyIDMetadataKey]
+	if coreauth.TenantIDFromMetadata(metadata) > 0 || (hasClientKey && !allowAll) {
+		return &interfaces.ErrorMessage{StatusCode: http.StatusForbidden, Error: fmt.Errorf("direct plugin execution cannot enforce the client's credential access restrictions")}
 	}
-	return modelRegistry.GetAvailableModelsForClients(handlerType, h.AuthManager.TenantModelClientIDs(metadata))
+	return nil
 }
 
-// ModelInfosForRequest returns tenant-scoped ModelInfo values for client-access
-// tenant keys and the existing global catalog for all other callers.
+// ModelsForRequest returns only models backed by credentials the caller may use.
+func (h *BaseAPIHandler) ModelsForRequest(c *gin.Context, handlerType string) []map[string]any {
+	modelRegistry := registry.GetGlobalRegistry()
+	if !h.IsModelCatalogScoped(c) {
+		return modelRegistry.GetAvailableModels(handlerType)
+	}
+	if h == nil || h.AuthManager == nil {
+		return []map[string]any{}
+	}
+	return modelRegistry.GetAvailableModelsForClients(handlerType, h.AuthManager.ModelClientIDs(ClientAccessMetadata(c)))
+}
+
+// ModelInfosForRequest applies request-scoped access checks to model metadata.
 func (h *BaseAPIHandler) ModelInfosForRequest(c *gin.Context) []*registry.ModelInfo {
 	modelRegistry := registry.GetGlobalRegistry()
-	metadata := accessMetadataFromGinContext(c)
-	if h == nil || h.AuthManager == nil || coreauth.TenantIDFromMetadata(metadata) <= 0 {
+	if !h.IsModelCatalogScoped(c) {
 		return modelRegistry.GetAvailableModelInfos()
 	}
-	return modelRegistry.GetAvailableModelInfosForClients(h.AuthManager.TenantModelClientIDs(metadata))
+	if h == nil || h.AuthManager == nil {
+		return []*registry.ModelInfo{}
+	}
+	return modelRegistry.GetAvailableModelInfosForClients(h.AuthManager.ModelClientIDs(ClientAccessMetadata(c)))
+}
+
+// IsModelCatalogScoped prevents protocol-specific catalog branches from
+// substituting a global or static model list for an access-controlled request.
+func (h *BaseAPIHandler) IsModelCatalogScoped(c *gin.Context) bool {
+	var manager *coreauth.Manager
+	if h != nil {
+		manager = h.AuthManager
+	}
+	return manager.ModelCatalogFilteringRequired(ClientAccessMetadata(c))
 }
 
 // IsTenantRequest reports whether the authenticated request belongs to a tenant
@@ -110,5 +138,5 @@ func (h *BaseAPIHandler) IsTenantRequest(c *gin.Context) bool {
 	if h == nil || h.AuthManager == nil {
 		return false
 	}
-	return coreauth.TenantIDFromMetadata(accessMetadataFromGinContext(c)) > 0
+	return coreauth.TenantIDFromMetadata(ClientAccessMetadata(c)) > 0
 }

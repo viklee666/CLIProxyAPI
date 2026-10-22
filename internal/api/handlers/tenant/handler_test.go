@@ -28,6 +28,7 @@ func newTenantTestEngine(t *testing.T) (*gin.Engine, *tenantservice.Service, *cl
 	if errClientAccess != nil {
 		t.Fatalf("clientaccess.New() error = %v", errClientAccess)
 	}
+	clientAccess.SetTenantStatusResolver(tenants)
 	t.Cleanup(func() { _ = clientAccess.Close() })
 	handler := NewHandler(tenants, clientAccess, func(ctx context.Context) error {
 		_, errSynthesize := tenants.SynthesizeAuths(ctx)

@@ -47,9 +47,11 @@ const importBatchSize = 256
 var ErrInvalidUsageCursor = errors.New("invalid usage cursor")
 
 type CompatibleUsageRequest struct {
-	Page     int
-	PageSize int
-	Cursor   string
+	// Authorization is an ownership boundary independent of pagination and filters.
+	Authorization *store.APIKeyAuthorization `json:"-"`
+	Page          int
+	PageSize      int
+	Cursor        string
 	// APIKeyHashes scopes a tenant usage view. nil preserves management usage;
 	// an empty non-nil value deliberately produces an empty result.
 	APIKeyHashes []string
@@ -107,7 +109,7 @@ func (s *Service) CompatibleUsage(ctx context.Context, req CompatibleUsageReques
 		req.PageSize = 500
 	}
 
-	query := store.RecentUsagePageQuery{PageSize: req.PageSize, APIKeyHashes: req.APIKeyHashes}
+	query := store.RecentUsagePageQuery{PageSize: req.PageSize, APIKeyHashes: req.APIKeyHashes, Authorization: req.Authorization}
 	if cursor := strings.TrimSpace(req.Cursor); cursor != "" {
 		decoded, err := decodeCompatibleUsageCursor(cursor)
 		if err != nil {

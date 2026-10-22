@@ -63,6 +63,10 @@ type Aggregate = usageevent.Aggregate
 type ModelStat = usageevent.ModelStat
 type RecentFailure = usageevent.RecentFailure
 type AnalyticsFilter = usageevent.AnalyticsFilter
+type APIKeyAuthorization = usageevent.APIKeyAuthorization
+
+var NewAPIKeyAuthorization = usageevent.NewAPIKeyAuthorization
+
 type TimelinePoint = usageevent.TimelinePoint
 type LatencyPercentiles = usageevent.LatencyPercentiles
 type LatencySummary = usageevent.LatencySummary

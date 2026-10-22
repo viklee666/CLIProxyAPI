@@ -240,9 +240,8 @@ func (s *Server) codexAlphaSearchSelectionModel(ctx context.Context, c *gin.Cont
 			requestPath = c.Request.URL.Path
 		}
 	}
-	metadata := map[string]any{
-		coreexecutor.RequestedModelMetadataKey: model,
-	}
+	metadata := handlers.ClientAccessMetadata(c)
+	metadata[coreexecutor.RequestedModelMetadataKey] = model
 	if requestPath != "" {
 		metadata[coreexecutor.RequestPathMetadataKey] = requestPath
 	}
@@ -363,10 +362,10 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 		c.JSON(clienterror.HTTPStatusFromErrorOr(errRoute, http.StatusServiceUnavailable), gin.H{"error": errRoute.Error()})
 		return
 	}
-	selectionOpts := coreexecutor.Options{Headers: selectionHeaders, OriginalRequest: body}
+	selectionOpts := coreexecutor.Options{Headers: selectionHeaders, OriginalRequest: body, Metadata: handlers.ClientAccessMetadata(c)}
 	var selection *auth.HomeDispatchSelection
 	var selected *auth.Auth
-	if s.handlers.AuthManager.HomeEnabled() {
+	if s.handlers.AuthManager.HomeEnabledForMetadata(selectionOpts.Metadata) {
 		selection, err = s.handlers.AuthManager.SelectHomeAuthWithCredentialPolicy(ctx, "codex", selectionModel, auth.CredentialPolicyCodexAlphaSearchV1, selectionOpts)
 		if selection != nil {
 			selected = selection.CloneAuth()
@@ -592,20 +591,20 @@ func isAnthropicModelsRequest(c *gin.Context) bool {
 func (s *Server) unifiedModelsHandler(openaiHandler *openai.OpenAIAPIHandler, claudeHandler *claude.ClaudeCodeAPIHandler) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if grokbuild.IsGrokShellUserAgent(c.GetHeader("User-Agent")) {
-			// Tenant client-access keys must never reach the global Home or registry catalog.
-			if openaiHandler != nil && openaiHandler.IsTenantRequest(c) {
-				s.handleTenantGrokModels(c, openaiHandler)
+			// Access-controlled callers must never reach the global Home or registry catalog.
+			if openaiHandler != nil && openaiHandler.IsModelCatalogScoped(c) {
+				s.handleScopedGrokModels(c, openaiHandler)
 				return
 			}
 			s.handleGrokModels(c)
 			return
 		}
 
-		// Tenant client-access keys must never reach the global Home catalog.
-		isTenantRequest := openaiHandler.IsTenantRequest(c)
+		// Access-controlled callers must never reach the global Home catalog.
+		isScopedRequest := openaiHandler.IsModelCatalogScoped(c)
 		if _, ok := c.Request.URL.Query()["client_version"]; ok {
 			clientVersion := c.Query("client_version")
-			if s != nil && s.cfg != nil && s.cfg.Home.Enabled && !isTenantRequest {
+			if s != nil && s.cfg != nil && s.cfg.Home.Enabled && !isScopedRequest {
 				s.handleHomeCodexClientModels(c, clientVersion)
 				return
 			}
@@ -613,7 +612,7 @@ func (s *Server) unifiedModelsHandler(openaiHandler *openai.OpenAIAPIHandler, cl
 			return
 		}
 
-		if s != nil && s.cfg != nil && s.cfg.Home.Enabled && !isTenantRequest {
+		if s != nil && s.cfg != nil && s.cfg.Home.Enabled && !isScopedRequest {
 			s.handleHomeModels(c)
 			return
 		}
@@ -744,7 +743,7 @@ func grokModelsFromRegistryInfos(infos []*registry.ModelInfo) []grokbuild.ModelI
 	return models
 }
 
-func (s *Server) handleTenantGrokModels(c *gin.Context, openaiHandler *openai.OpenAIAPIHandler) {
+func (s *Server) handleScopedGrokModels(c *gin.Context, openaiHandler *openai.OpenAIAPIHandler) {
 	catalog := openaiHandler.ModelInfosForRequest(c)
 	c.JSON(http.StatusOK, grokbuild.BuildResponse(grokModelsFromRegistryInfos(catalog)))
 }
@@ -830,7 +829,7 @@ func formatHomeCodexModel(entry homeModelEntry) map[string]any {
 
 func (s *Server) geminiModelsHandler(geminiHandler *gemini.GeminiAPIHandler) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if s != nil && s.cfg != nil && s.cfg.Home.Enabled && !geminiHandler.IsTenantRequest(c) {
+		if s != nil && s.cfg != nil && s.cfg.Home.Enabled && !geminiHandler.IsModelCatalogScoped(c) {
 			s.handleHomeGeminiModels(c)
 			return
 		}
@@ -841,7 +840,7 @@ func (s *Server) geminiModelsHandler(geminiHandler *gemini.GeminiAPIHandler) gin
 
 func (s *Server) geminiGetHandler(geminiHandler *gemini.GeminiAPIHandler) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if s != nil && s.cfg != nil && s.cfg.Home.Enabled && !geminiHandler.IsTenantRequest(c) {
+		if s != nil && s.cfg != nil && s.cfg.Home.Enabled && !geminiHandler.IsModelCatalogScoped(c) {
 			s.handleHomeGeminiModel(c)
 			return
 		}

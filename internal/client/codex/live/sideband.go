@@ -50,6 +50,8 @@ type liveSession struct {
 	parentSessionID       string
 	ownerPrincipal        string
 	ownerProvider         string
+	clientKeyID           string
+	clientTenantID        string
 	clientSecretPrincipal string
 	homeSelection         *auth.HomeDispatchSelection
 	media                 mediaRelaySession
@@ -334,16 +336,8 @@ func (h *Handler) HandleSideband(c *gin.Context) {
 		writeLiveError(c, http.StatusNotFound, "Codex live session not found")
 		return
 	}
-	if principal, hasClientSecret := c.Get(ClientSecretPrincipalContextKey); hasClientSecret {
-		principalValue, _ := principal.(string)
-		if session.clientSecretPrincipal == "" || principalValue != session.clientSecretPrincipal {
-			h.sessions.release(session)
-			writeRealtimeError(c, http.StatusForbidden, "Realtime client secret is not valid for this call", "invalid_request_error", "realtime_client_secret_scope_mismatch")
-			return
-		}
-	} else if ownerPrincipal, ownerProvider := requestOwner(c); session.ownerPrincipal != "" && (ownerPrincipal != session.ownerPrincipal || ownerProvider != session.ownerProvider) {
+	if !authorizeLiveSession(c, session) {
 		h.sessions.release(session)
-		writeRealtimeError(c, http.StatusForbidden, "Realtime call belongs to another API principal", "invalid_request_error", "realtime_call_scope_mismatch")
 		return
 	}
 	consumeSession := false
@@ -357,9 +351,7 @@ func (h *Handler) HandleSideband(c *gin.Context) {
 
 	ctx := context.WithValue(c.Request.Context(), "gin", c)
 	ctx = coreexecutor.WithDownstreamWebsocket(ctx)
-	ctx = handlers.EnrichContextWithSessionHierarchy(ctx, c.Request.Header, nil, map[string]any{
-		coreexecutor.ExecutionSessionMetadataKey: session.callID,
-	})
+	ctx = handlers.EnrichContextWithSessionHierarchy(ctx, liveSelectionHeaders(c), nil, liveSessionMetadata(c, session))
 	if session.sessionID != "" {
 		meta := logging.GetClientRequestMetadata(ctx)
 		meta.SessionID = session.sessionID
@@ -377,13 +369,14 @@ func (h *Handler) HandleSideband(c *gin.Context) {
 		}
 		selection = session.homeSelection
 		selected = selection.CloneAuth()
+		if !h.authManager.CredentialAllowedForMetadata(selected, liveAccessMetadata(c)) {
+			writeRealtimeError(c, http.StatusForbidden, "Realtime credential is no longer accessible to this caller", "invalid_request_error", "realtime_credential_access_denied")
+			return
+		}
 	} else {
 		selectionOpts := coreexecutor.Options{
-			Headers: liveSelectionHeaders(c),
-			Metadata: map[string]any{
-				coreexecutor.PinnedAuthMetadataKey:       session.authID,
-				coreexecutor.ExecutionSessionMetadataKey: callID,
-			},
+			Headers:  liveSelectionHeaders(c),
+			Metadata: liveSessionMetadata(c, session),
 		}
 		selection, selected, errSelect = h.selectOAuth(ctx, session.model, selectionOpts)
 	}

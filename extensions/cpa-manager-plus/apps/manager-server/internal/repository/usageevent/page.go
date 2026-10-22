@@ -12,6 +12,7 @@ import (
 const maxRecentUsagePageSize = 500
 
 type RecentPageQuery struct {
+	Authorization     *APIKeyAuthorization `json:"-"`
 	PageSize          int
 	Offset            int64
 	SnapshotMaxID     int64
@@ -53,6 +54,13 @@ func (r *repository) ListRecentPage(ctx context.Context, query RecentPageQuery) 
 	}
 
 	apiKeyCondition, apiKeyArgs := recentPageAPIKeyCondition(query.APIKeyHashes)
+	if condition, authorizationArgs := query.Authorization.condition(); condition != "" {
+		if apiKeyCondition != "" {
+			apiKeyCondition += " and "
+		}
+		apiKeyCondition += condition
+		apiKeyArgs = append(apiKeyArgs, authorizationArgs...)
+	}
 	snapshotMaxID := query.SnapshotMaxID
 	if snapshotMaxID <= 0 {
 		query := `select coalesce(max(id), 0) from usage_events`

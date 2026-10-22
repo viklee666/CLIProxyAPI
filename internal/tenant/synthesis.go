@@ -12,6 +12,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/synthesizer"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	log "github.com/sirupsen/logrus"
 )
 
 type providerExtra struct {
@@ -28,6 +29,8 @@ func (s *Service) SynthesizeAuths(ctx context.Context) ([]*coreauth.Auth, error)
 	if s == nil || s.store == nil || s.protector == nil {
 		return nil, errors.New("tenant service is unavailable")
 	}
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
 	providers, errList := s.store.listProvidersForSynthesis(ctx)
 	if errList != nil {
 		return nil, errList
@@ -36,11 +39,17 @@ func (s *Service) SynthesizeAuths(ctx context.Context) ([]*coreauth.Auth, error)
 	for _, provider := range providers {
 		apiKey, errDecrypt := s.protector.UnprotectString(provider.apiKeyEnc)
 		if errDecrypt != nil {
-			return nil, fmt.Errorf("decrypt tenant provider %d: %w", provider.ID, errDecrypt)
+			if errRevoke := s.revokeInvalidProvider(ctx, provider, errDecrypt); errRevoke != nil {
+				return nil, errRevoke
+			}
+			continue
 		}
 		auth, errSynthesize := synthesizeProvider(provider, apiKey)
 		if errSynthesize != nil {
-			return nil, fmt.Errorf("synthesize tenant provider %d: %w", provider.ID, errSynthesize)
+			if errRevoke := s.revokeInvalidProvider(ctx, provider, errSynthesize); errRevoke != nil {
+				return nil, errRevoke
+			}
+			continue
 		}
 		oldIndex := strings.TrimSpace(provider.AuthIndex)
 		newIndex := auth.EnsureIndex()
@@ -57,7 +66,11 @@ func (s *Service) SynthesizeAuths(ctx context.Context) ([]*coreauth.Auth, error)
 				return nil, errUpdate
 			}
 		}
-		if errOwnership := s.store.putCredentialOwnership(ctx, newIndex, provider.TenantID); errOwnership != nil {
+		if provider.Disabled {
+			if errOwnership := s.store.deleteCredentialOwnership(ctx, newIndex); errOwnership != nil {
+				return nil, errOwnership
+			}
+		} else if errOwnership := s.store.putCredentialOwnership(ctx, newIndex, provider.TenantID); errOwnership != nil {
 			return nil, errOwnership
 		}
 		auths = append(auths, auth)
@@ -66,6 +79,16 @@ func (s *Service) SynthesizeAuths(ctx context.Context) ([]*coreauth.Auth, error)
 		return nil, errReload
 	}
 	return auths, nil
+}
+
+// revokeInvalidProvider excludes malformed legacy rows without blocking other
+// tenants. The saved configuration remains available for administrator repair.
+func (s *Service) revokeInvalidProvider(ctx context.Context, provider providerRecord, cause error) error {
+	if errDelete := s.store.deleteCredentialOwnership(ctx, provider.AuthIndex); errDelete != nil {
+		return fmt.Errorf("revoke invalid tenant provider %d: %w", provider.ID, errDelete)
+	}
+	log.WithFields(log.Fields{"tenant_id": provider.TenantID, "provider_id": provider.ID}).WithError(cause).Warn("tenant provider excluded from runtime due to invalid configuration")
+	return nil
 }
 
 func synthesizeProvider(provider providerRecord, apiKey string) (*coreauth.Auth, error) {

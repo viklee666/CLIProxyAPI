@@ -32,6 +32,7 @@ var (
 )
 
 type AnalyticsFilter struct {
+	Authorization           *APIKeyAuthorization `json:"-"`
 	FromMS                  int64
 	ToMS                    int64
 	SearchQuery             string
@@ -2208,6 +2209,10 @@ order by model`, args...)
 func analyticsWhere(filter AnalyticsFilter) (string, []any) {
 	conditions := []string{"timestamp_ms >= ?", "timestamp_ms < ?"}
 	args := []any{filter.FromMS, filter.ToMS}
+	if condition, authorizationArgs := filter.Authorization.condition(); condition != "" {
+		conditions = append(conditions, condition)
+		args = append(args, authorizationArgs...)
+	}
 
 	query := strings.TrimSpace(strings.ToLower(filter.SearchQuery))
 	hash := strings.TrimSpace(strings.ToLower(filter.SearchAPIKeyHash))

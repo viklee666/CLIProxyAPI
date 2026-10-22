@@ -1866,7 +1866,7 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = model
 
 	// Tenant ownership and client-group scoping are only enforced on the legacy path.
-	if m.credentialOwnershipFilteringRequired() || m.credentialGroupFilteringRequired(opts.Metadata) {
+	if tenantIDFromMetadata(opts.Metadata) > 0 || m.credentialOwnershipFilteringRequired() || m.credentialGroupFilteringRequired(opts.Metadata) {
 		return m.pickNextLegacy(ctx, provider, model, opts, tried)
 	}
 
@@ -2047,7 +2047,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = model
 
 	// Tenant ownership and client-group scoping are only enforced on the legacy path.
-	if m.credentialOwnershipFilteringRequired() || m.credentialGroupFilteringRequired(opts.Metadata) {
+	if tenantIDFromMetadata(opts.Metadata) > 0 || m.credentialOwnershipFilteringRequired() || m.credentialGroupFilteringRequired(opts.Metadata) {
 		return m.pickNextMixedLegacy(ctx, providers, model, opts, tried)
 	}
 

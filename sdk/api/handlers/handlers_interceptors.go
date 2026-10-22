@@ -625,7 +625,8 @@ func (h *BaseAPIHandler) WriteModelListResponse(c *gin.Context, sourceFormat str
 	}
 
 	host := h.interceptorHost()
-	if host != nil {
+	// Global model-list rewrites cannot widen an access-controlled catalog.
+	if host != nil && !h.IsModelCatalogScoped(c) {
 		ctx := context.Background()
 		var reqHeaders http.Header
 		if c.Request != nil {

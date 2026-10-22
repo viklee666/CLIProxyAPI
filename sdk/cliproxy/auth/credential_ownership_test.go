@@ -88,7 +88,7 @@ func TestManagerCredentialOwnershipRejectsNonOwnersEvenWhenGroupsAllowAll(t *tes
 	}
 }
 
-func TestManagerCredentialOwnershipAllowsMatchingTenantAndGlobalCredentials(t *testing.T) {
+func TestManagerCredentialOwnershipAllowsOnlyMatchingOwner(t *testing.T) {
 	t.Parallel()
 	manager := NewManager(nil, &RoundRobinSelector{}, nil)
 	manager.RegisterExecutor(schedulerTestExecutor{})
@@ -110,7 +110,10 @@ func TestManagerCredentialOwnershipAllowsMatchingTenantAndGlobalCredentials(t *t
 	if _, errRegister := globalManager.Register(context.Background(), &Auth{ID: "global", Index: "global-index", Provider: "test", Status: StatusActive}); errRegister != nil {
 		t.Fatalf("Register() global error = %v", errRegister)
 	}
-	global, errGlobal := globalManager.SelectAuth(context.Background(), "test", "", tenantOptions(2, true))
+	if _, errGlobal := globalManager.SelectAuth(context.Background(), "test", "", tenantOptions(2, true)); errGlobal == nil {
+		t.Fatal("tenant caller selected an administrator-owned credential")
+	}
+	global, errGlobal := globalManager.SelectAuth(context.Background(), "test", "", tenantOptions(0, true))
 	if errGlobal != nil {
 		t.Fatalf("SelectAuth() global error = %v", errGlobal)
 	}

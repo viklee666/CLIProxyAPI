@@ -47,14 +47,16 @@ func New(store *store.Store, hourlyRollupEnabled ...bool) *Service {
 }
 
 type Request struct {
-	FromMS           int64   `json:"from_ms"`
-	ToMS             int64   `json:"to_ms"`
-	NowMS            int64   `json:"now_ms"`
-	TimeZone         string  `json:"time_zone"`
-	SearchQuery      string  `json:"search_query"`
-	SearchAPIKeyHash string  `json:"search_api_key_hash"`
-	Filters          Filters `json:"filters"`
-	Include          Include `json:"include"`
+	// Authorization is set by authenticated handlers, never by request JSON.
+	Authorization    *store.APIKeyAuthorization `json:"-"`
+	FromMS           int64                      `json:"from_ms"`
+	ToMS             int64                      `json:"to_ms"`
+	NowMS            int64                      `json:"now_ms"`
+	TimeZone         string                     `json:"time_zone"`
+	SearchQuery      string                     `json:"search_query"`
+	SearchAPIKeyHash string                     `json:"search_api_key_hash"`
+	Filters          Filters                    `json:"filters"`
+	Include          Include                    `json:"include"`
 }
 
 type Filters struct {
@@ -1147,6 +1149,7 @@ func buildFilter(req Request) store.AnalyticsFilter {
 		includeFailed = *req.Filters.IncludeFailed
 	}
 	return store.AnalyticsFilter{
+		Authorization:    req.Authorization,
 		FromMS:           req.FromMS,
 		ToMS:             req.ToMS,
 		SearchQuery:      req.SearchQuery,
@@ -1262,7 +1265,8 @@ func (s *Service) totalModelSummaryMetrics(ctx context.Context, filter store.Ana
 }
 
 func analyticsHourlyRollupEligible(filter store.AnalyticsFilter) bool {
-	return strings.TrimSpace(filter.SearchQuery) == "" &&
+	// Global hourly rollups cannot represent a caller's ownership predicate.
+	return filter.Authorization == nil && strings.TrimSpace(filter.SearchQuery) == "" &&
 		strings.TrimSpace(filter.SearchAPIKeyHash) == "" &&
 		len(filter.Models) == 0 &&
 		len(filter.Providers) == 0 &&
@@ -1341,6 +1345,7 @@ func (s *Service) filterSelectors(ctx context.Context, filter store.AnalyticsFil
 }
 
 func filterOptionsBaseFilter(filter store.AnalyticsFilter) store.AnalyticsFilter {
+	// Reset interactive filters while retaining the mandatory ownership boundary.
 	optionFilter := filter
 	optionFilter.Models = nil
 	optionFilter.Providers = nil

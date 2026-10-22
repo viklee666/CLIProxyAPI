@@ -218,6 +218,7 @@ func (h *Handler) Handle(c *gin.Context) {
 	selectionOpts := coreexecutor.Options{
 		Headers:         liveSelectionHeaders(c),
 		OriginalRequest: body,
+		Metadata:        liveAccessMetadata(c),
 	}
 	ctx = handlers.EnrichContextWithSessionHierarchy(ctx, selectionOpts.Headers, body, nil)
 	selection, selected, errSelect := h.selectOAuth(ctx, model, selectionOpts)
@@ -425,6 +426,9 @@ func (h *Handler) Handle(c *gin.Context) {
 				parentSessionID: clientMeta.ParentSessionID,
 			}
 			session.ownerPrincipal, session.ownerProvider = requestOwner(c)
+			accessMetadata := liveAccessMetadata(c)
+			session.clientKeyID, _ = accessMetadata[coreexecutor.ClientKeyIDMetadataKey].(string)
+			session.clientTenantID, _ = accessMetadata[coreexecutor.ClientTenantIDMetadataKey].(string)
 			if principal, ok := c.Get(ClientSecretPrincipalContextKey); ok {
 				session.clientSecretPrincipal, _ = principal.(string)
 			}
@@ -490,7 +494,7 @@ func (h *Handler) selectOAuth(ctx context.Context, model string, opts coreexecut
 	var selection *auth.HomeDispatchSelection
 	var selected *auth.Auth
 	var errSelect error
-	if h.authManager.HomeEnabled() {
+	if h.authManager.HomeEnabledForMetadata(opts.Metadata) {
 		selection, errSelect = h.authManager.SelectHomeAuthByKind(ctx, "codex", model, auth.AuthKindOAuth, opts)
 		if selection != nil {
 			selected = selection.CloneAuth()

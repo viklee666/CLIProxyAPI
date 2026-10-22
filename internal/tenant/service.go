@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -28,9 +29,11 @@ type ownershipSnapshot struct {
 }
 
 type Service struct {
-	store     *Store
-	protector *Protector
-	ownership atomic.Pointer[ownershipSnapshot]
+	lifecycleMu sync.Mutex
+	ownershipMu sync.Mutex
+	store       *Store
+	protector   *Protector
+	ownership   atomic.Pointer[ownershipSnapshot]
 }
 
 func ResolveDatabasePath(configPath string) string {
@@ -128,6 +131,18 @@ func (s *Service) Get(ctx context.Context, tenantID int64) (Tenant, error) {
 	return s.store.GetTenant(ctx, tenantID)
 }
 
+// TenantEnabled reads current account status independently of runtime snapshots.
+func (s *Service) TenantEnabled(ctx context.Context, tenantID int64) (bool, error) {
+	item, errGet := s.Get(ctx, tenantID)
+	if errors.Is(errGet, sql.ErrNoRows) {
+		return false, nil
+	}
+	if errGet != nil {
+		return false, errGet
+	}
+	return item.Enabled, nil
+}
+
 func (s *Service) List(ctx context.Context) ([]Tenant, error) {
 	if s == nil || s.store == nil {
 		return nil, errors.New("tenant service is unavailable")
@@ -139,6 +154,8 @@ func (s *Service) Update(ctx context.Context, tenantID int64, input UpdateInput)
 	if s == nil || s.store == nil {
 		return Tenant{}, errors.New("tenant service is unavailable")
 	}
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
 	item, errUpdate := s.store.UpdateTenant(ctx, tenantID, input)
 	if errUpdate != nil {
 		return Tenant{}, errUpdate
@@ -160,6 +177,8 @@ func (s *Service) Delete(ctx context.Context, tenantID int64) error {
 	if s == nil || s.store == nil {
 		return errors.New("tenant service is unavailable")
 	}
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
 	if errDelete := s.store.DeleteTenant(ctx, tenantID); errDelete != nil {
 		return errDelete
 	}
@@ -286,12 +305,16 @@ func (s *Service) SetCredentialOwnership(ctx context.Context, authIndex string, 
 	if s == nil || s.store == nil {
 		return errors.New("tenant service is unavailable")
 	}
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
 	authIndex = strings.TrimSpace(authIndex)
 	if authIndex == "" || tenantID <= 0 {
 		return errors.New("auth index and tenant id are required")
 	}
-	if _, errGet := s.store.GetTenant(ctx, tenantID); errGet != nil {
-		return errGet
+	if enabled, errStatus := s.TenantEnabled(ctx, tenantID); errStatus != nil {
+		return errStatus
+	} else if !enabled {
+		return ErrInvalidCredentials
 	}
 	if errPut := s.store.putCredentialOwnership(ctx, authIndex, tenantID); errPut != nil {
 		return errPut
@@ -303,6 +326,8 @@ func (s *Service) RemoveCredentialOwnership(ctx context.Context, authIndex strin
 	if s == nil || s.store == nil {
 		return errors.New("tenant service is unavailable")
 	}
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
 	authIndex = strings.TrimSpace(authIndex)
 	if authIndex == "" {
 		return errors.New("auth index is required")
@@ -333,6 +358,8 @@ func (s *Service) HasOwnedCredentials() bool {
 }
 
 func (s *Service) reloadOwnership(ctx context.Context) error {
+	s.ownershipMu.Lock()
+	defer s.ownershipMu.Unlock()
 	items, errList := s.store.listCredentialOwnership(ctx)
 	if errList != nil {
 		return errList

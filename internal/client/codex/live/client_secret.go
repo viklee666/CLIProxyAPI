@@ -39,6 +39,7 @@ type ClientSecretAuthorization struct {
 	IssuerPrincipal string
 	IssuerProvider  string
 	Session         json.RawMessage
+	AccessMetadata  map[string]string
 }
 
 type clientSecretEntry struct {
@@ -73,7 +74,7 @@ func newClientSecretStore() *clientSecretStore {
 	}
 }
 
-func (s *clientSecretStore) create(session json.RawMessage, lifetime time.Duration, issuerPrincipal, issuerProvider string) (string, ClientSecretAuthorization, time.Time, error) {
+func (s *clientSecretStore) create(session json.RawMessage, lifetime time.Duration, issuerPrincipal, issuerProvider string, accessMetadata ...map[string]string) (string, ClientSecretAuthorization, time.Time, error) {
 	if s == nil {
 		return "", ClientSecretAuthorization{}, time.Time{}, errors.New("Realtime client secret store unavailable")
 	}
@@ -90,6 +91,9 @@ func (s *clientSecretStore) create(session json.RawMessage, lifetime time.Durati
 		IssuerPrincipal: strings.TrimSpace(issuerPrincipal),
 		IssuerProvider:  strings.TrimSpace(issuerProvider),
 		Session:         append(json.RawMessage(nil), session...),
+	}
+	if len(accessMetadata) > 0 {
+		authorization.AccessMetadata = cloneClientSecretAccessMetadata(accessMetadata[0])
 	}
 	now := s.currentTime()
 	expiresAt := now.Add(lifetime)
@@ -111,7 +115,10 @@ func (s *clientSecretStore) create(session json.RawMessage, lifetime time.Durati
 			return "", ClientSecretAuthorization{}, time.Time{}, errClientSecretCapacity
 		}
 	}
-	s.entries[token] = clientSecretEntry{authorization: authorization, expiresAt: expiresAt}
+	storedAuthorization := authorization
+	storedAuthorization.Session = append(json.RawMessage(nil), authorization.Session...)
+	storedAuthorization.AccessMetadata = cloneClientSecretAccessMetadata(authorization.AccessMetadata)
+	s.entries[token] = clientSecretEntry{authorization: storedAuthorization, expiresAt: expiresAt}
 	s.mu.Unlock()
 	return token, authorization, expiresAt, nil
 }
@@ -130,6 +137,7 @@ func (s *clientSecretStore) authenticate(token string) (ClientSecretAuthorizatio
 	}
 	s.mu.Unlock()
 	entry.authorization.Session = append(json.RawMessage(nil), entry.authorization.Session...)
+	entry.authorization.AccessMetadata = cloneClientSecretAccessMetadata(entry.authorization.AccessMetadata)
 	return entry.authorization, nil
 }
 
@@ -265,11 +273,10 @@ func (h *Handler) createClientSecret(c *gin.Context, session json.RawMessage, ex
 		writeRealtimeError(c, http.StatusBadRequest, errSession.Error(), "invalid_request_error", "invalid_session")
 		return
 	}
-	issuerPrincipal, _ := c.Get("userApiKey")
-	issuerProvider, _ := c.Get("accessProvider")
-	issuerPrincipalValue, _ := issuerPrincipal.(string)
-	issuerProviderValue, _ := issuerProvider.(string)
-	token, authorization, expiresAt, errCreate := h.clientSecrets.create(upstreamSession, lifetime, issuerPrincipalValue, issuerProviderValue)
+	issuerPrincipalValue, issuerProviderValue := requestOwner(c)
+	accessValue, _ := c.Get("accessMetadata")
+	accessMetadata, _ := accessValue.(map[string]string)
+	token, authorization, expiresAt, errCreate := h.clientSecrets.create(upstreamSession, lifetime, issuerPrincipalValue, issuerProviderValue, accessMetadata)
 	if errCreate != nil {
 		if errors.Is(errCreate, errClientSecretCapacity) {
 			c.Header("Retry-After", "1")
@@ -390,7 +397,10 @@ func requestOwner(c *gin.Context) (string, string) {
 	if c == nil {
 		return "", ""
 	}
-	principalValue, _ := c.Get("userApiKey")
+	principalValue, exists := c.Get("accessPrincipal")
+	if !exists {
+		principalValue, _ = c.Get("userApiKey")
+	}
 	providerValue, _ := c.Get("accessProvider")
 	principal, _ := principalValue.(string)
 	provider, _ := providerValue.(string)

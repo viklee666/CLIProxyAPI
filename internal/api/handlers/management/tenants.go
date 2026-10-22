@@ -135,9 +135,13 @@ func (h *Handler) DeleteTenant(c *gin.Context) {
 	if !valid {
 		return
 	}
-	// Clean the independent client-access database first. Deleting the tenant
-	// then removes credential ownership immediately, so either partial outcome
-	// remains fail-closed for the provider routing path.
+	// Revoke sessions, client-key access, and provider ownership before cleaning
+	// the independent client-access store. Partial failures leave the tenant disabled.
+	disabled := false
+	if _, errDisable := tenants.Update(c.Request.Context(), id, tenant.UpdateInput{Enabled: &disabled}); errDisable != nil {
+		writeManagementTenantError(c, errDisable)
+		return
+	}
 	if clientAccess != nil {
 		if errDeleteResources := clientAccess.DeleteTenantResources(c.Request.Context(), id); errDeleteResources != nil {
 			writeManagementTenantError(c, errDeleteResources)

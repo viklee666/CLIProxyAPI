@@ -16,6 +16,12 @@ import (
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
 
+type testTenantStatuses map[int64]bool
+
+func (statuses testTenantStatuses) TenantEnabled(_ context.Context, tenantID int64) (bool, error) {
+	return statuses[tenantID], nil
+}
+
 type testCredentialOwnership map[string]int64
 
 func (owners testCredentialOwnership) OwnerOf(authIndex string) int64 {
@@ -529,6 +535,7 @@ func TestServiceAuthenticateConcurrencyAndMetadata(t *testing.T) {
 
 func TestServiceAuthenticateIncludesTenantID(t *testing.T) {
 	service := newTestService(t)
+	service.SetTenantStatusResolver(testTenantStatuses{42: true})
 	created, errKey := service.CreateKey(context.Background(), KeyCreate{
 		TenantID:     42,
 		Name:         "tenant key",
@@ -754,6 +761,7 @@ func TestServiceReplaceGroupCredentialBindingsPreservesOtherGroups(t *testing.T)
 
 func TestTenantScopedResourcesRejectCrossTenantAccess(t *testing.T) {
 	service := newTestService(t)
+	service.SetTenantStatusResolver(testTenantStatuses{101: true, 202: true})
 	ctx := context.Background()
 
 	firstGroup, errFirstGroup := service.CreateTenantGroup(ctx, 101, GroupCreate{Name: "tenant-101"})
@@ -826,6 +834,7 @@ func TestTenantScopedResourcesRejectCrossTenantAccess(t *testing.T) {
 
 func TestTenantCredentialBindingsRequireOwnedAuthAndScopedGroup(t *testing.T) {
 	service := newTestService(t)
+	service.SetTenantStatusResolver(testTenantStatuses{11: true, 22: true})
 	ctx := context.Background()
 	firstGroup, errFirst := service.CreateTenantGroup(ctx, 11, GroupCreate{Name: "tenant-11"})
 	if errFirst != nil {
@@ -863,6 +872,7 @@ func TestTenantCredentialBindingsRequireOwnedAuthAndScopedGroup(t *testing.T) {
 
 func TestDeleteTenantResourcesLeavesAdministratorResources(t *testing.T) {
 	service := newTestService(t)
+	service.SetTenantStatusResolver(testTenantStatuses{7: true})
 	ctx := context.Background()
 	tenantGroup, errTenantGroup := service.CreateTenantGroup(ctx, 7, GroupCreate{Name: "tenant-delete"})
 	if errTenantGroup != nil {

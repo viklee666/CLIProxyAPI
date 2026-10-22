@@ -55,15 +55,12 @@ func (h *Handler) HandleHangup(c *gin.Context) {
 		return
 	}
 
-	if ownerPrincipal, ownerProvider := requestOwner(c); session.ownerPrincipal != "" && (ownerPrincipal != session.ownerPrincipal || ownerProvider != session.ownerProvider) {
-		writeRealtimeError(c, http.StatusForbidden, "Realtime call belongs to another API principal", "invalid_request_error", "realtime_call_scope_mismatch")
+	if !authorizeLiveSession(c, session) {
 		return
 	}
 
 	ctx := context.WithValue(c.Request.Context(), "gin", c)
-	ctx = handlers.EnrichContextWithSessionHierarchy(ctx, liveSelectionHeaders(c), nil, map[string]any{
-		coreexecutor.ExecutionSessionMetadataKey: callID,
-	})
+	ctx = handlers.EnrichContextWithSessionHierarchy(ctx, liveSelectionHeaders(c), nil, liveSessionMetadata(c, session))
 	if session.sessionID != "" {
 		meta := logging.GetClientRequestMetadata(ctx)
 		meta.SessionID = session.sessionID
@@ -76,13 +73,14 @@ func (h *Handler) HandleHangup(c *gin.Context) {
 	if session.homeSelection != nil && session.homeSelection.Active() {
 		activeSelection = session.homeSelection
 		selected = activeSelection.CloneAuth()
+		if !h.authManager.CredentialAllowedForMetadata(selected, liveAccessMetadata(c)) {
+			writeRealtimeError(c, http.StatusForbidden, "Realtime credential is no longer accessible to this caller", "invalid_request_error", "realtime_credential_access_denied")
+			return
+		}
 	} else {
 		selectionOpts := coreexecutor.Options{
-			Headers: liveSelectionHeaders(c),
-			Metadata: map[string]any{
-				coreexecutor.PinnedAuthMetadataKey:       session.authID,
-				coreexecutor.ExecutionSessionMetadataKey: callID,
-			},
+			Headers:  liveSelectionHeaders(c),
+			Metadata: liveSessionMetadata(c, session),
 		}
 		selection, selectedAuth, errSelect := h.selectOAuth(ctx, session.model, selectionOpts)
 		if errSelect != nil {

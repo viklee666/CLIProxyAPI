@@ -191,6 +191,8 @@ func (s *Service) CreateProvider(ctx context.Context, tenantID int64, input Prov
 	if s == nil || s.store == nil || s.protector == nil {
 		return Provider{}, errors.New("tenant service is unavailable")
 	}
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
 	if tenantID <= 0 {
 		return Provider{}, errors.New("tenant id is required")
 	}
@@ -198,8 +200,10 @@ func (s *Service) CreateProvider(ctx context.Context, tenantID int64, input Prov
 	if errNormalize != nil {
 		return Provider{}, errNormalize
 	}
-	if _, errGet := s.store.GetTenant(ctx, tenantID); errGet != nil {
-		return Provider{}, errGet
+	if enabled, errStatus := s.TenantEnabled(ctx, tenantID); errStatus != nil {
+		return Provider{}, errStatus
+	} else if !enabled {
+		return Provider{}, errors.New("tenant is disabled or does not exist")
 	}
 	headersJSON, errHeaders := normalizeHeaders(input.Headers)
 	if errHeaders != nil {
@@ -212,6 +216,9 @@ func (s *Service) CreateProvider(ctx context.Context, tenantID int64, input Prov
 	extraJSON, errExtra := normalizeJSON(input.Extra, "{}")
 	if errExtra != nil {
 		return Provider{}, errExtra
+	}
+	if _, errConfig := providerConfig(providerRecord{Provider: Provider{Channel: input.Channel}, modelsJSON: modelsJSON, extraJSON: extraJSON}, input.APIKey); errConfig != nil {
+		return Provider{}, errConfig
 	}
 	apiKeyEnc, errEncrypt := s.protector.ProtectString(input.APIKey)
 	if errEncrypt != nil {
@@ -338,6 +345,8 @@ func (s *Service) UpdateProvider(ctx context.Context, tenantID, providerID int64
 	if s == nil || s.store == nil || s.protector == nil {
 		return Provider{}, errors.New("tenant service is unavailable")
 	}
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
 	current, errGet := s.store.getProvider(ctx, tenantID, providerID)
 	if errGet != nil {
 		return Provider{}, errGet
@@ -400,9 +409,20 @@ func (s *Service) UpdateProvider(ctx context.Context, tenantID, providerID int64
 		}
 		current.apiKeyEnc = apiKeyEnc
 	}
+	if _, errConfig := providerConfig(current, ""); errConfig != nil {
+		return Provider{}, errConfig
+	}
 	item, errUpdate := s.store.updateProvider(ctx, current)
 	if errUpdate != nil {
 		return Provider{}, errUpdate
+	}
+	if item.Disabled {
+		if errOwnership := s.store.deleteCredentialOwnership(ctx, item.AuthIndex); errOwnership != nil {
+			return Provider{}, errOwnership
+		}
+		if errReload := s.reloadOwnership(ctx); errReload != nil {
+			return Provider{}, errReload
+		}
 	}
 	return item.Provider, nil
 }
@@ -411,6 +431,8 @@ func (s *Service) DeleteProvider(ctx context.Context, tenantID, providerID int64
 	if s == nil || s.store == nil {
 		return errors.New("tenant service is unavailable")
 	}
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
 	item, errGet := s.store.getProvider(ctx, tenantID, providerID)
 	if errGet != nil {
 		return errGet

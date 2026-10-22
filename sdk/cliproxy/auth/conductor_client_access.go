@@ -46,7 +46,7 @@ type clientCredentialAccess struct {
 }
 
 func clientCredentialAccessFromMetadata(metadata map[string]any) clientCredentialAccess {
-	if len(metadata) == 0 || strings.TrimSpace(contextStringValue(metadata[cliproxyexecutor.ClientKeyIDMetadataKey])) == "" {
+	if contextStringValue(metadata[cliproxyexecutor.ClientKeyIDMetadataKey]) == "" && TenantIDFromMetadata(metadata) <= 0 {
 		return clientCredentialAccess{}
 	}
 	access := clientCredentialAccess{
@@ -119,13 +119,7 @@ func contextInt64Slice(raw any) []int64 {
 
 func (m *Manager) credentialGroupFilteringRequired(metadata map[string]any) bool {
 	access := clientCredentialAccessFromMetadata(metadata)
-	if !access.active || access.allowAll {
-		return false
-	}
-	m.credentialGroupResolverMu.RLock()
-	resolver := m.credentialGroupResolver
-	m.credentialGroupResolverMu.RUnlock()
-	return resolver != nil
+	return access.active && !access.allowAll
 }
 
 // TenantIDFromMetadata extracts the tenant identity propagated by client-access.
@@ -201,9 +195,6 @@ func (m *Manager) credentialOwnershipCandidate(candidate *Auth, metadata map[str
 			return nil, false
 		}
 	}
-	if ownerTenant == 0 {
-		return candidate, true
-	}
 	if tenantIDFromMetadata(metadata) != ownerTenant {
 		return nil, false
 	}
@@ -223,7 +214,7 @@ func (m *Manager) credentialGroupCandidate(candidate *Auth, metadata map[string]
 	resolver := m.credentialGroupResolver
 	m.credentialGroupResolverMu.RUnlock()
 	if resolver == nil {
-		return candidate, true
+		return nil, false
 	}
 	allowed, priority, override := resolver.ResolveCredentialAccess(candidate.Index, access.groupIDs, access.allowAll, access.allowUngrouped)
 	if !allowed {
@@ -240,19 +231,32 @@ func (m *Manager) credentialGroupCandidate(candidate *Auth, metadata map[string]
 	return copyAuth, true
 }
 
+// CredentialAllowedForMetadata rechecks the current ownership and group policy
+// before a retained credential is reused by a separate authenticated request.
+func (m *Manager) CredentialAllowedForMetadata(candidate *Auth, metadata map[string]any) bool {
+	if m == nil || candidate == nil || candidate.Disabled || candidate.Status == StatusDisabled {
+		return false
+	}
+	_, allowed := m.credentialGroupCandidate(candidate, metadata)
+	return allowed
+}
+
 // HomeEnabledForMetadata excludes tenant client-access keys from the global
 // Home control plane. Tenant requests must use their own runtime providers.
 func (m *Manager) HomeEnabledForMetadata(metadata map[string]any) bool {
 	return m.HomeEnabled() && TenantIDFromMetadata(metadata) <= 0
 }
 
-// TenantModelClientIDs returns the registry client IDs that are usable by the
-// tenant represented by client-access metadata. It applies the same ownership
-// and group checks as request routing, so a model list cannot disclose another
-// tenant's providers or providers outside the calling key's groups.
-func (m *Manager) TenantModelClientIDs(metadata map[string]any) []string {
-	tenantID := tenantIDFromMetadata(metadata)
-	if m == nil || tenantID <= 0 {
+// ModelCatalogFilteringRequired reports whether a global catalog would bypass
+// the caller's credential ownership or client-group restrictions.
+func (m *Manager) ModelCatalogFilteringRequired(metadata map[string]any) bool {
+	return clientCredentialAccessFromMetadata(metadata).active || tenantIDFromMetadata(metadata) > 0 || m.credentialOwnershipFilteringRequired()
+}
+
+// ModelClientIDs returns only registry clients that pass the same ownership and
+// group checks used for credential selection. An empty result never means all.
+func (m *Manager) ModelClientIDs(metadata map[string]any) []string {
+	if m == nil {
 		return nil
 	}
 
@@ -261,8 +265,7 @@ func (m *Manager) TenantModelClientIDs(metadata map[string]any) []string {
 	clientIDs := make([]string, 0)
 	seen := make(map[string]struct{})
 	for _, candidate := range m.auths {
-		ownerTenant, declaresTenant := tenantIDFromAuth(candidate)
-		if !declaresTenant || ownerTenant != tenantID || candidate == nil || candidate.Disabled {
+		if candidate == nil || candidate.Disabled || candidate.Status == StatusDisabled {
 			continue
 		}
 		if _, allowed := m.credentialGroupCandidate(candidate, metadata); !allowed {
@@ -280,4 +283,12 @@ func (m *Manager) TenantModelClientIDs(metadata map[string]any) []string {
 	}
 	sort.Strings(clientIDs)
 	return clientIDs
+}
+
+// TenantModelClientIDs is the tenant-only compatibility wrapper for ModelClientIDs.
+func (m *Manager) TenantModelClientIDs(metadata map[string]any) []string {
+	if tenantIDFromMetadata(metadata) <= 0 {
+		return nil
+	}
+	return m.ModelClientIDs(metadata)
 }

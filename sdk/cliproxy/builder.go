@@ -267,6 +267,10 @@ func (b *Builder) Build() (*Service, error) {
 		return nil, fmt.Errorf("cliproxy: initialize tenant store: %w", errTenant)
 	}
 
+	if clientAccessService != nil {
+		clientAccessService.SetTenantStatusResolver(tenantService)
+	}
+
 	routingState := normalizedRoutingRuntimeState(b.cfg)
 	var appliedRoutingState *routingRuntimeState
 	var cooldownStateStore coreauth.CooldownStateStore

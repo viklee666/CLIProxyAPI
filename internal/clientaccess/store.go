@@ -585,7 +585,7 @@ func (s *Store) CreateKey(ctx context.Context, input KeyCreate, secret, prefix, 
 	if input.Enabled != nil {
 		enabled = *input.Enabled
 	}
-	allowAll := true
+	allowAll := len(input.GroupIDs) == 0 && !input.AllowUngrouped
 	if input.AllowAllGroups != nil {
 		allowAll = *input.AllowAllGroups
 	}
@@ -857,6 +857,10 @@ func (s *Store) updateKey(ctx context.Context, id int64, tenantID *int64, input 
 	}
 	if input.AllowAllGroups != nil {
 		current.AllowAllGroups = *input.AllowAllGroups
+	} else if input.GroupIDs != nil || (input.AllowUngrouped != nil && *input.AllowUngrouped) {
+		// An explicit resource assignment narrows access unless all groups are
+		// explicitly requested in the same update.
+		current.AllowAllGroups = false
 	}
 	if input.AllowUngrouped != nil {
 		current.AllowUngrouped = *input.AllowUngrouped
@@ -1004,24 +1008,32 @@ func (s *Store) TouchKey(ctx context.Context, id int64, usedAt time.Time) error 
 	return errExec
 }
 
-func (s *Store) ListAllCredentialBindings(ctx context.Context) ([]CredentialBinding, error) {
-	rows, errQuery := s.db.QueryContext(ctx, `SELECT cg.auth_index, cg.group_id, cg.priority, cg.created_at_ms
+type storedCredentialBinding struct {
+	CredentialBinding
+	GroupEnabled bool
+}
+
+// ListAllCredentialBindings preserves disabled memberships so their credentials
+// cannot become implicitly accessible as ungrouped resources.
+func (s *Store) ListAllCredentialBindings(ctx context.Context) ([]storedCredentialBinding, error) {
+	rows, errQuery := s.db.QueryContext(ctx, `SELECT cg.auth_index, cg.group_id, cg.priority, cg.created_at_ms, g.enabled
 		FROM client_access_credential_groups cg
 		JOIN client_access_groups g ON g.id = cg.group_id
-		WHERE g.enabled = 1
 		ORDER BY cg.auth_index, cg.group_id`)
 	if errQuery != nil {
 		return nil, errQuery
 	}
 	defer rows.Close()
-	items := make([]CredentialBinding, 0)
+	items := make([]storedCredentialBinding, 0)
 	for rows.Next() {
-		var item CredentialBinding
+		var item storedCredentialBinding
 		var createdMS int64
-		if errScan := rows.Scan(&item.AuthIndex, &item.GroupID, &item.Priority, &createdMS); errScan != nil {
+		var enabled int
+		if errScan := rows.Scan(&item.AuthIndex, &item.GroupID, &item.Priority, &createdMS, &enabled); errScan != nil {
 			return nil, errScan
 		}
 		item.CreatedAt = time.UnixMilli(createdMS).UTC()
+		item.GroupEnabled = enabled != 0
 		items = append(items, item)
 	}
 	return items, rows.Err()
@@ -1176,7 +1188,8 @@ func (s *Store) replaceGroupCredentialBindings(ctx context.Context, groupID int6
 	unchanged := len(existing) == len(authIndices)
 	if unchanged {
 		for _, authIndex := range authIndices {
-			if existing[authIndex] != priority {
+			existingPriority, exists := existing[authIndex]
+			if !exists || existingPriority != priority {
 				unchanged = false
 				break
 			}

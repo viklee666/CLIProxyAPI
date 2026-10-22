@@ -951,6 +951,11 @@ func (m *Manager) pickHomeDispatchSelection(ctx context.Context, model string, o
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// The global Home dispatcher does not carry tenant ownership constraints.
+	// Reject tenant requests before any dispatch or retained-session reuse.
+	if tenantIDFromMetadata(opts.Metadata) > 0 {
+		return nil, &Error{Code: "access_denied", Message: "tenant credentials cannot use the global Home dispatcher", HTTPStatus: http.StatusForbidden}
+	}
 
 	requestedModel := strings.TrimSpace(model)
 	if requestedModel == "" {
@@ -968,6 +973,10 @@ func (m *Manager) pickHomeDispatchSelection(ctx context.Context, model string, o
 		return nil, errRetained
 	}
 	if retainedOK {
+		if _, allowed := m.credentialGroupCandidate(retained.CloneAuth(), opts.Metadata); !allowed {
+			retained.End("access_denied")
+			return nil, &Error{Code: "access_denied", Message: "credential is outside the client's permitted resources", HTTPStatus: http.StatusForbidden}
+		}
 		return retained, nil
 	}
 	if sessionID := homeExecutionSessionIDFromMetadata(opts.Metadata); sessionID != "" {
@@ -1164,6 +1173,10 @@ func (m *Manager) pickHomeDispatchSelection(ctx context.Context, model string, o
 	} else {
 		auth.EnsureIndex()
 	}
+	if _, allowed := m.credentialGroupCandidate(&auth, opts.Metadata); !allowed {
+		endScope()
+		return nil, &Error{Code: "access_denied", Message: "credential is outside the client's permitted resources", HTTPStatus: http.StatusForbidden}
+	}
 
 	executor, okExecutor := m.Executor(executorKey)
 	if !okExecutor && auth.Attributes != nil && strings.TrimSpace(auth.Attributes["base_url"]) != "" {
@@ -1274,6 +1287,13 @@ func (m *Manager) findAllAntigravityCreditsCandidateAuths(ctx context.Context, r
 			continue
 		}
 		if !strings.Contains(strings.ToLower(strings.TrimSpace(routeModel)), "claude") {
+			continue
+		}
+		auth, allowed := m.credentialGroupCandidate(auth, opts.Metadata)
+		if !allowed {
+			continue
+		}
+		if clientCredentialAccessFromMetadata(opts.Metadata).active && !m.authSupportsRouteModel(registry.GetGlobalRegistry(), auth, routeModel) {
 			continue
 		}
 		providerKey := executorKeyFromAuth(auth)

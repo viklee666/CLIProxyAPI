@@ -208,7 +208,7 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 			if requestPath == "" && ginCtx.Request.URL != nil {
 				requestPath = strings.TrimSpace(ginCtx.Request.URL.Path)
 			}
-			for metadataKey, value := range accessMetadataFromGinContext(ginCtx) {
+			for metadataKey, value := range ClientAccessMetadata(ginCtx) {
 				meta[metadataKey] = value
 			}
 		}
@@ -294,7 +294,10 @@ func requestCallerScope(ginCtx *gin.Context) string {
 	if ginCtx == nil {
 		return ""
 	}
-	value, exists := ginCtx.Get("userApiKey")
+	value, exists := ginCtx.Get("accessPrincipal")
+	if !exists {
+		value, exists = ginCtx.Get("userApiKey")
+	}
 	if !exists || value == nil {
 		return ""
 	}

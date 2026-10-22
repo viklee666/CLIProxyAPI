@@ -172,6 +172,8 @@ func accessAuthMiddleware(manager *sdkaccess.Manager, realtimeError bool) gin.Ha
 					defer result.Release()
 				}
 				c.Set("userApiKey", result.Principal)
+				// Keep the authenticated caller stable when Home supplies a usage key.
+				c.Set("accessPrincipal", result.Principal)
 				c.Set("accessProvider", result.Provider)
 				if len(result.Metadata) > 0 {
 					c.Set("accessMetadata", result.Metadata)
@@ -226,16 +228,13 @@ func realtimeAuthMiddleware(manager *sdkaccess.Manager, handler *codexlive.Handl
 			}})
 			return
 		}
-		principal := authorization.IssuerPrincipal
-		if principal == "" {
-			principal = authorization.Principal
+		release, authorized := codexlive.AuthorizeClientSecretIssuer(c, authorization, manager)
+		if !authorized {
+			return
 		}
-		provider := authorization.IssuerProvider
-		if provider == "" {
-			provider = "realtime-client-secret"
+		if release != nil {
+			defer release()
 		}
-		c.Set("userApiKey", principal)
-		c.Set("accessProvider", provider)
 		c.Set(codexlive.ClientSecretSessionContextKey, authorization.Session)
 		c.Set(codexlive.ClientSecretPrincipalContextKey, authorization.Principal)
 		c.Next()

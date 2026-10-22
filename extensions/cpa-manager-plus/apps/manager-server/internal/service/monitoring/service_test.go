@@ -2099,6 +2099,10 @@ func TestAnalyticsHourlyRollupEligibilityIsStrict(t *testing.T) {
 		name   string
 		mutate func(*store.AnalyticsFilter)
 	}{
+		{name: "authorization", mutate: func(filter *store.AnalyticsFilter) {
+			filter.Authorization = store.NewAPIKeyAuthorization([]string{"key"})
+		}},
+		{name: "empty authorization", mutate: func(filter *store.AnalyticsFilter) { filter.Authorization = store.NewAPIKeyAuthorization(nil) }},
 		{name: "search", mutate: func(filter *store.AnalyticsFilter) { filter.SearchQuery = "model" }},
 		{name: "search api key", mutate: func(filter *store.AnalyticsFilter) { filter.SearchAPIKeyHash = "key" }},
 		{name: "models", mutate: func(filter *store.AnalyticsFilter) { filter.Models = []string{"model-a"} }},

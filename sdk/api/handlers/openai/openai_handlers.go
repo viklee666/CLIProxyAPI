@@ -61,7 +61,7 @@ func (h *OpenAIAPIHandler) Models() []map[string]any {
 func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 	if _, ok := c.Request.URL.Query()["client_version"]; ok {
 		clientVersion := c.Query("client_version")
-		if h.IsTenantRequest(c) {
+		if h.IsModelCatalogScoped(c) {
 			optimizeMultiAgentV2 := h != nil && h.Cfg != nil && h.Cfg.CodexOptimizeMultiAgentV2
 			h.WriteModelListResponse(c, h.HandlerType(), CodexClientModelsResponseWithMultiAgentV2(h.ModelsForRequest(c, "openai"), optimizeMultiAgentV2))
 			return
@@ -70,7 +70,7 @@ func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 		return
 	}
 
-	// Tenant client-access keys receive only models backed by their own usable providers.
+	// Client-access keys receive only models backed by their usable providers.
 	allModels := h.ModelsForRequest(c, "openai")
 
 	// Filter to only include the 4 required fields: id, object, created, owned_by

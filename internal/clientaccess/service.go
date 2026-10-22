@@ -52,6 +52,10 @@ type Service struct {
 	releaseCancel    context.CancelFunc
 	releaseWG        sync.WaitGroup
 
+	tenantMu       sync.RWMutex
+	tenantResolver TenantStatusResolver
+
+	reloadMu  sync.Mutex
 	snapshot  atomic.Pointer[authSnapshot]
 	runtimeMu sync.Mutex
 	runtime   map[int64]*runtimeState
@@ -64,6 +68,41 @@ type Option func(*Service)
 // Implementations must return zero for global or unknown credentials.
 type CredentialOwnershipResolver interface {
 	OwnerOf(authIndex string) int64
+}
+
+// TenantStatusResolver checks current tenant existence and account status.
+// Tenant-owned keys fail closed when this resolver is unavailable or fails.
+type TenantStatusResolver interface {
+	TenantEnabled(ctx context.Context, tenantID int64) (bool, error)
+}
+
+func (s *Service) SetTenantStatusResolver(resolver TenantStatusResolver) {
+	if s == nil {
+		return
+	}
+	s.tenantMu.Lock()
+	s.tenantResolver = resolver
+	s.tenantMu.Unlock()
+}
+
+func (s *Service) validateTenant(ctx context.Context, tenantID int64) error {
+	if tenantID <= 0 {
+		return nil
+	}
+	s.tenantMu.RLock()
+	resolver := s.tenantResolver
+	s.tenantMu.RUnlock()
+	if resolver == nil {
+		return errors.New("tenant status resolver is unavailable")
+	}
+	enabled, errStatus := resolver.TenantEnabled(ctx, tenantID)
+	if errStatus != nil {
+		return fmt.Errorf("check tenant status: %w", errStatus)
+	}
+	if !enabled {
+		return errors.New("tenant is disabled or does not exist")
+	}
+	return nil
 }
 
 // WithTokenReservation sets provisional tokens held by each in-flight request.
@@ -164,6 +203,10 @@ func (s *Service) Close() error {
 func (s *Service) Identifier() string { return ProviderIdentifier }
 
 func (s *Service) reload(ctx context.Context) error {
+	// Serialize snapshot publication so an earlier reload cannot overwrite a
+	// later revocation with credentials read before that revocation.
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
 	keys, errList := s.store.ListAllStoredKeys(ctx)
 	if errList != nil {
 		return errList
@@ -187,7 +230,9 @@ func (s *Service) reload(ctx context.Context) error {
 			groups = make(map[int64]int)
 			next.credentials[binding.AuthIndex] = groups
 		}
-		groups[binding.GroupID] = binding.Priority
+		if binding.GroupEnabled {
+			groups[binding.GroupID] = binding.Priority
+		}
 	}
 	s.snapshot.Store(next)
 	return nil
@@ -209,6 +254,9 @@ func (s *Service) Authenticate(_ context.Context, request *http.Request) (*sdkac
 	key := snapshot.byHash[hash]
 	if key == nil {
 		return nil, sdkaccess.NewInvalidCredentialError()
+	}
+	if errTenant := s.validateTenant(request.Context(), key.TenantID); errTenant != nil {
+		return nil, sdkaccess.NewAccessDeniedError("API key tenant is unavailable")
 	}
 	now := time.Now().UTC()
 	if !key.Enabled {
@@ -361,11 +409,22 @@ func (s *Service) HandleUsage(_ context.Context, record coreusage.Record) {
 }
 
 func (s *Service) CreateGroup(ctx context.Context, input GroupCreate) (Group, error) {
-	group, errCreate := s.store.CreateGroup(ctx, input)
-	if errCreate == nil {
-		errCreate = s.reload(ctx)
+	if errTenant := s.validateTenant(ctx, input.TenantID); errTenant != nil {
+		return Group{}, errTenant
 	}
-	return group, errCreate
+	group, errCreate := s.store.CreateGroup(ctx, input)
+	if errCreate != nil {
+		return Group{}, errCreate
+	}
+	// Recheck after the cross-store write so an in-flight create cannot leave
+	// usable resources behind a concurrent tenant disable or deletion.
+	if errTenant := s.validateTenant(ctx, input.TenantID); errTenant != nil {
+		if errDelete := s.store.DeleteGroupScoped(context.WithoutCancel(ctx), group.ID, input.TenantID); errDelete != nil {
+			return Group{}, fmt.Errorf("remove revoked tenant group: %w", errDelete)
+		}
+		return Group{}, errTenant
+	}
+	return group, s.reload(ctx)
 }
 
 func (s *Service) GetGroup(ctx context.Context, id int64) (Group, error) {
@@ -410,11 +469,7 @@ func (s *Service) CreateTenantGroup(ctx context.Context, tenantID int64, input G
 		return Group{}, errTenant
 	}
 	input.TenantID = tenantID
-	group, errCreate := s.store.CreateGroup(ctx, input)
-	if errCreate == nil {
-		errCreate = s.reload(ctx)
-	}
-	return group, errCreate
+	return s.CreateGroup(ctx, input)
 }
 
 func (s *Service) GetTenantGroup(ctx context.Context, tenantID, id int64) (Group, error) {
@@ -453,6 +508,9 @@ func (s *Service) DeleteTenantGroup(ctx context.Context, tenantID, id int64) err
 }
 
 func (s *Service) CreateKey(ctx context.Context, input KeyCreate) (CreatedKey, error) {
+	if errTenant := s.validateTenant(ctx, input.TenantID); errTenant != nil {
+		return CreatedKey{}, errTenant
+	}
 	secret := strings.TrimSpace(input.CustomSecret)
 	if secret == "" {
 		generated, errGenerate := generateSecret()
@@ -471,6 +529,12 @@ func (s *Service) CreateKey(ctx context.Context, input KeyCreate) (CreatedKey, e
 	key, errCreate := s.store.CreateKey(ctx, input, secret, prefix, hashSecret(secret))
 	if errCreate != nil {
 		return CreatedKey{}, errCreate
+	}
+	if errTenant := s.validateTenant(ctx, input.TenantID); errTenant != nil {
+		if errDelete := s.store.DeleteKeyScoped(context.WithoutCancel(ctx), key.ID, input.TenantID); errDelete != nil {
+			return CreatedKey{}, fmt.Errorf("remove revoked tenant key: %w", errDelete)
+		}
+		return CreatedKey{}, errTenant
 	}
 	if errReload := s.reload(ctx); errReload != nil {
 		return CreatedKey{}, errReload
@@ -719,15 +783,18 @@ func (s *Service) ReplaceTenantGroupCredentialBindings(ctx context.Context, tena
 
 // ResolveCredentialAccess applies client group isolation and returns a request-specific priority.
 func (s *Service) ResolveCredentialAccess(authIndex string, allowedGroupIDs []int64, allowAllGroups, allowUngrouped bool) (bool, int, bool) {
-	if s == nil || allowAllGroups {
+	if s == nil {
+		return false, 0, false
+	}
+	if allowAllGroups {
 		return true, 0, false
 	}
 	snapshot := s.snapshot.Load()
 	if snapshot == nil {
 		return false, 0, false
 	}
-	memberships := snapshot.credentials[strings.TrimSpace(authIndex)]
-	if len(memberships) == 0 {
+	memberships, grouped := snapshot.credentials[strings.TrimSpace(authIndex)]
+	if !grouped {
 		return allowUngrouped, 0, false
 	}
 	bestPriority := 0

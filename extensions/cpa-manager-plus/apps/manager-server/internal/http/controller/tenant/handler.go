@@ -13,12 +13,8 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/response"
 	monitoringsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/monitoring"
 	usagesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/usage"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 )
-
-// Hashes are lowercase hex strings, so this sentinel can never match a real
-// client key hash. It prevents an empty tenant key set becoming an unfiltered
-// `IN` condition in downstream query layers.
-const noTenantKeyHash = "__tenant_without_api_keys__"
 
 type Handler struct {
 	App *app.Context
@@ -39,24 +35,22 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusServiceUnavailable, errHashes)
 		return
 	}
-	if len(hashes) == 0 {
-		hashes = []string{noTenantKeyHash}
-	}
+	authorization := store.NewAPIKeyAuthorization(hashes)
 
 	path := strings.TrimRight(r.URL.Path, "/")
 	switch path {
 	case "/v0/tenant/monitoring/analytics":
-		h.analytics(w, r, hashes)
+		h.analytics(w, r, authorization)
 	case "/v0/tenant/dashboard/summary":
-		h.dashboard(w, r, hashes)
+		h.dashboard(w, r, authorization)
 	case "/v0/tenant/usage":
-		h.usage(w, r, hashes)
+		h.usage(w, r, authorization)
 	default:
 		response.MethodNotAllowed(w)
 	}
 }
 
-func (h *Handler) analytics(w http.ResponseWriter, r *http.Request, hashes []string) {
+func (h *Handler) analytics(w http.ResponseWriter, r *http.Request, authorization *store.APIKeyAuthorization) {
 	if r.Method != http.MethodPost {
 		response.MethodNotAllowed(w)
 		return
@@ -69,7 +63,7 @@ func (h *Handler) analytics(w http.ResponseWriter, r *http.Request, hashes []str
 		response.Error(w, http.StatusBadRequest, errors.New("from_ms and to_ms are required and from_ms must be less than to_ms"))
 		return
 	}
-	request.Filters.APIKeyHashes = append([]string(nil), hashes...)
+	request.Authorization = authorization
 	result, errAnalytics := h.App.MonitoringService.Analytics(r.Context(), request)
 	if errAnalytics != nil {
 		response.Error(w, http.StatusInternalServerError, errAnalytics)
@@ -78,7 +72,7 @@ func (h *Handler) analytics(w http.ResponseWriter, r *http.Request, hashes []str
 	response.JSON(w, http.StatusOK, result)
 }
 
-func (h *Handler) dashboard(w http.ResponseWriter, r *http.Request, hashes []string) {
+func (h *Handler) dashboard(w http.ResponseWriter, r *http.Request, authorization *store.APIKeyAuthorization) {
 	if r.Method != http.MethodGet {
 		response.MethodNotAllowed(w)
 		return
@@ -102,11 +96,11 @@ func (h *Handler) dashboard(w http.ResponseWriter, r *http.Request, hashes []str
 		return
 	}
 	result, errAnalytics := h.App.MonitoringService.Analytics(r.Context(), monitoringsvc.Request{
-		FromMS: todayStartMS,
-		ToMS:   nowMS,
-		NowMS:  nowMS,
+		Authorization: authorization,
+		FromMS:        todayStartMS,
+		ToMS:          nowMS,
+		NowMS:         nowMS,
 		Filters: monitoringsvc.Filters{
-			APIKeyHashes:  append([]string(nil), hashes...),
 			IncludeFailed: boolPointer(true),
 		},
 		Include: monitoringsvc.Include{
@@ -128,7 +122,7 @@ func (h *Handler) dashboard(w http.ResponseWriter, r *http.Request, hashes []str
 	response.JSON(w, http.StatusOK, result)
 }
 
-func (h *Handler) usage(w http.ResponseWriter, r *http.Request, hashes []string) {
+func (h *Handler) usage(w http.ResponseWriter, r *http.Request, authorization *store.APIKeyAuthorization) {
 	if r.Method != http.MethodGet {
 		response.MethodNotAllowed(w)
 		return
@@ -152,10 +146,10 @@ func (h *Handler) usage(w http.ResponseWriter, r *http.Request, hashes []string)
 		pageSize = 500
 	}
 	result, errUsage := h.App.UsageService.CompatibleUsage(r.Context(), usagesvc.CompatibleUsageRequest{
-		Page:         page,
-		PageSize:     pageSize,
-		Cursor:       query.Get("cursor"),
-		APIKeyHashes: append([]string(nil), hashes...),
+		Page:          page,
+		PageSize:      pageSize,
+		Cursor:        query.Get("cursor"),
+		Authorization: authorization,
 	})
 	if errUsage != nil {
 		status := http.StatusInternalServerError
