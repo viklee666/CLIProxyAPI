@@ -1,5 +1,5 @@
 /**
- * 可用模型获取
+ * Available model discovery.
  */
 
 import axios from 'axios';
@@ -74,15 +74,6 @@ const stripGeminiModelResourceName = (value: string): string => {
 const hasHeader = (headers: Record<string, string>, name: string) => {
   const target = name.toLowerCase();
   return Object.keys(headers).some((key) => key.toLowerCase() === target);
-};
-
-const resolveBearerTokenFromAuthorization = (headers: Record<string, string>): string => {
-  const entry = Object.entries(headers).find(([key]) => key.toLowerCase() === 'authorization');
-  if (!entry) return '';
-  const value = String(entry[1] ?? '').trim();
-  if (!value) return '';
-  const match = value.match(/^Bearer\s+(.+)$/i);
-  return match?.[1]?.trim() || '';
 };
 
 export const modelsApi = {
@@ -200,7 +191,8 @@ export const modelsApi = {
 
   /**
    * Fetch Claude models from /v1/models via api-call.
-   * Anthropic requires `x-api-key` and `anthropic-version` headers.
+   * Match executor authentication: x-api-key for Anthropic, Bearer for third-party gateways.
+   * Explicit authentication headers take precedence over the configured credential.
    */
   async fetchClaudeModelsViaApiCall(
     baseUrl: string,
@@ -215,15 +207,25 @@ export const modelsApi = {
 
     const trimmedAuthIndex = authIndex?.trim() || undefined;
     const resolvedHeaders = { ...headers };
-    let resolvedApiKey = String(apiKey ?? '').trim();
-    if (!resolvedApiKey && !hasHeader(resolvedHeaders, 'x-api-key')) {
-      resolvedApiKey = resolveBearerTokenFromAuthorization(resolvedHeaders);
-    }
+    const resolvedApiKey = String(apiKey ?? '').trim();
+    const hasCustomAuthentication =
+      hasHeader(resolvedHeaders, 'x-api-key') || hasHeader(resolvedHeaders, 'authorization');
 
-    if (resolvedApiKey && !hasHeader(resolvedHeaders, 'x-api-key')) {
-      resolvedHeaders['x-api-key'] = resolvedApiKey;
-    } else if (trimmedAuthIndex && !hasHeader(resolvedHeaders, 'x-api-key')) {
-      resolvedHeaders['x-api-key'] = '$TOKEN$';
+    if (!hasCustomAuthentication) {
+      const token = resolvedApiKey || (trimmedAuthIndex ? '$TOKEN$' : '');
+      if (token) {
+        // Use the same first-party origin check as the Claude executor.
+        const endpointUrl = new URL(endpoint);
+        const isAnthropicUpstream =
+          endpointUrl.origin === DEFAULT_CLAUDE_BASE_URL &&
+          !endpointUrl.username &&
+          !endpointUrl.password;
+        if (isAnthropicUpstream) {
+          resolvedHeaders['x-api-key'] = token;
+        } else {
+          resolvedHeaders.Authorization = `Bearer ${token}`;
+        }
+      }
     }
     if (!hasHeader(resolvedHeaders, 'anthropic-version')) {
       resolvedHeaders['anthropic-version'] = DEFAULT_ANTHROPIC_VERSION;
