@@ -500,8 +500,7 @@ func getSelectorAvailableAuthsWithPriorityMode(ctx context.Context, auths []*Aut
 		if validated, _ := ctx.Value(prevalidatedAuthCandidatesKey{}).(bool); validated && len(auths) > 0 {
 			// The manager already resolved each credential's upstream model and supplied
 			// ID-sorted candidates. Rechecking the alias or an empty model would apply
-			// unrelated cooldowns. Affinity bindings may span all priority tiers, but
-			// fallback selection must still use the highest available tier.
+			// unrelated cooldowns. Only adaptive selection needs every priority tier.
 			if !allPriorities {
 				return highestPriorityAuths(auths), nil
 			}
@@ -952,15 +951,24 @@ func (s *SessionAffinitySelector) Trees() *cliproxysession.InMemorySessionTreeSt
 	return cliproxysession.NewInMemorySessionTreeStore(0, time.Hour)
 }
 
+// availableAuths keeps affinity subject to the fallback strategy's candidate policy.
+// Ordinary strategies bind only within the highest available priority tier, while
+// adaptive routing needs every tier to apply its configured scoring and health policy.
+func (s *SessionAffinitySelector) availableAuths(ctx context.Context, auths []*Auth, provider, model string, now time.Time) ([]*Auth, error) {
+	if _, weighted := s.fallback.(*WeightedRoundRobinSelector); weighted {
+		auths = positiveWeightAuths(auths)
+	}
+	return getSelectorAvailableAuthsWithPriorityMode(ctx, auths, provider, model, now, usesAdaptiveSelection(s.fallback))
+}
+
 // Pick selects an auth with session affinity when possible.
 // Explicit Claude Code, Codex, OpenCode, pi, and request-body session signals
 // are absolute authority. Requests without those signals use the Merkle LCP
 // matcher before retaining the legacy derived/hash fallback behavior.
 //
-// An established binding outranks credential priority: a bound credential that is still
-// available is reused even when a higher-priority credential recovers. Credential priority
-// applies to cold bindings, requests without a session, and genuine bound-credential
-// failover, so the fallback selector only ever receives the highest available priority tier.
+// Session bindings are reused within the highest available priority tier. A higher-priority
+// credential becoming available causes rebinding. Adaptive routing instead retains all tiers
+// for configured scoring and preserves bindings until its sticky-escape policy requires failover.
 //
 // Note: The cache key includes provider, session ID, and model to handle cases where
 // a session uses multiple models (e.g., gemini-2.5-pro and gemini-3-flash-preview)
@@ -1006,27 +1014,14 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 			opts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey] = primaryID
 		}
 	}
-	now := time.Now()
-	availabilityCandidates := auths
-	if _, weighted := s.fallback.(*WeightedRoundRobinSelector); weighted {
-		availabilityCandidates = positiveWeightAuths(auths)
-	}
-	if primaryID == "" {
-		fallbackAuths, errAvailable := getSelectorAvailableAuths(ctx, availabilityCandidates, provider, model, now)
-		if errAvailable != nil {
-			return nil, errAvailable
-		}
-		entry.Debugf("session-affinity: no session ID extracted, falling back to default selector | provider=%s model=%s", provider, model)
-		return s.fallback.Pick(ctx, provider, model, opts, fallbackAuths)
-	}
-
-	// A single availability pass serves both lookups: the bound credential is validated against
-	// every priority tier, while the fallback selector keeps seeing only the highest tier.
-	available, err := getSelectorAvailableAuthsAcrossPriorities(ctx, availabilityCandidates, provider, model, now)
+	available, err := s.availableAuths(ctx, auths, provider, model, time.Now())
 	if err != nil {
 		return nil, err
 	}
-	fallbackAuths := highestPriorityAuths(available)
+	if primaryID == "" {
+		entry.Debugf("session-affinity: no session ID extracted, falling back to default selector | provider=%s model=%s", provider, model)
+		return s.fallback.Pick(ctx, provider, model, opts, available)
+	}
 
 	modelKey := canonicalModelKey(model)
 	cacheKey := provider + "::" + primaryID + "::" + modelKey
@@ -1065,7 +1060,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 			}
 		}
 		// Cached auth not available, reselect via fallback selector for even distribution
-		auth, err := s.fallback.Pick(ctx, provider, model, opts, fallbackAuths)
+		auth, err := s.fallback.Pick(ctx, provider, model, opts, available)
 		if err != nil {
 			return nil, err
 		}
@@ -1102,7 +1097,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 		}
 	}
 
-	auth, err := s.fallback.Pick(ctx, provider, model, opts, fallbackAuths)
+	auth, err := s.fallback.Pick(ctx, provider, model, opts, available)
 	if err != nil {
 		return nil, err
 	}
@@ -1139,19 +1134,23 @@ func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model s
 		opts.Metadata[cliproxyexecutor.LCPMinPrefixLengthMetadataKey] = minPrefixLength
 	}
 
-	availabilityCandidates := auths
-	if _, weighted := s.fallback.(*WeightedRoundRobinSelector); weighted {
-		availabilityCandidates = positiveWeightAuths(auths)
-	}
-	available, errAvailable := getSelectorAvailableAuthsAcrossPriorities(ctx, availabilityCandidates, provider, model, time.Now())
+	available, errAvailable := s.availableAuths(ctx, auths, provider, model, time.Now())
 	if errAvailable != nil {
 		return nil, true, errAvailable
 	}
 
+	var rebound *Auth
 	if match, ok := s.matcher.MatchFingerprints(namespace, fingerprints, minPrefixLength); ok {
 		for _, auth := range available {
 			if auth == nil || auth.ID != match.AuthID {
 				continue
+			}
+			if s.shouldEscapeAuth(auth.ID) {
+				if replacement, replaced := s.pickAvoiding(ctx, provider, model, opts, available, auth.ID); replaced {
+					rebound = replacement
+					entry.Infof("session-affinity: escaped unhealthy LCP binding | session=%s previous_auth=%s auth=%s provider=%s model=%s", truncateSessionID(match.SessionID), auth.ID, replacement.ID, provider, model)
+					break
+				}
 			}
 			if match.SessionID != "" {
 				opts.Metadata[cliproxyexecutor.LCPAffinitySessionIDMetadataKey] = match.SessionID
@@ -1180,10 +1179,13 @@ func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model s
 		}
 	}
 
-	fallbackAuths := highestPriorityAuths(available)
-	auth, errPick := s.fallback.Pick(ctx, provider, model, opts, fallbackAuths)
-	if errPick != nil {
-		return nil, true, errPick
+	auth := rebound
+	if auth == nil {
+		var errPick error
+		auth, errPick = s.fallback.Pick(ctx, provider, model, opts, available)
+		if errPick != nil {
+			return nil, true, errPick
+		}
 	}
 	if auth == nil {
 		return nil, true, &Error{Code: "auth_not_found", Message: "selector returned no auth"}

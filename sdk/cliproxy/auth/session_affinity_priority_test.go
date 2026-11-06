@@ -10,7 +10,7 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
-func TestManagerSessionAffinityPreservesBindingAcrossHigherPriorityRecovery(t *testing.T) {
+func TestManagerSessionAffinityRebindsAfterHigherPriorityRecovery(t *testing.T) {
 	for _, testCase := range []struct {
 		name           string
 		providerSuffix string
@@ -91,8 +91,8 @@ func TestManagerSessionAffinityPreservesBindingAcrossHigherPriorityRecovery(t *t
 			}
 
 			expireSessionAffinityPriorityModelCooldown(t, manager, highID, model)
-			if got := pick(opts); got.ID != lowID {
-				t.Fatalf("binding after higher-priority recovery = %q, want sticky %q", got.ID, lowID)
+			if got := pick(opts); got.ID != highID {
+				t.Fatalf("binding after higher-priority recovery = %q, want %q", got.ID, highID)
 			}
 
 			newSessionOpts := cliproxyexecutor.Options{Metadata: map[string]any{

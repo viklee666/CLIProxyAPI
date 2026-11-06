@@ -110,9 +110,9 @@ func (s *AdaptiveSelector) Config() internalconfig.AdaptiveRoutingConfig {
 }
 
 // Pick selects one available credential using weighted top-K scoring.
-func (s *AdaptiveSelector) Pick(_ context.Context, provider, model string, _ cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
+func (s *AdaptiveSelector) Pick(ctx context.Context, provider, model string, _ cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
 	now := time.Now()
-	available, errAvailable := getAvailableAuthsAcrossPriorities(auths, provider, model, now)
+	available, errAvailable := getSelectorAvailableAuthsAcrossPriorities(ctx, auths, provider, model, now)
 	if errAvailable != nil {
 		return nil, errAvailable
 	}

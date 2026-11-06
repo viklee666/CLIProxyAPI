@@ -442,7 +442,7 @@ func TestSchedulerPick_XAIWebsocketPrefersWebsocketEnabledSubset(t *testing.T) {
 	}
 }
 
-func TestSchedulerPick_CodexWebsocketPrefersWebsocketEnabledAcrossPriorities(t *testing.T) {
+func TestSchedulerPick_CodexWebsocketPrefersPriorityOverTransport(t *testing.T) {
 	t.Parallel()
 
 	scheduler := newSchedulerForTest(
@@ -453,7 +453,7 @@ func TestSchedulerPick_CodexWebsocketPrefersWebsocketEnabledAcrossPriorities(t *
 	)
 
 	ctx := cliproxyexecutor.WithDownstreamWebsocket(context.Background())
-	want := []string{"codex-ws-a", "codex-ws-b", "codex-ws-a"}
+	want := []string{"codex-http", "codex-http", "codex-http"}
 	for index, wantID := range want {
 		got, errPick := scheduler.pickSingle(ctx, "codex", "", cliproxyexecutor.Options{}, nil)
 		if errPick != nil {

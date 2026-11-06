@@ -582,12 +582,9 @@ func (m *Manager) availableAuthsForRouteModelWithPriorityMode(auths []*Auth, pro
 }
 
 // availableAuthsForSelector reports the candidates handed to priority-scoped consumers such as
-// the plugin scheduler, plus the candidates handed to the configured selector. Both are equal
-// unless session affinity is active, in which case the selector additionally receives lower
-// priority tiers so an established binding can be validated instead of being preempted by a
-// recovered higher-priority credential.
-// Adaptive selection scores credential priority as one weighted component, so it also needs
-// every tier rather than only the highest available one.
+// the plugin scheduler, plus the candidates handed to the configured selector. Session affinity
+// applies its fallback strategy's weight and priority filters before checking bindings. Adaptive
+// selection scores priority as one weighted component, so it also receives every available tier.
 func (m *Manager) availableAuthsForSelector(selector Selector, auths []*Auth, provider, routeModel string, now time.Time) (priorityAuths, selectorAuths []*Auth, err error) {
 	_, sessionAffinity := selector.(*SessionAffinitySelector)
 	if !sessionAffinity && !usesAdaptiveSelection(selector) {
@@ -623,7 +620,7 @@ func selectionArgForSelector(selector Selector, routeModel string) string {
 
 func selectorContextForAvailableAuths(ctx context.Context, selector Selector, routeModel string) context.Context {
 	ctx = withWeightedSelectorStateModel(ctx, selector, routeModel)
-	if !isBuiltInSelector(selector) {
+	if !isBuiltInSelector(selector) && !usesAdaptiveSelection(selector) {
 		if _, sessionAffinity := selector.(*SessionAffinitySelector); !sessionAffinity {
 			return ctx
 		}
