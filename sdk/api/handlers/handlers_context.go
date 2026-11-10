@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/gin-gonic/gin"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"golang.org/x/net/context"
 )
 
@@ -75,6 +76,19 @@ func WithPinnedAuthID(ctx context.Context, authID string) context.Context {
 		ctx = context.Background()
 	}
 	return context.WithValue(ctx, pinnedAuthContextKey{}, authID)
+}
+
+// CanReuseSessionAuth validates an automatic session binding using the caller's current access metadata.
+func (h *BaseAPIHandler) CanReuseSessionAuth(ctx context.Context, authID string, providers []string, model string) bool {
+	if h == nil || h.AuthManager == nil {
+		return false
+	}
+	metadata := requestExecutionMetadata(ctx)
+	if h.AuthManager.HomeEnabledForMetadata(metadata) {
+		// The remote control plane owns credential selection in Home mode.
+		return true
+	}
+	return h.AuthManager.CanReuseSessionAuth(ctx, authID, providers, model, coreexecutor.Options{Metadata: metadata})
 }
 
 // WithSelectedAuthIDCallback returns a child context that receives the selected auth ID.

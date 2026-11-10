@@ -1918,6 +1918,73 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 	return authCopy, executor, nil
 }
 
+// mixedAuthCandidatesLocked shares request eligibility checks between selection and session reuse.
+// The caller must hold m.mu for reading.
+func (m *Manager) mixedAuthCandidatesLocked(ctx context.Context, providerSet map[string]struct{}, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) []*Auth {
+	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
+	eligibility := authSelectionEligibilityForRequest(ctx, opts)
+	candidates := make([]*Auth, 0, len(m.auths))
+	registryRef := registry.GetGlobalRegistry()
+	for _, candidate := range m.auths {
+		if candidate == nil || candidate.Disabled {
+			continue
+		}
+		candidate, allowedByGroup := m.credentialGroupCandidate(candidate, opts.Metadata)
+		if !allowedByGroup {
+			continue
+		}
+		if pinnedAuthID != "" && candidate.ID != pinnedAuthID {
+			continue
+		}
+		if !eligibility.allows(candidate) {
+			continue
+		}
+		providerKey := executorKeyFromAuth(candidate)
+		if _, ok := providerSet[providerKey]; !ok {
+			continue
+		}
+		if _, used := tried[candidate.ID]; used {
+			continue
+		}
+		if _, ok := m.executors[providerKey]; !ok {
+			continue
+		}
+		if !m.authSupportsRouteModel(registryRef, candidate, model) {
+			continue
+		}
+		candidates = append(candidates, candidate)
+	}
+	return candidates
+}
+
+// CanReuseSessionAuth checks an automatic session binding against current request eligibility
+// without selecting a credential or changing selector state. Ordinary strategies require the
+// highest available priority tier; adaptive routing retains its across-priority binding policy.
+func (m *Manager) CanReuseSessionAuth(ctx context.Context, authID string, providers []string, model string, opts cliproxyexecutor.Options) bool {
+	if m == nil || strings.TrimSpace(authID) == "" || m.HomeEnabledForMetadata(opts.Metadata) {
+		return false
+	}
+	providerSet := make(map[string]struct{}, len(providers))
+	for _, provider := range normalizeProviderKeys(providers) {
+		providerSet[provider] = struct{}{}
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	candidates := m.mixedAuthCandidatesLocked(ctx, providerSet, model, opts, nil)
+	selector := m.selector
+	if affinity, ok := selector.(*SessionAffinitySelector); ok {
+		selector = affinity.fallback
+	}
+	if _, weighted := selector.(*WeightedRoundRobinSelector); weighted {
+		candidates = positiveWeightAuths(candidates)
+	}
+	available, errAvailable := m.availableAuthsForRouteModelWithPriorityMode(candidates, "mixed", model, time.Now(), usesAdaptiveSelection(selector))
+	if errAvailable != nil {
+		return false
+	}
+	return pickSchedulerAuthByID(available, authID) != nil
+}
+
 func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, string, error) {
 	if m.HomeEnabledForMetadata(opts.Metadata) {
 		return m.pickNextViaHome(ctx, model, opts, tried)
@@ -1925,9 +1992,6 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 
 	opts.EnsureMetadata()
 	opts.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey] = "mixed"
-
-	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
-	eligibility := authSelectionEligibilityForRequest(ctx, opts)
 
 	providerSet := make(map[string]struct{}, len(providers))
 	for _, provider := range providers {
@@ -1945,48 +2009,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	selector := m.selector
 	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = selectionArgForSelector(selector, model)
 	pluginScheduler := m.pluginScheduler
-	candidates := make([]*Auth, 0, len(m.auths))
-	modelKey := strings.TrimSpace(model)
-	// Always use base model name (without thinking suffix) for auth matching.
-	if modelKey != "" {
-		parsed := thinking.ParseSuffix(modelKey)
-		if parsed.ModelName != "" {
-			modelKey = strings.TrimSpace(parsed.ModelName)
-		}
-	}
-	registryRef := registry.GetGlobalRegistry()
-	for _, candidate := range m.auths {
-		if candidate == nil || candidate.Disabled {
-			continue
-		}
-		candidate, allowedByGroup := m.credentialGroupCandidate(candidate, opts.Metadata)
-		if !allowedByGroup {
-			continue
-		}
-		if pinnedAuthID != "" && candidate.ID != pinnedAuthID {
-			continue
-		}
-		if !eligibility.allows(candidate) {
-			continue
-		}
-		providerKey := executorKeyFromAuth(candidate)
-		if providerKey == "" {
-			continue
-		}
-		if _, ok := providerSet[providerKey]; !ok {
-			continue
-		}
-		if _, used := tried[candidate.ID]; used {
-			continue
-		}
-		if _, ok := m.executors[providerKey]; !ok {
-			continue
-		}
-		if modelKey != "" && !m.authSupportsRouteModel(registryRef, candidate, model) {
-			continue
-		}
-		candidates = append(candidates, candidate)
-	}
+	candidates := m.mixedAuthCandidatesLocked(ctx, providerSet, model, opts, tried)
 	if len(candidates) == 0 {
 		m.mu.RUnlock()
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}

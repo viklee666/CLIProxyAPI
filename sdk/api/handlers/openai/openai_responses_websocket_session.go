@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -129,6 +130,22 @@ func responsesWebsocketAuthSupportsIncrementalInput(auth *coreauth.Auth) bool {
 		return false
 	}
 	return websocketUpstreamSupportsIncrementalInput(auth.Attributes, auth.Metadata)
+}
+
+func (h *OpenAIResponsesAPIHandler) responsesWebsocketCanReusePinnedAuth(ctx context.Context, auth *coreauth.Auth, modelName string, pinnedModelKey string, homeRuntime bool) bool {
+	if !responsesWebsocketPinnedAuthMatchesModel(auth, modelName, pinnedModelKey, homeRuntime) {
+		return false
+	}
+	if homeRuntime {
+		return true
+	}
+	resolvedModelName := responsesWebsocketResolvedModelName(modelName)
+	providerSet, _ := responsesWebsocketProviderSetForModel(resolvedModelName)
+	providers := make([]string, 0, len(providerSet))
+	for provider := range providerSet {
+		providers = append(providers, provider)
+	}
+	return h.CanReuseSessionAuth(ctx, auth.ID, providers, resolvedModelName)
 }
 
 func responsesWebsocketPinnedAuthMatchesModel(auth *coreauth.Auth, modelName string, pinnedModelKey string, homeRuntime bool) bool {
