@@ -61,6 +61,13 @@ export interface ProviderKeyConfig {
   rebuildMidSystemMessage?: boolean;
 }
 
+export interface RequestScopedErrorRule {
+  status?: number;
+  match?: string[];
+  matchRegexr?: string[];
+  action?: string;
+}
+
 export interface OpenAIProviderConfig {
   name: string;
   prefix?: string;
@@ -74,5 +81,6 @@ export interface OpenAIProviderConfig {
   authIndex?: string;
   disableCooling?: boolean;
   nimCompat?: boolean;
+  requestScopedErrors?: RequestScopedErrorRule[];
   [key: string]: unknown;
 }

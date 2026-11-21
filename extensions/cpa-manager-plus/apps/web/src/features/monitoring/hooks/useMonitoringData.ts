@@ -535,6 +535,7 @@ export function useMonitoringData({
       timeline: true,
       model_share: true,
       model_stats: true,
+      filter_options: true,
       recent_failures: 8,
       events_page: {
         limit: MONITORING_EVENTS_PAGE_LIMIT,

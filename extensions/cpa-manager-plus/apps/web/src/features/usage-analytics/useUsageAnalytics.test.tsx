@@ -40,6 +40,7 @@ describe('useUsageAnalytics request orchestration', () => {
   let selectorError = '';
   let credentialTimelineError = '';
   let credentialTimelineLoading = false;
+  let credentialAuthIndex = '';
   const mainRefresh = vi.fn();
   const selectorRefresh = vi.fn();
   const auxiliaryRefresh = vi.fn();
@@ -55,6 +56,7 @@ describe('useUsageAnalytics request orchestration', () => {
             {
               id: 'credential-a.json',
               auth_file_snapshot: 'credential-a.json',
+              auth_index: credentialAuthIndex,
               calls: 10,
               success_calls: 9,
               failure_calls: 1,
@@ -95,14 +97,35 @@ describe('useUsageAnalytics request orchestration', () => {
                 ...emptyAnalyticsResponse,
                 credential_timeline: [
                   {
-                    id: 'credential-a.json',
-                    auth_file_snapshot: 'credential-a.json',
+                    id: credentialAuthIndex ? 'credential-old.json' : 'credential-a.json',
+                    auth_file_snapshot: credentialAuthIndex
+                      ? 'credential-old.json'
+                      : 'credential-a.json',
+                    auth_index: credentialAuthIndex,
                     bucket_ms: 1,
+                    bucket_label: '01:00',
                     calls: 10,
                     tokens: 150,
                     success: 9,
                     failure: 1,
+                    cost: credentialAuthIndex ? 2 : 1,
                   },
+                  ...(credentialAuthIndex
+                    ? [
+                        {
+                          id: 'credential-new.json',
+                          auth_file_snapshot: 'credential-new.json',
+                          auth_index: credentialAuthIndex,
+                          bucket_ms: 1,
+                          bucket_label: '01:00',
+                          calls: 1,
+                          tokens: 25,
+                          success: 1,
+                          failure: 0,
+                          cost: 3,
+                        },
+                      ]
+                    : []),
                 ],
               }
             : null,
@@ -131,6 +154,7 @@ describe('useUsageAnalytics request orchestration', () => {
     selectorError = '';
     credentialTimelineError = '';
     credentialTimelineLoading = false;
+    credentialAuthIndex = '';
     latestResult = null;
     mainRefresh.mockReset();
     selectorRefresh.mockReset();
@@ -238,6 +262,24 @@ describe('useUsageAnalytics request orchestration', () => {
       selectedCredentialID: 'credential-a.json',
     });
     expect(latestResult?.credentialTrendSeries).toHaveLength(1);
+  });
+
+  it('uses a stable auth index to load a credential timeline after its source filename changes', async () => {
+    credentialAuthIndex = 'auth-stable-1';
+    await renderHook();
+
+    await act(async () => {
+      latestResult?.setTrendMetric('estimatedCost');
+      latestResult?.setActiveTab('credentials');
+      await Promise.resolve();
+    });
+
+    const timeline = lastParams((params) => Boolean(params.include?.credential_timeline));
+    expect(timeline?.filters).toMatchObject({ auth_indices: ['auth-stable-1'] });
+    expect(timeline?.filters).not.toHaveProperty('credential_ids');
+    expect(latestResult?.credentialTrendSeries[0]?.points).toEqual([
+      { bucketMs: 1, label: '01:00', value: 5 },
+    ]);
   });
 
   it('exposes selected credential timeline loading and error states', async () => {

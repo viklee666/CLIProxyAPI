@@ -28,6 +28,11 @@ import {
 } from '@/features/aiProviders/model/keyTestStatuses';
 import type { ModelInfo } from '@/utils/models';
 import type { OpenAIFormState } from '@/components/providers';
+import { RequestScopedErrorsEditor } from '@/features/aiProviders/RequestScopedErrorsEditor';
+import {
+  formatRequestScopedErrors,
+  parseRequestScopedErrors,
+} from '@/features/aiProviders/requestScopedErrors';
 import styles from '@/features/aiProviders/AiProvidersPage.module.scss';
 
 interface OpenAIEditDrawerProps {
@@ -51,6 +56,7 @@ const buildEmptyForm = (): OpenAIFormState => ({
   apiKeyEntries: [buildApiKeyEntry()],
   modelEntries: [{ name: '', alias: '' }],
   testModel: undefined,
+  requestScopedErrorsText: formatRequestScopedErrors(),
 });
 
 const normalizeModelEntries = (entries: OpenAIFormState['modelEntries']) =>
@@ -102,6 +108,7 @@ const buildOpenAIBaseline = (form: OpenAIFormState) => ({
   baseUrl: String(form.baseUrl ?? '').trim(),
   disableCooling: Boolean(form.disableCooling),
   nimCompat: Boolean(form.nimCompat),
+  requestScopedErrorsText: form.requestScopedErrorsText.trim() || '[]',
   headers: normalizeHeaderEntries(form.headers),
   apiKeyEntries: normalizeApiKeyEntries(form.apiKeyEntries),
   models: normalizeModelEntries(form.modelEntries),
@@ -240,6 +247,7 @@ export function OpenAIEditDrawer({
           : [buildApiKeyEntry()],
         disableCooling: initialData.disableCooling,
         nimCompat: initialData.nimCompat,
+        requestScopedErrorsText: formatRequestScopedErrors(initialData.requestScopedErrors),
       };
       setForm(seededForm);
       setBaseline(buildOpenAIBaseline(seededForm));
@@ -284,6 +292,7 @@ export function OpenAIEditDrawer({
       baseline.baseUrl !== form.baseUrl.trim() ||
       baseline.disableCooling !== Boolean(form.disableCooling) ||
       baseline.nimCompat !== Boolean(form.nimCompat) ||
+      baseline.requestScopedErrorsText !== (form.requestScopedErrorsText.trim() || '[]') ||
       !areKeyValueEntriesEqual(baseline.headers, normalizeHeaderEntries(form.headers)) ||
       !areNormalizedApiKeyEntriesEqual(
         baseline.apiKeyEntries,
@@ -347,11 +356,7 @@ export function OpenAIEditDrawer({
 
   const configuredModelNames = useMemo(
     () =>
-      new Set(
-        form.modelEntries
-          .map((entry) => entry.name.trim().toLowerCase())
-          .filter(Boolean)
-      ),
+      new Set(form.modelEntries.map((entry) => entry.name.trim().toLowerCase()).filter(Boolean)),
     [form.modelEntries]
   );
 
@@ -408,7 +413,9 @@ export function OpenAIEditDrawer({
   );
 
   useEffect(() => {
-    const availableNames = new Set(discoveredModels.map((model) => String(model.name ?? '').trim()));
+    const availableNames = new Set(
+      discoveredModels.map((model) => String(model.name ?? '').trim())
+    );
     setModelDiscoverySelected((prev) => {
       let changed = false;
       const next = new Set<string>();
@@ -617,6 +624,7 @@ export function OpenAIEditDrawer({
   const handleSave = useCallback(async () => {
     const name = form.name.trim();
     const baseUrl = form.baseUrl.trim();
+    const parsedRequestScopedErrors = parseRequestScopedErrors(form.requestScopedErrorsText);
     if (!name || !baseUrl) {
       showNotification(t('notification.openai_provider_required'), 'error');
       return;
@@ -627,6 +635,13 @@ export function OpenAIEditDrawer({
     if (!hasValidKey) {
       showNotification(
         t('ai_providers.openai_key_required', { defaultValue: 'Please add at least one API key' }),
+        'error'
+      );
+      return;
+    }
+    if (!parsedRequestScopedErrors.rules) {
+      showNotification(
+        t(`ai_providers.request_scoped_errors_${parsedRequestScopedErrors.error}`),
         'error'
       );
       return;
@@ -650,6 +665,7 @@ export function OpenAIEditDrawer({
         payload.priority = Math.trunc(form.priority);
       if (form.disableCooling !== undefined) payload.disableCooling = form.disableCooling;
       payload.nimCompat = Boolean(form.nimCompat);
+      payload.requestScopedErrors = parsedRequestScopedErrors.rules;
       if (initialData?.disabled !== undefined) payload.disabled = initialData.disabled;
       const resolvedTestModel = testModel.trim();
       if (resolvedTestModel) payload.testModel = resolvedTestModel;
@@ -894,6 +910,13 @@ export function OpenAIEditDrawer({
               valuePlaceholder={t('common.custom_headers_value_placeholder')}
               removeButtonTitle={t('common.delete')}
               removeButtonAriaLabel={t('common.delete')}
+              disabled={saving || disabled || isTestingKeys}
+            />
+            <RequestScopedErrorsEditor
+              value={form.requestScopedErrorsText}
+              onChange={(requestScopedErrorsText) =>
+                setForm((prev) => ({ ...prev, requestScopedErrorsText }))
+              }
               disabled={saving || disabled || isTestingKeys}
             />
             <div className="form-group">

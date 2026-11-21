@@ -499,12 +499,15 @@ export function useUsageAnalytics() {
     [selectedApiKey, selectedApiKeyTimeline, trendMetric]
   );
   const selectedCredentialFilterID = selectedCredential?.id || '';
+  const selectedCredentialAuthIndex = selectedCredential?.authIndex?.trim() || '';
   const selectedCredentialTimelineFilters = useMemo(
     () =>
       selectedCredentialFilterID
-        ? { ...analyticsFilters, credential_ids: [selectedCredentialFilterID] }
+        ? selectedCredentialAuthIndex
+          ? { ...analyticsFilters, auth_indices: [selectedCredentialAuthIndex] }
+          : { ...analyticsFilters, credential_ids: [selectedCredentialFilterID] }
         : analyticsFilters,
-    [analyticsFilters, selectedCredentialFilterID]
+    [analyticsFilters, selectedCredentialAuthIndex, selectedCredentialFilterID]
   );
   const selectedCredentialTimelineInclude = useMemo(
     () => ({
@@ -522,6 +525,7 @@ export function useUsageAnalytics() {
         granularity: resolvedGranularity,
         searchQuery: debouncedSearchQuery,
         selectedCredentialID: selectedCredentialFilterID,
+        selectedCredentialAuthIndex,
       }),
     [
       activeTabState,
@@ -529,6 +533,7 @@ export function useUsageAnalytics() {
       debouncedSearchQuery,
       resolvedGranularity,
       selectedCredentialFilterID,
+      selectedCredentialAuthIndex,
       selectedCredentialTimelineFilters,
     ]
   );

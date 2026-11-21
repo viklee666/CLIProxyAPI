@@ -218,6 +218,7 @@ export type UsageEntityTrendSeries = {
 
 export type UsageCredentialTimelinePoint = {
   id: string;
+  authIndex?: string;
   label: string;
   bucketMs: number;
   bucketLabel: string;
@@ -925,6 +926,7 @@ export const buildUsageCredentialTimeline = (
     const display = resolveUsageCredentialDisplay(point, credentialDisplayContext);
     return {
       id: point.id || point.auth_file_snapshot || point.auth_index || point.source_hash || '-',
+      authIndex: point.auth_index || '',
       label: display.label,
       bucketMs,
       bucketLabel: point.bucket_label || formatLocalBucketLabel(bucketMs, granularity),
@@ -1853,14 +1855,29 @@ export const buildSelectedCredentialTrendSeries = (
 ): UsageEntityTrendSeries[] => {
   if (!selectedCredential) return [];
 
-  const points = credentialTimeline
-    .filter((point) => point.id === selectedCredential.id)
-    .sort((left, right) => left.bucketMs - right.bucketMs)
-    .map((point) => ({
-      bucketMs: point.bucketMs,
-      label: point.bucketLabel,
-      value: usageCredentialTimelineMetricValue(point, metric),
-    }));
+  const identity = selectedCredential.authIndex?.trim().toLowerCase();
+  const matchingPoints = credentialTimeline.filter((point) =>
+    identity
+      ? point.authIndex?.trim().toLowerCase() === identity
+      : point.id === selectedCredential.id
+  );
+  const pointsByBucket = new Map<number, { bucketMs: number; label: string; value: number }>();
+  matchingPoints.forEach((point) => {
+    const existing = pointsByBucket.get(point.bucketMs);
+    const value = usageCredentialTimelineMetricValue(point, metric);
+    if (existing) {
+      existing.value += value;
+    } else {
+      pointsByBucket.set(point.bucketMs, {
+        bucketMs: point.bucketMs,
+        label: point.bucketLabel,
+        value,
+      });
+    }
+  });
+  const points = Array.from(pointsByBucket.values()).sort(
+    (left, right) => left.bucketMs - right.bucketMs
+  );
 
   if (points.length === 0) return [];
 

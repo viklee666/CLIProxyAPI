@@ -21,6 +21,7 @@ import { normalizeAuthIndex } from '@/utils/authIndex';
 import { buildHeaderObject, headersToEntries, normalizeHeaderEntries } from '@/utils/headers';
 import { areKeyValueEntriesEqual, areModelEntriesEqual } from '@/utils/compare';
 import { buildApiKeyEntry } from '@/components/providers/utils';
+import { formatRequestScopedErrors, parseRequestScopedErrors } from './requestScopedErrors';
 import {
   buildProviderDraftKey,
   parseProviderIndexParam,
@@ -65,6 +66,7 @@ const buildEmptyForm = (): OpenAIFormState => ({
   apiKeyEntries: [buildApiKeyEntry()],
   modelEntries: [{ name: '', alias: '' }],
   testModel: undefined,
+  requestScopedErrorsText: formatRequestScopedErrors(),
 });
 
 const getErrorMessage = (err: unknown) => {
@@ -125,6 +127,7 @@ const buildOpenAIBaseline = (form: OpenAIFormState, testModel: string): OpenAIEd
   baseUrl: String(form.baseUrl ?? '').trim(),
   disableCooling: Boolean(form.disableCooling),
   nimCompat: Boolean(form.nimCompat),
+  requestScopedErrorsText: form.requestScopedErrorsText.trim() || '[]',
   headers: normalizeHeaderEntries(form.headers),
   apiKeyEntries: normalizeApiKeyEntries(form.apiKeyEntries),
   models: normalizeModelEntries(form.modelEntries),
@@ -327,6 +330,7 @@ export function AiProvidersOpenAIEditLayout() {
           : [buildApiKeyEntry()],
         disableCooling: initialData.disableCooling,
         nimCompat: initialData.nimCompat,
+        requestScopedErrorsText: formatRequestScopedErrors(initialData.requestScopedErrors),
       };
 
       const available = modelEntries.map((entry) => entry.name.trim()).filter(Boolean);
@@ -455,6 +459,7 @@ export function AiProvidersOpenAIEditLayout() {
       baseline.baseUrl !== form.baseUrl.trim() ||
       baseline.disableCooling !== Boolean(form.disableCooling) ||
       baseline.nimCompat !== Boolean(form.nimCompat) ||
+      baseline.requestScopedErrorsText !== (form.requestScopedErrorsText.trim() || '[]') ||
       baseline.testModel !== normalizedTestModel ||
       isHeadersDirty ||
       isApiKeyEntriesDirty ||
@@ -486,9 +491,17 @@ export function AiProvidersOpenAIEditLayout() {
   const handleSave = useCallback(async () => {
     const name = form.name.trim();
     const baseUrl = form.baseUrl.trim();
+    const parsedRequestScopedErrors = parseRequestScopedErrors(form.requestScopedErrorsText);
 
     if (!name || !baseUrl) {
       showNotification(t('notification.openai_provider_required'), 'error');
+      return;
+    }
+    if (!parsedRequestScopedErrors.rules) {
+      showNotification(
+        t(`ai_providers.request_scoped_errors_${parsedRequestScopedErrors.error}`),
+        'error'
+      );
       return;
     }
 
@@ -513,6 +526,7 @@ export function AiProvidersOpenAIEditLayout() {
         payload.disableCooling = form.disableCooling;
       }
       payload.nimCompat = Boolean(form.nimCompat);
+      payload.requestScopedErrors = parsedRequestScopedErrors.rules;
       if (initialData?.disabled !== undefined) {
         payload.disabled = initialData.disabled;
       }

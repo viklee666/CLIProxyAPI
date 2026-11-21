@@ -5,6 +5,7 @@ import type {
   ModelAlias,
   OpenAIProviderConfig,
   ProviderKeyConfig,
+  RequestScopedErrorRule,
 } from '@/types';
 import type { Config } from '@/types/config';
 import { buildHeaderObject } from '@/utils/headers';
@@ -311,6 +312,30 @@ const normalizeGeminiKeyConfig = (item: unknown): GeminiKeyConfig | null => {
   return config;
 };
 
+const normalizeRequestScopedErrors = (value: unknown): RequestScopedErrorRule[] => {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!isRecord(item)) return [];
+    const rule: RequestScopedErrorRule = {};
+    const status = normalizeNumber(item.status);
+    if (status !== undefined) rule.status = status;
+    const match = normalizeExcludedModels(item.match);
+    if (match.length > 0 || Array.isArray(item.match)) rule.match = match;
+    const matchRegexr = normalizeExcludedModels(
+      item['match-regexr'] ?? item.matchRegexr ?? item.match_regexr
+    );
+    if (
+      matchRegexr.length > 0 ||
+      Array.isArray(item['match-regexr'] ?? item.matchRegexr ?? item.match_regexr)
+    ) {
+      rule.matchRegexr = matchRegexr;
+    }
+    const action = normalizeString(item.action);
+    if (action) rule.action = action;
+    return [rule];
+  });
+};
+
 const normalizeOpenAIProvider = (provider: unknown): OpenAIProviderConfig | null => {
   if (!isRecord(provider)) return null;
   const name = provider.name || provider.id;
@@ -355,6 +380,21 @@ const normalizeOpenAIProvider = (provider: unknown): OpenAIProviderConfig | null
   if (models.length) result.models = models;
   if (priority !== undefined) result.priority = Number(priority);
   if (testModel) result.testModel = String(testModel);
+  const requestScopedErrors = normalizeRequestScopedErrors(
+    provider['request-scoped-errors'] ??
+      provider.requestScopedErrors ??
+      provider.request_scoped_errors
+  );
+  if (
+    requestScopedErrors.length > 0 ||
+    Array.isArray(
+      provider['request-scoped-errors'] ??
+        provider.requestScopedErrors ??
+        provider.request_scoped_errors
+    )
+  ) {
+    result.requestScopedErrors = requestScopedErrors;
+  }
   const authIndex = normalizeAuthIndex(
     provider['auth-index'] ?? provider.authIndex ?? provider['auth_index']
   );

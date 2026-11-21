@@ -480,6 +480,58 @@ describe('usage analytics adapters', () => {
     expect(result[0].points.map((point) => point.value)).toEqual([3, 5]);
   });
 
+  it('merges cost buckets for a stable credential when its auth file name changes', () => {
+    const selected: UsageRankRow = {
+      id: 'credential-old.json',
+      label: 'prod-auth',
+      authIndex: 'auth-1',
+      requestCount: 2,
+      successCount: 2,
+      failureCount: 0,
+      successRate: 1,
+      totalTokens: 200,
+      inputTokens: 200,
+      outputTokens: 0,
+      cachedTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      estimatedCost: 5,
+      averageLatencyMs: null,
+      share: 1,
+    };
+    const timeline = buildUsageCredentialTimeline(
+      [
+        {
+          id: 'credential-old.json',
+          auth_index: 'auth-1',
+          bucket_ms: NOW_MS,
+          bucket_label: '08:00',
+          calls: 1,
+          tokens: 100,
+          success: 1,
+          failure: 0,
+          cost: 2,
+        },
+        {
+          id: 'credential-new.json',
+          auth_index: 'auth-1',
+          bucket_ms: NOW_MS,
+          bucket_label: '08:00',
+          calls: 1,
+          tokens: 100,
+          success: 1,
+          failure: 0,
+          cost: 3,
+        },
+      ],
+      'hour'
+    );
+
+    const result = buildSelectedCredentialTrendSeries(selected, timeline, 'estimatedCost');
+
+    expect(result[0]?.points).toEqual([{ bucketMs: NOW_MS, label: '08:00', value: 5 }]);
+  });
+
   it('resolves credential labels from the same source metadata as request monitoring', () => {
     const credentialDisplayContext = {
       authMetaMap: new Map(),

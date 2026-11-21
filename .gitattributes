@@ -1,0 +1,2 @@
+# Keep Go source files on LF across platforms.
+*.go text eol=lf

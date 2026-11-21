@@ -258,6 +258,43 @@ describe('providersApi v1.16 provider fields', () => {
     expect(mocks.get).toHaveBeenCalledWith('/openai-compatibility');
   });
 
+  it('serializes custom request-scoped error rules for OpenAI-compatible providers', async () => {
+    mocks.get.mockResolvedValueOnce({ 'openai-compatibility': [] });
+    mocks.put.mockResolvedValue({});
+
+    await providersApi.saveOpenAIProviders([
+      {
+        name: 'openai-compatible',
+        baseUrl: 'https://api.example.com/v1',
+        apiKeyEntries: [],
+        requestScopedErrors: [
+          {
+            status: 429,
+            match: ['quota exhausted'],
+            matchRegexr: ['weekly.*limit'],
+            action: 'stop-and-cooldown',
+          },
+        ],
+      },
+    ]);
+
+    expect(mocks.put).toHaveBeenLastCalledWith('/openai-compatibility', [
+      {
+        name: 'openai-compatible',
+        'base-url': 'https://api.example.com/v1',
+        'api-key-entries': [],
+        'request-scoped-errors': [
+          {
+            status: 429,
+            match: ['quota exhausted'],
+            'match-regexr': ['weekly.*limit'],
+            action: 'stop-and-cooldown',
+          },
+        ],
+      },
+    ]);
+  });
+
   it('serializes Claude disable-cooling, cch signing, cloak cache, and model metadata', async () => {
     mocks.get.mockResolvedValue({
       'claude-api-key': [

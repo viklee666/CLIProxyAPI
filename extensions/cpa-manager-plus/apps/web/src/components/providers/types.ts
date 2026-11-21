@@ -24,6 +24,7 @@ export interface OpenAIFormState {
   apiKeyEntries: ApiKeyEntry[];
   disableCooling?: boolean;
   nimCompat?: boolean;
+  requestScopedErrorsText: string;
 }
 
 export type GeminiFormState = Omit<GeminiKeyConfig, 'headers' | 'models'> & {

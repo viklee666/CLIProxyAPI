@@ -89,6 +89,9 @@ const OPENAI_PROVIDER_FIELDS = [
   'disableCooling',
   'disable_cooling',
   ...NIM_COMPAT_FIELDS,
+  'request-scoped-errors',
+  'requestScopedErrors',
+  'request_scoped_errors',
 ] as const;
 
 const MODEL_ALIAS_FIELDS = [
@@ -319,6 +322,11 @@ const mergeOpenAIProviderPayload = (raw: unknown, payload: Record<string, unknow
   const next = mergeKnownFields(raw, payload, OPENAI_PROVIDER_FIELDS);
   preserveOmittedRawField(raw, payload, next, DISABLE_COOLING_FIELDS);
   preserveOmittedRawField(raw, payload, next, NIM_COMPAT_FIELDS);
+  preserveOmittedRawField(raw, payload, next, [
+    'request-scoped-errors',
+    'requestScopedErrors',
+    'request_scoped_errors',
+  ]);
   const rawApiKeyEntries = isRecord(raw)
     ? (raw['api-key-entries'] ?? raw.apiKeyEntries)
     : undefined;
@@ -637,6 +645,14 @@ const serializeOpenAIProvider = (provider: OpenAIProviderConfig) => {
   if (provider.disabled !== undefined) payload.disabled = provider.disabled;
   if (provider.disableCooling !== undefined) payload['disable-cooling'] = provider.disableCooling;
   if (provider.nimCompat !== undefined) payload['nim-compat'] = provider.nimCompat;
+  if (provider.requestScopedErrors !== undefined) {
+    payload['request-scoped-errors'] = provider.requestScopedErrors.map((rule) => ({
+      ...(rule.status === undefined ? {} : { status: rule.status }),
+      ...(rule.match === undefined ? {} : { match: rule.match }),
+      ...(rule.matchRegexr === undefined ? {} : { 'match-regexr': rule.matchRegexr }),
+      ...(rule.action === undefined ? {} : { action: rule.action }),
+    }));
+  }
   const headers = serializeHeaders(provider.headers);
   if (headers) payload.headers = headers;
   const models = serializeModelAliases(provider.models);

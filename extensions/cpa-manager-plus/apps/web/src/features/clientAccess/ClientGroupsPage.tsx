@@ -5,15 +5,16 @@ import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
 import { ToggleSwitch } from '@/components/ui/ToggleSwitch';
 import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
-import { authFilesApi, clientAccessApi, type ClientGroup } from '@/services/api';
+import { authFilesApi, clientAccessApi, providersApi, type ClientGroup } from '@/services/api';
 import { useNotificationStore } from '@/stores';
 import type { AuthFileItem } from '@/types';
 import { GroupResourceAssignmentsModal } from './GroupResourceAssignmentsModal';
+import { buildProviderResources } from './providerResources';
 import styles from './ClientAccessPage.module.scss';
 
 type GroupForm = { name: string; description: string; enabled: boolean };
 type GroupResourceSummary = {
-  credentialCount: number;
+  resourceCount: number;
   credentials: string[];
   providers: Array<{ name: string; count: number }>;
   priorities: number[];
@@ -44,65 +45,109 @@ export function ClientGroupsPage() {
   const [bindingModalOpen, setBindingModalOpen] = useState(false);
   const pageSize = 20;
 
-  const loadResourceSummaries = useCallback(async (groups: ClientGroup[]) => {
-    const groupIDs = groups.map((group) => group.id);
-    if (groupIDs.length === 0) {
-      setResourceSummaries({});
-      return;
-    }
-    setSummaryLoading(true);
-    try {
-      const [filesResponse, bindings] = await Promise.all([
-        authFilesApi.listSummary(),
-        clientAccessApi.listAllCredentialBindings([], groupIDs),
-      ]);
-      const fileByAuthIndex = new Map<string, AuthFileItem>();
-      for (const file of filesResponse.files ?? []) {
-        const authIndex = authIndexOf(file);
-        if (authIndex) fileByAuthIndex.set(authIndex, file);
+  const loadResourceSummaries = useCallback(
+    async (groups: ClientGroup[]) => {
+      const groupIDs = groups.map((group) => group.id);
+      if (groupIDs.length === 0) {
+        setResourceSummaries({});
+        return;
       }
-      const credentialsByGroup = new Map<number, string[]>();
-      const credentialCountByGroup = new Map<number, number>();
-      const providersByGroup = new Map<number, Map<string, number>>();
-      const prioritiesByGroup = new Map<number, Set<number>>();
-      for (const binding of bindings) {
-        const file = fileByAuthIndex.get(binding.auth_index);
-        if (!file) continue;
-        const credentialName = file.name || binding.auth_index;
-        const providerName = String(file.provider ?? file.type ?? 'Unknown').trim() || 'Unknown';
-        credentialCountByGroup.set(
-          binding.group_id,
-          (credentialCountByGroup.get(binding.group_id) ?? 0) + 1
-        );
-        credentialsByGroup.set(binding.group_id, [
-          ...(credentialsByGroup.get(binding.group_id) ?? []),
-          credentialName,
+      setSummaryLoading(true);
+      try {
+        const [filesResponse, bindings] = await Promise.all([
+          authFilesApi.listSummary(),
+          clientAccessApi.listAllCredentialBindings([], groupIDs),
         ]);
-        const providerCounts = providersByGroup.get(binding.group_id) ?? new Map<string, number>();
-        providerCounts.set(providerName, (providerCounts.get(providerName) ?? 0) + 1);
-        providersByGroup.set(binding.group_id, providerCounts);
-        const priorities = prioritiesByGroup.get(binding.group_id) ?? new Set<number>();
-        priorities.add(binding.priority);
-        prioritiesByGroup.set(binding.group_id, priorities);
+        const providerByAuthIndex = new Map<string, string>();
+        try {
+          const [gemini, interactions, codex, claude, vertex, openAI] = await Promise.all([
+            providersApi.getGeminiKeys(),
+            providersApi.getInteractionsKeys(),
+            providersApi.getCodexConfigs(),
+            providersApi.getClaudeConfigs(),
+            providersApi.getVertexConfigs(),
+            providersApi.getOpenAIProviders(),
+          ]);
+          const providerResources = buildProviderResources(
+            [
+              { type: 'gemini', configs: gemini },
+              { type: 'interactions', configs: interactions },
+              { type: 'codex', configs: codex },
+              { type: 'claude', configs: claude },
+              { type: 'vertex', configs: vertex },
+            ],
+            openAI,
+            {
+              defaultEndpoint: t('client_access.default_endpoint'),
+              gemini: 'Gemini',
+              interactions: 'Interactions',
+              codex: 'Codex',
+              claude: 'Claude',
+              vertex: 'Vertex',
+              openAICompatible: 'OpenAI Compatible',
+            }
+          );
+          for (const resource of providerResources) {
+            for (const authIndex of resource.authIndices) {
+              providerByAuthIndex.set(authIndex, resource.label);
+            }
+          }
+        } catch {
+          // Keep credential assignments visible if an upstream configuration cannot be read.
+        }
+        const fileByAuthIndex = new Map<string, AuthFileItem>();
+        for (const file of filesResponse.files ?? []) {
+          const authIndex = authIndexOf(file);
+          if (authIndex) fileByAuthIndex.set(authIndex, file);
+        }
+        const credentialsByGroup = new Map<number, string[]>();
+        const resourceCountByGroup = new Map<number, number>();
+        const providersByGroup = new Map<number, Map<string, number>>();
+        const prioritiesByGroup = new Map<number, Set<number>>();
+        for (const binding of bindings) {
+          const file = fileByAuthIndex.get(binding.auth_index);
+          const providerName = file
+            ? String(file.provider ?? file.type ?? 'Unknown').trim() || 'Unknown'
+            : providerByAuthIndex.get(binding.auth_index);
+          if (!providerName) continue;
+          resourceCountByGroup.set(
+            binding.group_id,
+            (resourceCountByGroup.get(binding.group_id) ?? 0) + 1
+          );
+          credentialsByGroup.set(binding.group_id, [
+            ...(credentialsByGroup.get(binding.group_id) ?? []),
+            file?.name || providerName,
+          ]);
+          const providerCounts =
+            providersByGroup.get(binding.group_id) ?? new Map<string, number>();
+          providerCounts.set(providerName, (providerCounts.get(providerName) ?? 0) + 1);
+          providersByGroup.set(binding.group_id, providerCounts);
+          const priorities = prioritiesByGroup.get(binding.group_id) ?? new Set<number>();
+          priorities.add(binding.priority);
+          prioritiesByGroup.set(binding.group_id, priorities);
+        }
+        const next: Record<number, GroupResourceSummary> = {};
+        for (const group of groups) {
+          next[group.id] = {
+            resourceCount: resourceCountByGroup.get(group.id) ?? 0,
+            credentials: Array.from(new Set(credentialsByGroup.get(group.id) ?? [])).sort(),
+            providers: Array.from(providersByGroup.get(group.id)?.entries() ?? [])
+              .map(([name, count]) => ({ name, count }))
+              .sort(
+                (left, right) => right.count - left.count || left.name.localeCompare(right.name)
+              ),
+            priorities: Array.from(prioritiesByGroup.get(group.id) ?? []).sort((a, b) => b - a),
+          };
+        }
+        setResourceSummaries(next);
+      } catch {
+        setResourceSummaries({});
+      } finally {
+        setSummaryLoading(false);
       }
-      const next: Record<number, GroupResourceSummary> = {};
-      for (const group of groups) {
-        next[group.id] = {
-          credentialCount: credentialCountByGroup.get(group.id) ?? 0,
-          credentials: Array.from(new Set(credentialsByGroup.get(group.id) ?? [])).sort(),
-          providers: Array.from(providersByGroup.get(group.id)?.entries() ?? [])
-            .map(([name, count]) => ({ name, count }))
-            .sort((left, right) => right.count - left.count || left.name.localeCompare(right.name)),
-          priorities: Array.from(prioritiesByGroup.get(group.id) ?? []).sort((a, b) => b - a),
-        };
-      }
-      setResourceSummaries(next);
-    } catch {
-      setResourceSummaries({});
-    } finally {
-      setSummaryLoading(false);
-    }
-  }, []);
+    },
+    [t]
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -212,12 +257,9 @@ export function ClientGroupsPage() {
             <tbody>
               {items.map((group) => {
                 const summary = resourceSummaries[group.id];
-                const credentialCount = summary?.credentialCount ?? group.credential_count;
+                const resourceCount = summary?.resourceCount ?? group.credential_count;
                 const visibleCredentials = summary?.credentials.slice(0, 3) ?? [];
-                const remainingCredentials = Math.max(
-                  0,
-                  credentialCount - visibleCredentials.length
-                );
+                const remainingCredentials = Math.max(0, resourceCount - visibleCredentials.length);
                 return (
                   <tr key={group.id}>
                     <td>
@@ -237,7 +279,7 @@ export function ClientGroupsPage() {
                     <td>
                       {summaryLoading && !summary ? (
                         <span className={styles.muted}>{t('common.loading')}</span>
-                      ) : credentialCount === 0 ? (
+                      ) : resourceCount === 0 ? (
                         <span className={styles.resourceEmpty}>
                           {t('client_access.no_assigned_resources', {
                             defaultValue: 'No resources assigned',
@@ -247,9 +289,9 @@ export function ClientGroupsPage() {
                         <div className={styles.resourceSummary}>
                           <div className={styles.resourceSummaryTop}>
                             <b>
-                              {t('client_access.credential_count', {
-                                count: credentialCount,
-                                defaultValue: `${credentialCount} credentials`,
+                              {t('client_access.resource_count', {
+                                count: resourceCount,
+                                defaultValue: `${resourceCount} resources`,
                               })}
                             </b>
                             {summary?.priorities.length ? (

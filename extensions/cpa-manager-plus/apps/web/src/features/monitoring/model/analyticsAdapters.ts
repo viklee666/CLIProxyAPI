@@ -99,6 +99,7 @@ const ACCOUNT_FILTER_PREFIXES = {
   auth: 'auth:',
   source: 'source:',
   apiKey: 'api-key:',
+  authFile: 'auth-file:',
   account: 'account:',
 } as const;
 
