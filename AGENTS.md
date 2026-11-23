@@ -1,5 +1,7 @@
 # AGENTS.md
 
+**未经允许禁止自行创建分支**
+
 Go 1.26+ proxy server providing OpenAI/Gemini/Claude/Codex compatible APIs with OAuth and round-robin load balancing.
 
 ## Repository
