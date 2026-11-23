@@ -21,18 +21,17 @@ func (limits RequestLimits) Validate() error {
 	return nil
 }
 
-func validateRequestLimitsYAML(data []byte) error {
-	var document yaml.Node
-	if errDecode := yaml.Unmarshal(data, &document); errDecode != nil || len(document.Content) == 0 {
-		return nil
+func validateRequestLimitsNode(node *yaml.Node) error {
+	root, err := flattenV8(node)
+	if err != nil {
+		return err
 	}
 	families := map[string]bool{
 		"gemini-api-key": true, "interactions-api-key": true, "claude-api-key": true,
 		"codex-api-key": true, "xai-api-key": true, "meta-api-key": true,
 		"vertex-api-key": true, "openai-compatibility": true,
 	}
-	root := document.Content[0]
-	for index := 0; root.Kind == yaml.MappingNode && index+1 < len(root.Content); index += 2 {
+	for index := 0; root != nil && root.Kind == yaml.MappingNode && index+1 < len(root.Content); index += 2 {
 		family, sequence := root.Content[index].Value, root.Content[index+1]
 		if !families[family] || sequence.Kind != yaml.SequenceNode {
 			continue

@@ -9,12 +9,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/translator"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
 func TestOpenAICompatNIMStreamBuffersUpstreamAndEmitsEagerStart(t *testing.T) {
@@ -73,19 +73,19 @@ func TestOpenAICompatNIMStreamBuffersUpstreamAndEmitsEagerStart(t *testing.T) {
 	}
 
 	upstream := <-received
-	if gjson.GetBytes(upstream, "stream").Bool() {
+	if ojson.GetBytesNoCopy(upstream, "stream").Bool() {
 		t.Fatalf("upstream stream = true, want false; body=%s", upstream)
 	}
-	if gjson.GetBytes(upstream, "stream_options").Exists() {
+	if ojson.GetBytesNoCopy(upstream, "stream_options").Exists() {
 		t.Fatalf("upstream still has stream_options: %s", upstream)
 	}
-	if gjson.GetBytes(upstream, "reasoning_effort").Exists() {
+	if ojson.GetBytesNoCopy(upstream, "reasoning_effort").Exists() {
 		t.Fatalf("upstream still has reasoning_effort: %s", upstream)
 	}
-	if !gjson.GetBytes(upstream, "chat_template_kwargs.enable_thinking").Bool() {
+	if !ojson.GetBytesNoCopy(upstream, "chat_template_kwargs.enable_thinking").Bool() {
 		t.Fatalf("enable_thinking missing: %s", upstream)
 	}
-	if gjson.GetBytes(upstream, "nvext.max_thinking_tokens").Int() != 1024 {
+	if ojson.GetBytesNoCopy(upstream, "nvext.max_thinking_tokens").Int() != 1024 {
 		t.Fatalf("max_thinking_tokens = %s", upstream)
 	}
 
@@ -147,10 +147,10 @@ func TestOpenAICompatExecutorIgnoresNIMCompatWhenDisabled(t *testing.T) {
 			t.Fatalf("chunk error: %v", chunk.Err)
 		}
 	}
-	if !gjson.GetBytes(upstream, "stream").Bool() {
+	if !ojson.GetBytesNoCopy(upstream, "stream").Bool() {
 		t.Fatalf("non-NIM provider should still stream; body=%s", upstream)
 	}
-	if !gjson.GetBytes(upstream, "stream_options.include_usage").Bool() {
+	if !ojson.GetBytesNoCopy(upstream, "stream_options.include_usage").Bool() {
 		t.Fatalf("non-NIM provider should request include_usage; body=%s", upstream)
 	}
 }

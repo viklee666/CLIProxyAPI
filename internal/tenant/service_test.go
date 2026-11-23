@@ -2,8 +2,8 @@ package tenant
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
+	"github.com/MoeForge/moego/json"
 	"path/filepath"
 	"testing"
 )

@@ -1,23 +1,23 @@
 package cliproxy
 
 import (
-	"encoding/json"
+	"github.com/MoeForge/moego/json"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
 // registerTenantModelsForAuth publishes the model catalog carried by a tenant
 // runtime auth. Tenant providers never inherit models from global configuration,
 // so this short-circuits the regular registration path when it applies.
-func (s *Service) registerTenantModelsForAuth(a *coreauth.Auth, provider, compatProviderKey string, excluded []string) bool {
+func (s *Service) registerTenantModelsForAuth(cfg *config.Config, a *coreauth.Auth, fence modelRegistrationFence, provider, compatProviderKey string, excluded []string) (handled, published bool) {
 	channel, rawModels, tenantModels := coreauth.TenantModelPayload(a)
 	if !tenantModels {
-		return false
+		return false, false
 	}
-	forceModelPrefix := s.cfg != nil && s.cfg.ForceModelPrefix
+	forceModelPrefix := cfg != nil && cfg.ForceModelPrefix
 	var models []*ModelInfo
 	providerKey := provider
 	switch channel {
@@ -54,8 +54,7 @@ func (s *Service) registerTenantModelsForAuth(a *coreauth.Auth, provider, compat
 	case "openai-compat":
 		var configured []config.OpenAICompatibilityModel
 		if errUnmarshal := json.Unmarshal([]byte(rawModels), &configured); errUnmarshal != nil {
-			GlobalModelRegistry().UnregisterClient(a.ID)
-			return true
+			return true, s.unregisterModelsForAuthFenced(a, fence)
 		}
 		compatName := "tenant"
 		if a.Attributes != nil {
@@ -74,14 +73,11 @@ func (s *Service) registerTenantModelsForAuth(a *coreauth.Auth, provider, compat
 		}
 		models = buildOpenAICompatibilityConfigModels(&config.OpenAICompatibility{Name: compatName, Models: configured})
 	default:
-		GlobalModelRegistry().UnregisterClient(a.ID)
-		return true
+		return true, s.unregisterModelsForAuthFenced(a, fence)
 	}
 	models = applyExcludedModels(models, excluded)
 	if len(models) == 0 {
-		GlobalModelRegistry().UnregisterClient(a.ID)
-		return true
+		return true, s.unregisterModelsForAuthFenced(a, fence)
 	}
-	s.registerResolvedModelsForAuth(a, providerKey, applyModelPrefixes(models, a.Prefix, forceModelPrefix))
-	return true
+	return true, s.registerResolvedModelsForAuthFenced(a, fence, providerKey, applyModelPrefixes(models, a.Prefix, forceModelPrefix))
 }

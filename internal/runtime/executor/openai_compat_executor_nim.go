@@ -6,17 +6,14 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	log "github.com/sirupsen/logrus"
 )
-
-const openAINIMPingInterval = 15 * time.Second
 
 func (e *OpenAICompatExecutor) executeOpenAINIMStream(
 	ctx context.Context,
@@ -42,7 +39,7 @@ func (e *OpenAICompatExecutor) executeOpenAINIMStream(
 		emitTranslated := func(streamLine []byte) bool {
 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, originalForTranslate, translated, streamLine, &param, claudeInputTokens)
 			for i := range chunks {
-				if !sendOpenAINIMChunk(ctx, out, cliproxyexecutor.StreamChunk{Payload: chunks[i]}) {
+				if !helps.SendOpenAINIMChunk(ctx, out, cliproxyexecutor.StreamChunk{Payload: chunks[i]}) {
 					return false
 				}
 			}
@@ -53,14 +50,13 @@ func (e *OpenAICompatExecutor) executeOpenAINIMStream(
 			return
 		}
 
-		pingDone := make(chan struct{})
-		go emitOpenAINIMPings(ctx, out, responseFormat, pingDone)
-		defer close(pingDone)
+		stopPings := helps.StartOpenAINIMPings(ctx, out, responseFormat)
+		defer stopPings()
 
 		httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
 		if errReq != nil {
 			reporter.PublishFailure(ctx, errReq)
-			_ = sendOpenAINIMChunk(ctx, out, cliproxyexecutor.StreamChunk{Err: errReq})
+			_ = helps.SendOpenAINIMChunk(ctx, out, cliproxyexecutor.StreamChunk{Err: errReq})
 			return
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
@@ -99,7 +95,7 @@ func (e *OpenAICompatExecutor) executeOpenAINIMStream(
 		if errDo != nil {
 			helps.RecordAPIResponseError(ctx, e.cfg, errDo)
 			reporter.PublishFailure(ctx, errDo)
-			_ = sendOpenAINIMChunk(ctx, out, cliproxyexecutor.StreamChunk{Err: errDo})
+			_ = helps.SendOpenAINIMChunk(ctx, out, cliproxyexecutor.StreamChunk{Err: errDo})
 			return
 		}
 		defer func() {
@@ -112,7 +108,7 @@ func (e *OpenAICompatExecutor) executeOpenAINIMStream(
 		if errRead != nil {
 			helps.RecordAPIResponseError(ctx, e.cfg, errRead)
 			reporter.PublishFailure(ctx, errRead)
-			_ = sendOpenAINIMChunk(ctx, out, cliproxyexecutor.StreamChunk{Err: errRead})
+			_ = helps.SendOpenAINIMChunk(ctx, out, cliproxyexecutor.StreamChunk{Err: errRead})
 			return
 		}
 		helps.AppendAPIResponseChunk(ctx, e.cfg, body)
@@ -120,10 +116,11 @@ func (e *OpenAICompatExecutor) executeOpenAINIMStream(
 			helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), body))
 			streamErr := newOpenAICompatStatusError(httpResp.StatusCode, httpResp.Header, body)
 			reporter.PublishFailure(ctx, streamErr)
-			_ = sendOpenAINIMChunk(ctx, out, cliproxyexecutor.StreamChunk{Err: streamErr})
+			_ = helps.SendOpenAINIMChunk(ctx, out, cliproxyexecutor.StreamChunk{Err: streamErr})
 			return
 		}
 		body = helps.RestoreOpenAINIMToolNames(body, toolNames)
+		reporter.ObserveResponseModel(body)
 		reporter.Publish(ctx, helps.ParseOpenAIUsage(body))
 		reporter.EnsurePublished(ctx)
 
@@ -134,34 +131,4 @@ func (e *OpenAICompatExecutor) executeOpenAINIMStream(
 		}
 	}()
 	return &cliproxyexecutor.StreamResult{Chunks: out}, nil
-}
-
-func emitOpenAINIMPings(ctx context.Context, out chan<- cliproxyexecutor.StreamChunk, responseFormat sdktranslator.Format, done <-chan struct{}) {
-	ticker := time.NewTicker(openAINIMPingInterval)
-	defer ticker.Stop()
-	payload := helps.OpenAINIMClaudePingSSE
-	if responseFormat != sdktranslator.FormatClaude {
-		payload = []byte(": keep-alive\n\n")
-	}
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-done:
-			return
-		case <-ticker.C:
-			if !sendOpenAINIMChunk(ctx, out, cliproxyexecutor.StreamChunk{Payload: payload}) {
-				return
-			}
-		}
-	}
-}
-
-func sendOpenAINIMChunk(ctx context.Context, out chan<- cliproxyexecutor.StreamChunk, chunk cliproxyexecutor.StreamChunk) bool {
-	select {
-	case out <- chunk:
-		return true
-	case <-ctx.Done():
-		return false
-	}
 }

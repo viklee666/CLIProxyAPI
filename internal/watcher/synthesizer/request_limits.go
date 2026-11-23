@@ -1,6 +1,6 @@
 package synthesizer
 
-import "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+import "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 
 func addRequestLimitsToMetadata(limits config.RequestLimits, metadata map[string]any) {
 	if limits.ConcurrencyLimit > 0 {

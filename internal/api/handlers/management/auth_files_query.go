@@ -13,10 +13,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/clientaccess"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	"github.com/tidwall/gjson"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/clientaccess"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 const (
@@ -464,16 +464,16 @@ func (h *Handler) authFileCandidatesFromDisk() ([]authFileCandidate, error) {
 		}
 		path := filepath.Join(h.cfg.AuthDir, entry.Name())
 		data, _ := os.ReadFile(path)
-		provider := strings.ToLower(strings.TrimSpace(gjson.GetBytes(data, "type").String()))
-		planType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(data, "plan_type").String()))
+		provider := strings.ToLower(strings.TrimSpace(ojson.GetBytes(data, "type").String()))
+		planType := strings.ToLower(strings.TrimSpace(ojson.GetBytes(data, "plan_type").String()))
 		if planType == "" {
-			planType = strings.ToLower(strings.TrimSpace(gjson.GetBytes(data, "planType").String()))
+			planType = strings.ToLower(strings.TrimSpace(ojson.GetBytes(data, "planType").String()))
 		}
-		email := strings.TrimSpace(gjson.GetBytes(data, "email").String())
-		projectID := strings.TrimSpace(gjson.GetBytes(data, "project_id").String())
-		note := strings.TrimSpace(gjson.GetBytes(data, "note").String())
-		priority := int(gjson.GetBytes(data, "priority").Int())
-		disabled := gjson.GetBytes(data, "disabled").Bool()
+		email := strings.TrimSpace(ojson.GetBytes(data, "email").String())
+		projectID := strings.TrimSpace(ojson.GetBytes(data, "project_id").String())
+		note := strings.TrimSpace(ojson.GetBytes(data, "note").String())
+		priority := int(ojson.GetBytes(data, "priority").Int())
+		disabled := ojson.GetBytes(data, "disabled").Bool()
 		fileEntry := gin.H{
 			"name":     entry.Name(),
 			"type":     provider,
@@ -496,13 +496,13 @@ func (h *Handler) authFileCandidatesFromDisk() ([]authFileCandidate, error) {
 		if planType != "" {
 			fileEntry["plan_type"] = planType
 		}
-		if websockets := gjson.GetBytes(data, "websockets"); websockets.Exists() {
+		if websockets := ojson.GetBytes(data, "websockets"); websockets.Exists() {
 			switch websockets.Type {
-			case gjson.True:
+			case ojson.True:
 				fileEntry["websockets"] = true
-			case gjson.False:
+			case ojson.False:
 				fileEntry["websockets"] = false
-			case gjson.String:
+			case ojson.String:
 				if parsed, errParse := strconv.ParseBool(strings.TrimSpace(websockets.String())); errParse == nil {
 					fileEntry["websockets"] = parsed
 				}

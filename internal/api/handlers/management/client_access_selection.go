@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/clientaccess"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/clientaccess"
 )
 
 var errClientAccessAuthManagerUnavailable = errors.New("auth manager is unavailable")

@@ -4,8 +4,8 @@ package tenant
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
+	"github.com/MoeForge/moego/json"
 	"io"
 	"net/http"
 	"net/url"
@@ -15,9 +15,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/clientaccess"
-	tenantservice "github.com/router-for-me/CLIProxyAPI/v7/internal/tenant"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/proxyutil"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/clientaccess"
+	tenantservice "github.com/router-for-me/CLIProxyAPI/v8/internal/tenant"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/proxyutil"
 )
 
 const (

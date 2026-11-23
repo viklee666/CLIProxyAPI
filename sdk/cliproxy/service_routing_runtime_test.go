@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
 type stubUsagePlugin struct{}
@@ -91,6 +91,31 @@ func TestApplyManagerConfigDoesNotSwapSelectorWhenCooldownPersistFails(t *testin
 	}
 	if service.appliedRoutingState != nil {
 		t.Fatal("appliedRoutingState updated after failed cooldown persist")
+	}
+}
+
+func TestApplyManagerConfigUpdatesSessionRebindPolicy(t *testing.T) {
+	previous := normalizedRoutingRuntimeState(&internalconfig.Config{Routing: internalconfig.RoutingConfig{
+		SessionAffinity:         true,
+		SessionAffinityRebindOn: coreauth.SessionAffinityRebindOnAny,
+	}})
+	initial := newRoutingSelector(previous)
+	service := &Service{
+		coreManager:         coreauth.NewManager(nil, initial, nil),
+		appliedRoutingState: &previous,
+	}
+	commit := configCommit{cfg: &internalconfig.Config{Routing: internalconfig.RoutingConfig{
+		SessionAffinity:         true,
+		SessionAffinityRebindOn: coreauth.SessionAffinityRebindOnNever,
+	}}}
+	if !service.applyManagerConfig(context.Background(), commit) {
+		t.Fatal("applyManagerConfig failed")
+	}
+	if service.coreManager.Selector() == initial {
+		t.Fatal("rebind policy change did not replace the affinity selector")
+	}
+	if service.appliedRoutingState.sessionAffinityRebindOn != coreauth.SessionAffinityRebindOnNever {
+		t.Fatal("rebind policy change was not recorded")
 	}
 }
 

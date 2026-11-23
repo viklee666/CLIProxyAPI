@@ -3,19 +3,19 @@
 package watcher
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"os"
 	"reflect"
+	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/diff"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/diff"
 	"gopkg.in/yaml.v3"
 
 	log "github.com/sirupsen/logrus"
 )
+
+var loadConfigFileFunc = config.LoadConfig
 
 func (w *Watcher) stopConfigReloadTimer() {
 	w.configReloadMu.Lock()
@@ -49,7 +49,12 @@ func (w *Watcher) ReloadConfigIfChanged() {
 }
 
 func (w *Watcher) reloadConfigIfChanged() {
-	data, err := os.ReadFile(w.configPath)
+	// File events and post-save reloads may arrive together; an older read must
+	// not apply after a newer one.
+	w.configApplyMu.Lock()
+	defer w.configApplyMu.Unlock()
+
+	data, err := config.ReadConfigFile(w.configPath)
 	if err != nil {
 		log.Errorf("failed to read config file for hash check: %v", err)
 		return
@@ -58,8 +63,7 @@ func (w *Watcher) reloadConfigIfChanged() {
 		log.Debugf("ignoring empty config file write event")
 		return
 	}
-	sum := sha256.Sum256(data)
-	newHash := hex.EncodeToString(sum[:])
+	newHash := config.ComputeSourceHash(data)
 
 	w.clientsMutex.RLock()
 	currentHash := w.lastConfigHash
@@ -71,16 +75,17 @@ func (w *Watcher) reloadConfigIfChanged() {
 	}
 	log.Infof("config file changed, reloading: %s", w.configPath)
 	if w.reloadConfig() {
+		// Record the bytes actually parsed so a concurrent save is reloaded.
 		w.clientsMutex.Lock()
-		// Record the exact bytes that were selected for this reload. If another
-		// save lands while reloadConfig is running, that newer content must not be
-		// marked as already applied.
-		w.lastConfigHash = newHash
+		appliedHash := newHash
+		if w.config != nil && w.config.SourceHash != "" {
+			appliedHash = w.config.SourceHash
+		}
+		w.lastConfigHash = appliedHash
 		w.clientsMutex.Unlock()
 		w.persistConfigAsync()
-		if updatedData, errRead := os.ReadFile(w.configPath); errRead == nil && len(updatedData) > 0 {
-			sumUpdated := sha256.Sum256(updatedData)
-			if updatedHash := hex.EncodeToString(sumUpdated[:]); updatedHash != newHash {
+		if updatedData, errRead := config.ReadConfigFile(w.configPath); errRead == nil && len(updatedData) > 0 {
+			if updatedHash := config.ComputeSourceHash(updatedData); updatedHash != appliedHash {
 				log.Debug("config changed again during reload; scheduling another pass")
 				w.scheduleConfigReload()
 			}
@@ -94,28 +99,38 @@ func (w *Watcher) reloadConfig() bool {
 	log.Debug("=========================== CONFIG RELOAD ============================")
 	log.Debugf("starting config reload from: %s", w.configPath)
 
-	newConfig, errLoadConfig := config.LoadConfig(w.configPath)
+	newConfig, errLoadConfig := loadConfigFileFunc(w.configPath)
 	if errLoadConfig != nil {
 		log.Errorf("failed to reload config: %v", errLoadConfig)
 		return false
 	}
 
+	resolvedNewAuthDir := ""
 	if w.mirroredAuthDir != "" {
 		newConfig.AuthDir = w.mirroredAuthDir
+		resolvedNewAuthDir = w.mirroredAuthDir
 	} else {
 		if resolvedAuthDir, errResolveAuthDir := util.ResolveAuthDir(newConfig.AuthDir); errResolveAuthDir != nil {
 			log.Errorf("failed to resolve auth directory from config: %v", errResolveAuthDir)
 		} else {
 			newConfig.AuthDir = resolvedAuthDir
+			resolvedNewAuthDir = resolvedAuthDir
 		}
 	}
 
+	w.authRescanMu.Lock()
 	w.clientsMutex.Lock()
 	var oldConfig *config.Config
 	_ = yaml.Unmarshal(w.oldConfigYaml, &oldConfig)
+	prevAuthDir := w.authDir
 	w.oldConfigYaml, _ = yaml.Marshal(newConfig)
 	w.config = newConfig
+	if strings.TrimSpace(resolvedNewAuthDir) != "" {
+		w.authDir = resolvedNewAuthDir
+	}
+	curAuthDir := w.authDir
 	w.clientsMutex.Unlock()
+	w.authRescanMu.Unlock()
 
 	var affectedOAuthProviders []string
 	if oldConfig != nil {
@@ -139,9 +154,12 @@ func (w *Watcher) reloadConfig() bool {
 		}
 	}
 
-	authDirChanged := oldConfig == nil || oldConfig.AuthDir != newConfig.AuthDir
+	authDirChanged := oldConfig == nil || oldConfig.AuthDir != newConfig.AuthDir || prevAuthDir != curAuthDir
+	if authDirChanged {
+		w.syncAuthDirWatch()
+	}
 	retryConfigChanged := oldConfig != nil && (oldConfig.RequestRetry != newConfig.RequestRetry || oldConfig.MaxRetryInterval != newConfig.MaxRetryInterval || oldConfig.MaxRetryCredentials != newConfig.MaxRetryCredentials)
-	forceAuthRefresh := oldConfig != nil && (oldConfig.ForceModelPrefix != newConfig.ForceModelPrefix || !reflect.DeepEqual(oldConfig.OAuthModelAlias, newConfig.OAuthModelAlias) || retryConfigChanged)
+	forceAuthRefresh := oldConfig != nil && (oldConfig.ForceModelPrefix != newConfig.ForceModelPrefix || !reflect.DeepEqual(oldConfig.OAuthModelAlias, newConfig.OAuthModelAlias) || !reflect.DeepEqual(oldConfig.OAuthSettings, newConfig.OAuthSettings) || retryConfigChanged)
 
 	log.Infof("config successfully reloaded, triggering client reload")
 	w.reloadClients(authDirChanged, affectedOAuthProviders, forceAuthRefresh)

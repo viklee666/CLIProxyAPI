@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/tenant"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/tenant"
 )
 
 type tenantStatusFunc func(context.Context, int64) (bool, error)

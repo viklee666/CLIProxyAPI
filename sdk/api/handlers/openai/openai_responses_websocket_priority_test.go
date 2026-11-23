@@ -8,13 +8,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
-	"github.com/tidwall/gjson"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
 func TestResponsesWebsocketCompactionPinRespectsPriority(t *testing.T) {
@@ -80,7 +80,7 @@ func TestResponsesWebsocketCompactionPinRespectsPriority(t *testing.T) {
 				if errRead != nil {
 					t.Fatal(errRead)
 				}
-				if gjson.GetBytes(payload, "type").String() != wsEventTypeCompleted {
+				if ojson.GetBytesNoCopy(payload, "type").String() != wsEventTypeCompleted {
 					t.Fatalf("response = %s, want response.completed", payload)
 				}
 			}
@@ -153,7 +153,7 @@ func TestResponsesWebsocketRechecksPinnedAuthPriority(t *testing.T) {
 						if errRead != nil {
 							t.Fatal(errRead)
 						}
-						if gjson.GetBytes(payload, "type").String() != wsEventTypeCompleted {
+						if ojson.GetBytesNoCopy(payload, "type").String() != wsEventTypeCompleted {
 							t.Fatalf("response = %s, want response.completed", payload)
 						}
 					}

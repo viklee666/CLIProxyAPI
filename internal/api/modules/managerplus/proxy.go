@@ -2,8 +2,8 @@
 package managerplus
 
 import (
-	"encoding/json"
 	"fmt"
+	"github.com/MoeForge/moego/json"
 	"net/http"
 	"net/http/httputil"
 	"net/url"

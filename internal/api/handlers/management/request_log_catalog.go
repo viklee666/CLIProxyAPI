@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 )
 
 const requestLogCatalogTTL = 5 * time.Second
@@ -130,11 +132,24 @@ func requestLogNameByID(catalog *requestLogCatalog, requestID string) string {
 	if catalog == nil || requestID == "" {
 		return ""
 	}
-	suffix := "-" + requestID + ".log"
+	suffix := "-" + logging.ShortRequestID(requestID) + ".log"
+	var matched string
+	var latestModTime time.Time
 	for _, name := range catalog.fileNames {
-		if strings.HasSuffix(name, suffix) {
-			return name
+		if !strings.HasSuffix(name, suffix) {
+			continue
+		}
+		info, err := os.Stat(filepath.Join(catalog.directory, name))
+		if err != nil {
+			if matched == "" {
+				matched = name
+			}
+			continue
+		}
+		if matched == "" || logFileIsNewer(name, info.ModTime(), matched, latestModTime) {
+			matched = name
+			latestModTime = info.ModTime()
 		}
 	}
-	return ""
+	return matched
 }

@@ -2,7 +2,7 @@ package management
 
 import (
 	"bytes"
-	"encoding/json"
+	"github.com/MoeForge/moego/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/clientaccess"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/clientaccess"
 )
 
 func newClientAccessHandler(t *testing.T) (*Handler, *clientaccess.Service) {

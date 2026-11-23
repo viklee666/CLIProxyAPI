@@ -3,7 +3,7 @@ package tenant
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"github.com/MoeForge/moego/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -11,8 +11,8 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/clientaccess"
-	tenantservice "github.com/router-for-me/CLIProxyAPI/v7/internal/tenant"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/clientaccess"
+	tenantservice "github.com/router-for-me/CLIProxyAPI/v8/internal/tenant"
 )
 
 func newTenantTestEngine(t *testing.T) (*gin.Engine, *tenantservice.Service, *clientaccess.Service) {

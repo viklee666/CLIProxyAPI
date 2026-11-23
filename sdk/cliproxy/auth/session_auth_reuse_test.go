@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
 func TestManagerCanReuseSessionAuth(t *testing.T) {
@@ -22,6 +22,19 @@ func TestManagerCanReuseSessionAuth(t *testing.T) {
 		wantHigh  bool
 	}{
 		{name: "higher priority", wantHigh: true},
+		{name: "explicit never retains lower priority", selector: func() Selector {
+			return NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{Fallback: &RoundRobinSelector{}, RebindOn: SessionAffinityRebindOnNever})
+		}, wantLow: true, wantHigh: true},
+		{name: "explicit quota retains lower priority", selector: func() Selector {
+			return NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{Fallback: &RoundRobinSelector{}, RebindOn: SessionAffinityRebindOnQuota})
+		}, wantLow: true, wantHigh: true},
+		{name: "explicit never respects group revocation", selector: func() Selector {
+			return NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{Fallback: &RoundRobinSelector{}, RebindOn: SessionAffinityRebindOnNever})
+		}, opts: clientGroupOptions("1", false), configure: func(manager *Manager, low, high *Auth) {
+			manager.SetCredentialGroupResolver(testCredentialGroupResolver{memberships: map[string]map[int64]int{
+				low.Index: {2: 0}, high.Index: {1: 10},
+			}})
+		}, wantHigh: true},
 		{name: "equal priority", configure: func(_ *Manager, low, high *Auth) { high.Attributes["priority"] = low.Attributes["priority"] }, wantLow: true, wantHigh: true},
 		{name: "all negative", configure: func(_ *Manager, low, high *Auth) {
 			low.Attributes["priority"], high.Attributes["priority"] = "-2", "-1"

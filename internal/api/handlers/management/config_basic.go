@@ -1,7 +1,7 @@
 package management
 
 import (
-	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,10 +11,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
 )
@@ -30,8 +31,14 @@ const (
 )
 
 func (h *Handler) GetConfig(c *gin.Context) {
-	if h == nil || h.cfg == nil {
-		c.JSON(http.StatusOK, gin.H{})
+	if h == nil {
+		c.JSON(200, gin.H{})
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
+		c.JSON(200, gin.H{})
 		return
 	}
 	view := strings.ToLower(strings.TrimSpace(c.Query("view")))
@@ -43,7 +50,6 @@ func (h *Handler) GetConfig(c *gin.Context) {
 		return
 	}
 
-	h.mu.Lock()
 	var (
 		data []byte
 		err  error
@@ -53,7 +59,6 @@ func (h *Handler) GetConfig(c *gin.Context) {
 	} else {
 		data, err = json.Marshal(h.cfg)
 	}
-	h.mu.Unlock()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "encode_failed", "message": err.Error()})
 		return
@@ -325,20 +330,33 @@ func readLatestReleaseInfo(body io.Reader) (releaseInfo, error) {
 }
 
 func WriteConfig(path string, data []byte) error {
-	data = config.NormalizeCommentIndentation(data)
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	doc, err := config.DecodeFirstConfigDocument(data)
 	if err != nil {
 		return err
 	}
-	if _, errWrite := f.Write(data); errWrite != nil {
-		_ = f.Close()
-		return errWrite
+	var commented []config.ArchivedV8Section
+	if config.IsV8ConfigLayout(doc.Content[0]) {
+		normalized, _, sections, errNorm := config.NormalizeConfigLayoutSilent(data, true)
+		if errNorm != nil {
+			return errNorm
+		}
+		if errValidate := config.ValidateConfigSave(data, normalized); errValidate != nil {
+			return errValidate
+		}
+		data, commented = normalized, sections
 	}
-	if errSync := f.Sync(); errSync != nil {
-		_ = f.Close()
-		return errSync
+	onDisk, err := config.ReadConfigFileSnapshot(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		err = config.CreateConfigFile(path, data)
+	case err == nil:
+		_, err = config.WriteConfigFileCAS(path, onDisk, data)
 	}
-	return f.Close()
+	if err != nil {
+		return err
+	}
+	config.WarnUnrecognizedV8Sections(commented)
+	return nil
 }
 
 func (h *Handler) PutConfigYAML(c *gin.Context) {
@@ -466,8 +484,10 @@ func (h *Handler) PutLogsMaxTotalSizeMB(c *gin.Context) {
 	if value < 0 {
 		value = 0
 	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	h.cfg.LogsMaxTotalSizeMB = value
-	h.persist(c)
+	h.persistLocked(c)
 }
 
 // ErrorLogsMaxFiles
@@ -486,8 +506,10 @@ func (h *Handler) PutErrorLogsMaxFiles(c *gin.Context) {
 	if value < 0 {
 		value = 10
 	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	h.cfg.ErrorLogsMaxFiles = value
-	h.persist(c)
+	h.persistLocked(c)
 }
 
 // Request log
@@ -574,8 +596,10 @@ func (h *Handler) PutRoutingStrategy(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid strategy"})
 		return
 	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	h.cfg.Routing.Strategy = normalized
-	h.persist(c)
+	h.persistLocked(c)
 }
 
 // Proxy URL
@@ -584,6 +608,8 @@ func (h *Handler) PutProxyURL(c *gin.Context) {
 	h.updateStringField(c, func(v string) { h.cfg.ProxyURL = v })
 }
 func (h *Handler) DeleteProxyURL(c *gin.Context) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	h.cfg.ProxyURL = ""
-	h.persist(c)
+	h.persistLocked(c)
 }

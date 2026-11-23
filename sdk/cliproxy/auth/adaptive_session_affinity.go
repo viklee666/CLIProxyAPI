@@ -3,15 +3,15 @@ package auth
 import (
 	"context"
 
-	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
 // shouldEscapeAuth reports whether the fallback selector considers a bound
 // credential unhealthy enough to break session affinity. Only adaptive
 // selectors implement the health probe, so other strategies never escape.
 func (s *SessionAffinitySelector) shouldEscapeAuth(authID string) bool {
-	if s == nil || s.fallback == nil {
+	if s == nil || s.fallback == nil || s.rebindOnNever || s.rebindOnQuotaOnly {
 		return false
 	}
 	health, ok := s.fallback.(interface{ ShouldEscapeAuth(string) bool })
