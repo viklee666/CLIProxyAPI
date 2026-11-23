@@ -121,6 +121,7 @@ func preferredExecutionAttemptError(fallback, upstream error) error {
 // Execute performs a non-streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	ctx = cliproxyexecutor.WithRequestRetryState(ctx)
 	req, opts = cliproxysession.Enrich(req, opts)
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
@@ -166,7 +167,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		}
 		lastErr = preferredExecutionAttemptError(lastErr, preferredUpstreamErr)
 		lastErr = unwrapExecutionBoundaryError(lastErr)
-		if hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
+		if !cliproxyexecutor.RequestRetriesDisabled(ctx) && hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
 			if resp, ok, errCredits := m.tryAntigravityCreditsExecute(ctx, req, opts); errCredits != nil {
 				return cliproxyexecutor.Response{}, errCredits
 			} else if ok {
@@ -180,6 +181,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	ctx = cliproxyexecutor.WithRequestRetryState(ctx)
 	req, opts = cliproxysession.Enrich(req, opts)
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
@@ -232,6 +234,7 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 // ExecuteStream performs a streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	ctx = cliproxyexecutor.WithRequestRetryState(ctx)
 	req, opts = cliproxysession.Enrich(req, opts)
 	if m.HomeEnabled() {
 		if unlockSession := m.lockHomeWebsocketSession(ctx, opts); unlockSession != nil {
@@ -280,6 +283,9 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 			return nil, unwrapExecutionBoundaryError(errStream)
 		}
 		lastErr = errStream
+		if cliproxyexecutor.RequestRetriesDisabled(ctx) {
+			break
+		}
 		wait, shouldRetry := m.shouldRetryAfterErrorWithAttempted(ctx, opts, errStream, attempt, normalized, retryModel, maxWait, homeRetryLimit, defaultRequestRetry, roundAttempted)
 		if !shouldRetry {
 			break
@@ -301,7 +307,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 			lastErr = preferredExecutionAttemptError(lastErr, preferredUpstreamErr)
 		}
 		lastErr = unwrapExecutionBoundaryError(lastErr)
-		if hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
+		if !cliproxyexecutor.RequestRetriesDisabled(ctx) && hasAntigravityProvider(normalized) && shouldAttemptAntigravityCreditsFallback(m, lastErr, normalized) {
 			if result, ok, errCredits := m.tryAntigravityCreditsExecuteStream(ctx, req, opts); errCredits != nil {
 				return nil, errCredits
 			} else if ok {
@@ -534,6 +540,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			}
 			result := Result{AuthID: auth.ID, Provider: provider, Model: stateModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(errPrepare), Options: pickOpts}
 			m.MarkResult(execCtx, result)
+			if cliproxyexecutor.RequestRetriesDisabled(execCtx) {
+				return cliproxyexecutor.Response{}, wrapRequestStopError(errPrepare)
+			}
 			lastErr = errPrepare
 			continue
 		}
@@ -647,6 +656,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					m.recordAvailabilityNeutralResult(execCtx, result)
 				} else {
 					m.MarkResult(execCtx, result)
+				}
+				if cliproxyexecutor.RequestRetriesDisabled(execCtx) {
+					return cliproxyexecutor.Response{}, wrapRequestStopError(errExec)
 				}
 				if okAction {
 					if isRequestScopedStop(action, okAction) {
@@ -769,6 +781,9 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			}
 			result := Result{AuthID: auth.ID, Provider: provider, Model: stateModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(errPrepare), Options: pickOpts, SkipQuotaObservation: true}
 			m.MarkResult(execCtx, result)
+			if cliproxyexecutor.RequestRetriesDisabled(execCtx) {
+				return cliproxyexecutor.Response{}, wrapRequestStopError(errPrepare)
+			}
 			lastErr = errPrepare
 			continue
 		}
@@ -886,6 +901,9 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 						result.CredentialScope = true
 					}
 					m.MarkResult(execCtx, result)
+				}
+				if cliproxyexecutor.RequestRetriesDisabled(execCtx) {
+					return cliproxyexecutor.Response{}, wrapRequestStopError(errExec)
 				}
 				if okAction {
 					if isRequestScopedStop(action, okAction) {
@@ -1151,6 +1169,9 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 					return nil, errEnd
 				}
 			}
+			if cliproxyexecutor.RequestRetriesDisabled(execCtx) {
+				return nil, errPrepare
+			}
 			continue
 		}
 		execReq := sanitizeDownstreamWebsocketFallbackRequest(execCtx, auth, req)
@@ -1226,6 +1247,9 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			}
 			if errCtx := execCtx.Err(); errCtx != nil && ctx != nil && ctx.Err() != nil {
 				return nil, errCtx
+			}
+			if cliproxyexecutor.RequestRetriesDisabled(execCtx) {
+				return nil, errStream
 			}
 			action, okAction := matchRequestScopedErrorAction(auth, errStream, m.runtimeConfigSnapshot())
 			if okAction {
@@ -1507,6 +1531,9 @@ func (m *Manager) prepareHomeRequestAuth(ctx context.Context, executor ProviderE
 		return nil, nil
 	}
 	auth := selection.CloneAuth()
+	if auth.AuthSourceKind() == AuthSourceConfig {
+		cliproxyexecutor.DisableRequestRetries(ctx)
+	}
 	prepared, errPrepare := m.prepareHomeAuthSnapshot(ctx, executor, auth)
 	if errPrepare != nil {
 		warnLogHomeCredentialFailure(ctx, "request_auth_preparation", selection.Provider, auth, errPrepare)
@@ -1580,6 +1607,10 @@ func (m *Manager) persistPreparedHomeAuth(ctx context.Context, updated *Auth) (*
 }
 
 func (m *Manager) prepareRequestAuth(ctx context.Context, executor ProviderExecutor, auth *Auth) (*Auth, error) {
+	// Configured AI providers, including keyless endpoints, get one attempt per request.
+	if auth.AuthSourceKind() == AuthSourceConfig {
+		cliproxyexecutor.DisableRequestRetries(ctx)
+	}
 	if m == nil || executor == nil || auth == nil {
 		return auth, nil
 	}

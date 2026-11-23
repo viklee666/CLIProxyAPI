@@ -155,7 +155,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			helps.RecordAPIWebsocketUpgradeRejection(ctx, e.cfg, websocketUpgradeRequestLog(wsReqLog), respHS.StatusCode, respHS.Header.Clone(), bodyErr)
 		}
 		if respHS != nil && respHS.StatusCode == http.StatusUpgradeRequired {
-			if opts.ExecutionLifecycle == nil && !cliproxyexecutor.DownstreamWebsocket(ctx) {
+			if opts.ExecutionLifecycle == nil && !cliproxyexecutor.DownstreamWebsocket(ctx) && !cliproxyexecutor.RequestRetriesDisabled(ctx) {
 				return e.CodexExecutor.Execute(ctx, auth, req, opts)
 			}
 			if cliproxyexecutor.UpstreamAttempted(dialCtx) {
@@ -204,14 +204,14 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		if sess != nil && !isEphemeralSession {
 			if cliproxyexecutor.RequiredUpstreamWebsocket(ctx) {
 				e.invalidateUpstreamConnWithoutDisconnectNotify(sess, conn, "send_error", errSend)
-				if !shouldRetryCodexWebsocketSend(errSend) {
+				if cliproxyexecutor.RequestRetriesDisabled(ctx) || !shouldRetryCodexWebsocketSend(errSend) {
 					helps.RecordAPIWebsocketError(ctx, e.cfg, "send", errSend)
 					return resp, errSend
 				}
 				return resp, cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError()
 			}
 			e.invalidateUpstreamConn(sess, conn, "send_error", errSend)
-			if !shouldRetryCodexWebsocketSend(errSend) {
+			if cliproxyexecutor.RequestRetriesDisabled(ctx) || !shouldRetryCodexWebsocketSend(errSend) {
 				helps.RecordAPIWebsocketError(ctx, e.cfg, "send", errSend)
 				return resp, errSend
 			}

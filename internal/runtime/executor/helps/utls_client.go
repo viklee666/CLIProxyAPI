@@ -400,6 +400,11 @@ func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyau
 			fallback:  standardTransport,
 		},
 	}
+	if auth.AuthSourceKind() == cliproxyauth.AuthSourceConfig {
+		client.CheckRedirect = func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+	}
 	if timeout > 0 {
 		client.Timeout = timeout
 	}

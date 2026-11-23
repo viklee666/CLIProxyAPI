@@ -164,6 +164,9 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
 			if errEnd := m.endHomeSelectionBeforeRedispatch(ctx, selection, "prepare_failed"); errEnd != nil {
 				return cliproxyexecutor.Response{}, errEnd
 			}
+			if cliproxyexecutor.RequestRetriesDisabled(execCtx) {
+				return cliproxyexecutor.Response{}, wrapRequestStopError(errPrepare)
+			}
 			lastErr = errPrepare
 			roundTiming.Observe(lastErr)
 			continue
@@ -273,6 +276,11 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
 			applyRequestScopedActionToResult(action, okAction, &result)
 			m.reportHomeResult(execCtx, result, preparedAuth)
 			lastErr = errExecute
+			if cliproxyexecutor.RequestRetriesDisabled(execCtx) {
+				releaseAttempt()
+				selection.End("execution_failed")
+				return cliproxyexecutor.Response{}, wrapRequestStopError(errExecute)
+			}
 			if okAction {
 				if isRequestScopedStop(action, okAction) {
 					releaseAttempt()

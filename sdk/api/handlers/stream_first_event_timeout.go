@@ -64,6 +64,7 @@ func executeStreamThroughFirstEvent(
 	model string,
 	open firstEventStreamOpen,
 ) (*coreexecutor.StreamResult, []coreexecutor.StreamChunk, bool, context.CancelFunc, error) {
+	ctx = coreexecutor.WithRequestRetryState(ctx)
 	if timeout <= 0 {
 		result, err := open(ctx)
 		return result, nil, false, nil, err
@@ -111,7 +112,7 @@ func executeStreamThroughFirstEvent(
 			if err := parent.Err(); err != nil {
 				return nil, nil, false, nil, err
 			}
-			if retry < maxRetries {
+			if retry < maxRetries && !coreexecutor.RequestRetriesDisabled(parent) {
 				log.WithFields(log.Fields{
 					"route":       route,
 					"model":       model,

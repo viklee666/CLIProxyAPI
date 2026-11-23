@@ -595,13 +595,13 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 				e.invalidateUpstreamConnWithoutDisconnectNotify(sess, conn, "send_error", errSend)
 				sess.clearActive(conn, readCh)
 				sess.reqMu.Unlock()
-				if !shouldRetryXAIWebsocketSend(errSend) {
+				if cliproxyexecutor.RequestRetriesDisabled(ctx) || !shouldRetryXAIWebsocketSend(errSend) {
 					return nil, errSend
 				}
 				return nil, cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError()
 			}
 			e.invalidateUpstreamConn(sess, conn, "send_error", errSend)
-			if !shouldRetryXAIWebsocketSend(errSend) {
+			if cliproxyexecutor.RequestRetriesDisabled(ctx) || !shouldRetryXAIWebsocketSend(errSend) {
 				sess.clearActive(conn, readCh)
 				sess.reqMu.Unlock()
 				return nil, errSend

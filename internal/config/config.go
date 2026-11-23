@@ -83,7 +83,8 @@ type Config struct {
 	AuthAutoRefreshWorkers int `yaml:"auth-auto-refresh-workers" json:"auth-auto-refresh-workers"`
 
 	// RequestRetry defines the number of additional credential retry rounds after
-	// the first round has exhausted its eligible credentials.
+	// the first round has exhausted its eligible credentials. Configured AI providers
+	// always use a single attempt and do not participate in these retries.
 	RequestRetry int `yaml:"request-retry" json:"request-retry"`
 	// MaxRetryCredentials defines the maximum number of different credentials to
 	// try in each credential retry round.

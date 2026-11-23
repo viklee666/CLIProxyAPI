@@ -8,6 +8,11 @@ import (
 type downstreamWebsocketContextKey struct{}
 type requireUpstreamWebsocketContextKey struct{}
 type upstreamAttemptTrackerContextKey struct{}
+type requestRetryStateContextKey struct{}
+
+type requestRetryState struct {
+	disabled atomic.Bool
+}
 
 type upstreamAttemptTracker struct {
 	attempted atomic.Bool
@@ -47,6 +52,38 @@ func RequiredUpstreamWebsocket(ctx context.Context) bool {
 	raw := ctx.Value(requireUpstreamWebsocketContextKey{})
 	enabled, ok := raw.(bool)
 	return ok && enabled
+}
+
+// WithRequestRetryState shares retry policy across all execution layers of one request.
+// Reusing the state lets a provider selection disable retries in its callers as well.
+func WithRequestRetryState(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if state, ok := ctx.Value(requestRetryStateContextKey{}).(*requestRetryState); ok && state != nil {
+		return ctx
+	}
+	return context.WithValue(ctx, requestRetryStateContextKey{}, &requestRetryState{})
+}
+
+// DisableRequestRetries prevents any further retries for the current request.
+// The context must have been initialized with WithRequestRetryState.
+func DisableRequestRetries(ctx context.Context) {
+	if ctx == nil {
+		return
+	}
+	if state, ok := ctx.Value(requestRetryStateContextKey{}).(*requestRetryState); ok && state != nil {
+		state.disabled.Store(true)
+	}
+}
+
+// RequestRetriesDisabled reports whether the selected provider requires a single attempt.
+func RequestRetriesDisabled(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	state, ok := ctx.Value(requestRetryStateContextKey{}).(*requestRetryState)
+	return ok && state != nil && state.disabled.Load()
 }
 
 // WithUpstreamAttemptTracker installs a fresh tracker for one provider execution attempt.

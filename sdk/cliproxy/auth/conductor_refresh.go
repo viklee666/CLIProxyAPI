@@ -470,7 +470,7 @@ func (m *Manager) RefreshHomeSelectionAfterUnauthorized(_ context.Context, selec
 // tryRefreshAfterUnauthorized refreshes local OAuth credentials once after a
 // 401 so the current auth can be retried before fallback/suspend.
 func (m *Manager) tryRefreshAfterUnauthorized(ctx context.Context, auth *Auth, execErr error, alreadyTried bool) (*Auth, bool) {
-	if m == nil || auth == nil || alreadyTried || execErr == nil {
+	if m == nil || auth == nil || alreadyTried || execErr == nil || auth.AuthSourceKind() == AuthSourceConfig {
 		return auth, false
 	}
 	// Request-scoped failures describe this request, not stale credentials.

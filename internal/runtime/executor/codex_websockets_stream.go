@@ -158,7 +158,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		}
 		if respHS != nil && respHS.StatusCode == http.StatusUpgradeRequired {
 			unlockStreamSession()
-			if opts.ExecutionLifecycle == nil && !cliproxyexecutor.DownstreamWebsocket(ctx) {
+			if opts.ExecutionLifecycle == nil && !cliproxyexecutor.DownstreamWebsocket(ctx) && !cliproxyexecutor.RequestRetriesDisabled(ctx) {
 				return e.CodexExecutor.ExecuteStream(ctx, auth, req, opts)
 			}
 			if cliproxyexecutor.UpstreamAttempted(dialCtx) {
@@ -204,13 +204,13 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				e.invalidateUpstreamConnWithoutDisconnectNotify(sess, conn, "send_error", errSend)
 				sess.clearActive(conn, readCh)
 				sess.reqMu.Unlock()
-				if !shouldRetryCodexWebsocketSend(errSend) {
+				if cliproxyexecutor.RequestRetriesDisabled(ctx) || !shouldRetryCodexWebsocketSend(errSend) {
 					return nil, errSend
 				}
 				return nil, cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError()
 			}
 			e.invalidateUpstreamConn(sess, conn, "send_error", errSend)
-			if !shouldRetryCodexWebsocketSend(errSend) {
+			if cliproxyexecutor.RequestRetriesDisabled(ctx) || !shouldRetryCodexWebsocketSend(errSend) {
 				sess.clearActive(conn, readCh)
 				sess.reqMu.Unlock()
 				return nil, errSend

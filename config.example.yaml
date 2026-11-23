@@ -167,6 +167,14 @@ force-model-prefix: false
 # Default is false (disabled).
 passthrough-headers: false
 
+# Configured AI providers (*-api-key and openai-compatibility, including keyless
+# endpoints) always execute at most once per downstream request. Upstream errors
+# are returned without credential/model failover, retry rounds, stream bootstrap
+# retries, first-event timeout retries, or HTTP redirect following. The retry
+# settings below apply to other credentials, such as OAuth/auth-file accounts.
+# Provider request-retry fields remain accepted for configuration compatibility
+# but cannot enable retries for configured AI providers.
+#
 # Number of additional credential retry rounds after the first round exhausts
 # its eligible credentials. Round 0 is the initial round; round r only admits
 # credentials whose effective request-retry is at least r. Explicit non-negative

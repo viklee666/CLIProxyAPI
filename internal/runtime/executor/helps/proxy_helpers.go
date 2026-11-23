@@ -28,6 +28,11 @@ import (
 //   - *http.Client: An HTTP client with configured proxy or transport
 func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, timeout time.Duration) *http.Client {
 	httpClient := &http.Client{}
+	if auth.AuthSourceKind() == cliproxyauth.AuthSourceConfig {
+		httpClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+	}
 	if timeout > 0 {
 		httpClient.Timeout = timeout
 	}

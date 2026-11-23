@@ -241,6 +241,9 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		return nil, &Error{Code: "executor_not_found", Message: "executor not registered"}
 	}
 	ctx = contextWithRequestedModelAlias(ctx, opts, routeModel)
+	if cliproxyexecutor.RequestRetriesDisabled(ctx) {
+		allowRetry = false
+	}
 	var lastErr error
 	var upstreamErr error
 	didRefreshOnUnauthorized := false
@@ -350,6 +353,9 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			}
 			applyRequestScopedActionToResult(action, okAction, &result)
 			m.recordExecutionResult(ctx, result, auth, ephemeralResult)
+			if cliproxyexecutor.RequestRetriesDisabled(ctx) {
+				return nil, errStream
+			}
 			if okAction {
 				if isRequestScopedStop(action, okAction) {
 					return nil, wrapRequestStopError(errStream)
@@ -459,7 +465,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		}
 		if bootstrapErr != nil {
 			action, okAction := matchRequestScopedErrorAction(auth, bootstrapErr, m.runtimeConfigSnapshot())
-			if okAction {
+			if okAction || cliproxyexecutor.RequestRetriesDisabled(ctx) {
 				rerr := resultErrorFromError(bootstrapErr)
 				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: execOpts}
 				result.RetryAfter = retryAfterFromError(bootstrapErr)
@@ -469,6 +475,9 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				applyRequestScopedActionToResult(action, okAction, &result)
 				m.recordExecutionResult(ctx, result, auth, ephemeralResult)
 				discardStreamChunks(streamResult.Chunks)
+				if cliproxyexecutor.RequestRetriesDisabled(ctx) {
+					return nil, newStreamBootstrapError(bootstrapErr, streamResult.Headers)
+				}
 				if isRequestScopedStop(action, okAction) {
 					return nil, wrapRequestStopError(bootstrapErr)
 				}
@@ -527,7 +536,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, time.Since(startStream), emptyErr)
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(emptyErr), Options: execOpts}
 			m.recordExecutionResult(ctx, result, auth, ephemeralResult)
-			if idx < len(execModels)-1 {
+			if idx < len(execModels)-1 && !cliproxyexecutor.RequestRetriesDisabled(ctx) {
 				lastErr = emptyErr
 				continue
 			}

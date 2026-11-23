@@ -33,6 +33,12 @@ Each provider has different fields, but the core questions are the same: where r
 - **Model list**: affects visible models and routing. Cost estimation also needs matching names in [Model Prices](./model-prices.md).
 - **Enabled state**: disabled entries should no longer receive new routed requests.
 
+## Request Counts And Upstream Errors
+
+Services configured on AI Providers (`*-api-key` and `openai-compatibility`, including keyless compatible endpoints) send at most one upstream inference request per client request. An upstream error, empty stream, or first-event timeout ends the request and returns the error. CPA does not automatically switch credentials or models, replay the request, or follow HTTP redirects.
+
+Global and provider `request-retry`, `max-retry-credentials`, and streaming retry settings cannot increase these providers' call counts. Separate client requests still select providers according to routing policy: ten routable client requests produce ten upstream requests. OAuth/auth-file accounts retain their own retry policies.
+
 ## Verify After Saving
 
 The reliable test is not the "saved" toast. Send a real request:

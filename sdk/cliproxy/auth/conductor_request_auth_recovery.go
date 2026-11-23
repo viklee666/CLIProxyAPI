@@ -35,7 +35,7 @@ func executorSupportsRequestAuthRecovery(executor ProviderExecutor, auth *Auth) 
 }
 
 func (m *Manager) tryRecoverRequestAuth(ctx context.Context, executor ProviderExecutor, auth *Auth, execErr error, alreadyTried bool) (*Auth, bool, error) {
-	if m == nil || alreadyTried || execErr == nil || !executorSupportsRequestAuthRecovery(executor, auth) {
+	if m == nil || alreadyTried || execErr == nil || auth.AuthSourceKind() == AuthSourceConfig || !executorSupportsRequestAuthRecovery(executor, auth) {
 		return auth, false, nil
 	}
 	recoverer, ok := executor.(RequestAuthRecoverer)
