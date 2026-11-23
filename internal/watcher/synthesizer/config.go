@@ -38,6 +38,9 @@ func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth,
 	if ctx == nil || ctx.Config == nil {
 		return out, nil
 	}
+	if errValidate := ctx.Config.ValidateRequestLimits(); errValidate != nil {
+		return nil, fmt.Errorf("synthesize config API key auths: %w", errValidate)
+	}
 	if errValidate := ctx.Config.ValidateCredentialWeights(); errValidate != nil {
 		return nil, fmt.Errorf("synthesize config API key auths: %w", errValidate)
 	}
@@ -105,6 +108,7 @@ func (s *ConfigSynthesizer) synthesizeGeminiKeyEntries(ctx *SynthesisContext, en
 			attrs["priority"] = strconv.Itoa(entry.Priority)
 		}
 		addWeightToAttrs(entry.Weight, attrs)
+		addRequestLimitsToMetadata(entry.RequestLimits, metadata)
 		if base != "" {
 			attrs["base_url"] = base
 		}
@@ -163,6 +167,7 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 		}
 		addRequestRetryToMetadata(ck.RequestRetry, metadata)
 		addRequestScopedErrorsToMetadata(ck.RequestScopedErrors, metadata)
+		addRequestLimitsToMetadata(ck.RequestLimits, metadata)
 		if ck.Priority != 0 {
 			attrs["priority"] = strconv.Itoa(ck.Priority)
 		}
@@ -249,6 +254,7 @@ func (s *ConfigSynthesizer) synthesizeCodexStyleKeys(ctx *SynthesisContext, entr
 			attrs["priority"] = strconv.Itoa(entry.Priority)
 		}
 		addWeightToAttrs(entry.Weight, attrs)
+		addRequestLimitsToMetadata(entry.RequestLimits, metadata)
 		if baseURL != "" {
 			attrs["base_url"] = baseURL
 		}
@@ -329,6 +335,8 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				attrs["priority"] = strconv.Itoa(compat.Priority)
 			}
 			addWeightToAttrs(entry.Weight, attrs)
+			addRequestLimitsToMetadata(compat.RequestLimits, metadata)
+			attrs[coreauth.AttributeRequestLimitGroup] = internalProviderKey + "\x00" + base
 			if key != "" {
 				attrs["api_key"] = key
 			}
@@ -371,6 +379,8 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 			}
 			addRequestRetryToMetadata(compat.RequestRetry, metadata)
 			addRequestScopedErrorsToMetadata(compat.RequestScopedErrors, metadata)
+			addRequestLimitsToMetadata(compat.RequestLimits, metadata)
+			attrs[coreauth.AttributeRequestLimitGroup] = internalProviderKey + "\x00" + base
 			if compat.Priority != 0 {
 				attrs["priority"] = strconv.Itoa(compat.Priority)
 			}
@@ -437,6 +447,7 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 			metadata["disable_cooling"] = *compat.DisableCooling
 		}
 		addRequestRetryToMetadata(compat.RequestRetry, metadata)
+		addRequestLimitsToMetadata(compat.RequestLimits, metadata)
 		a := &coreauth.Auth{
 			ID:         id,
 			Provider:   providerName,

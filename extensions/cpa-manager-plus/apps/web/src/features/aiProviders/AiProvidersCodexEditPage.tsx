@@ -4,6 +4,8 @@ import { useTranslation } from 'react-i18next';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
+import { RequestLimitsInput } from '@/components/providers/RequestLimitsInput';
+import { requestLimits, requestLimitsChanged, validRequestLimits } from '@/components/providers/requestLimits';
 import { HeaderInputList } from '@/components/ui/HeaderInputList';
 import { ModelInputList } from '@/components/ui/ModelInputList';
 import { Modal } from '@/components/ui/Modal';
@@ -82,6 +84,8 @@ const normalizeModelEntries = (entries: ProviderFormState['modelEntries']) =>
   }, []);
 
 type CodexFormBaseline = {
+  concurrencyLimit?: number;
+  rpmLimit?: number;
   name: string;
   apiKey: string;
   authIndex: string;
@@ -97,6 +101,7 @@ type CodexFormBaseline = {
 };
 
 const buildCodexBaseline = (form: ProviderFormState): CodexFormBaseline => ({
+  ...requestLimits(form),
   name: String(form.name ?? '').trim(),
   apiKey: String(form.apiKey ?? '').trim(),
   authIndex: normalizeAuthIndex(form.authIndex) ?? '',
@@ -276,6 +281,7 @@ export function AiProvidersCodexEditPage() {
     [baseline.excludedModels, normalizedExcludedModels]
   );
   const isDirty =
+    requestLimitsChanged(baseline, form) ||
     baseline.name !== String(form.name ?? '').trim() ||
     baseline.apiKey !== form.apiKey.trim() ||
     baseline.authIndex !== (normalizeAuthIndex(form.authIndex) ?? '') ||
@@ -304,7 +310,7 @@ export function AiProvidersCodexEditPage() {
   });
 
   const canSave =
-    !disableControls && !saving && !loading && !invalidIndexParam && !invalidIndex && !isTesting;
+    validRequestLimits(form) && !disableControls && !saving && !loading && !invalidIndexParam && !invalidIndex && !isTesting;
 
   const discoveredModelsFiltered = useMemo(() => {
     const filter = modelDiscoverySearch.trim().toLowerCase();
@@ -629,6 +635,7 @@ export function AiProvidersCodexEditPage() {
     setError('');
     try {
       const payload: ProviderKeyConfig = {
+        ...requestLimits(form),
         name: form.name?.trim() || undefined,
         apiKey: form.apiKey.trim(),
         priority: form.priority !== undefined ? Math.trunc(form.priority) : undefined,
@@ -751,6 +758,7 @@ export function AiProvidersCodexEditPage() {
               onChange={(e) => setForm((prev) => ({ ...prev, apiKey: e.target.value }))}
               disabled={disableControls || saving}
             />
+            <RequestLimitsInput value={form} onChange={(limits) => setForm((prev) => ({ ...prev, ...limits }))} disabled={disableControls || saving} />
             <Input
               label={t('ai_providers.priority_label')}
               hint={t('ai_providers.priority_hint')}

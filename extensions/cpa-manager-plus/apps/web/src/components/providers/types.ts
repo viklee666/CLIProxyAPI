@@ -1,4 +1,4 @@
-import type { ApiKeyEntry, GeminiKeyConfig, ProviderKeyConfig } from '@/types';
+import type { ApiKeyEntry, GeminiKeyConfig, ProviderKeyConfig, RequestLimits } from '@/types';
 import type { HeaderEntry } from '@/utils/headers';
 
 export interface ModelEntry {
@@ -13,7 +13,7 @@ export interface ModelEntry {
   thinking?: Record<string, unknown>;
 }
 
-export interface OpenAIFormState {
+export interface OpenAIFormState extends RequestLimits {
   name: string;
   priority?: number;
   prefix: string;

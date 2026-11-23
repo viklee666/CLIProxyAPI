@@ -1,5 +1,5 @@
 /**
- * 认证文件与 OAuth 排除模型相关 API
+ * Auth file and OAuth excluded model API.
  */
 
 import { apiClient } from './client';
@@ -82,6 +82,8 @@ export type AuthFileFieldsPatch = {
   websockets?: boolean;
   using_api?: boolean;
   headers?: Record<string, string>;
+  concurrency_limit?: number;
+  rpm_limit?: number;
   priority?: number;
   note?: string;
 };
@@ -1051,7 +1053,7 @@ export const authFilesApi = {
   saveJsonObject: (name: string, json: AuthFileJsonValue) =>
     saveAuthFileText(name, JSON.stringify(json)),
 
-  // OAuth 排除模型
+  // OAuth excluded models
   async getOauthExcludedModels(): Promise<Record<string, string[]>> {
     return fetchAllPagedMap('/oauth-excluded-models', normalizeOauthExcludedModels);
   },
@@ -1065,7 +1067,7 @@ export const authFilesApi = {
   replaceOauthExcludedModels: (map: Record<string, string[]>) =>
     apiClient.put('/oauth-excluded-models', normalizeOauthExcludedModels(map)),
 
-  // OAuth 模型别名
+  // OAuth model aliases
   async getOauthModelAlias(): Promise<Record<string, OAuthModelAliasEntry[]>> {
     return fetchAllPagedMap(OAUTH_MODEL_ALIAS_ENDPOINT, normalizeOauthModelAlias);
   },
@@ -1104,7 +1106,7 @@ export const authFilesApi = {
     }
   },
 
-  // 获取认证凭证支持的模型
+  // Get models supported by a credential.
   async getModelsForAuthFile(
     name: string
   ): Promise<{ id: string; display_name?: string; type?: string; owned_by?: string }[]> {
@@ -1126,7 +1128,7 @@ export const authFilesApi = {
     return models;
   },
 
-  // 获取指定 channel 的模型定义
+  // Get model definitions for a channel.
   async getModelDefinitions(
     channel: string
   ): Promise<{ id: string; display_name?: string; type?: string; owned_by?: string }[]> {

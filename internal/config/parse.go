@@ -16,6 +16,9 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 		return nil, fmt.Errorf("config payload is empty")
 	}
 
+	if errValidate := validateRequestLimitsYAML(data); errValidate != nil {
+		return nil, errValidate
+	}
 	if errValidate := validateCredentialWeightYAML(data); errValidate != nil {
 		return nil, errValidate
 	}
@@ -51,6 +54,9 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 		return nil, errValidate
 	}
 	if errValidate := cfg.Codex.LiveMediaRelay.Validate(); errValidate != nil {
+		return nil, errValidate
+	}
+	if errValidate := cfg.ValidateRequestLimits(); errValidate != nil {
 		return nil, errValidate
 	}
 	if errValidate := cfg.ValidateCredentialWeights(); errValidate != nil {

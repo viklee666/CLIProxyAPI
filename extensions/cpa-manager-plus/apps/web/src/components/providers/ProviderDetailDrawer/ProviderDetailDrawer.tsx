@@ -250,6 +250,8 @@ export function ProviderDetailDrawer({
           )}
           <FieldRow label={t('common.base_url')} value={row.baseUrl} />
           <FieldRow label={t('common.priority')} value={row.priority} />
+          <FieldRow label={t('request_limits.concurrencyLimit')} value={row.raw.concurrencyLimit || t('request_limits.unlimited')} />
+          <FieldRow label={t('request_limits.rpmLimit')} value={row.raw.rpmLimit || t('request_limits.unlimited')} />
           <FieldRow label={t('common.prefix')} value={row.raw.prefix} />
           {row.kind !== 'openai' && (
             <FieldRow label={t('common.proxy_url')} value={row.raw.proxyUrl} />

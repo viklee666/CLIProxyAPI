@@ -3,6 +3,8 @@ import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import { Drawer } from '@/components/ui/Drawer';
 import { Input } from '@/components/ui/Input';
+import { RequestLimitsInput } from '@/components/providers/RequestLimitsInput';
+import { requestLimits, requestLimitsChanged, validRequestLimits } from '@/components/providers/requestLimits';
 import { Select } from '@/components/ui/Select';
 import { HeaderInputList } from '@/components/ui/HeaderInputList';
 import { ModelInputList } from '@/components/ui/ModelInputList';
@@ -99,6 +101,7 @@ const normalizeApiKeyEntries = (entries: ApiKeyEntry[]) =>
   }, []);
 
 const buildOpenAIBaseline = (form: OpenAIFormState) => ({
+  ...requestLimits(form),
   name: String(form.name ?? '').trim(),
   priority:
     form.priority !== undefined && Number.isFinite(form.priority)
@@ -237,6 +240,7 @@ export function OpenAIEditDrawer({
       const modelEntries = modelsToEntries(initialData.models);
       const seededForm: OpenAIFormState = {
         name: initialData.name,
+        ...requestLimits(initialData),
         priority: initialData.priority,
         prefix: initialData.prefix ?? '',
         baseUrl: initialData.baseUrl,
@@ -278,7 +282,7 @@ export function OpenAIEditDrawer({
     }
   }, [availableModels, loaded, testModel]);
 
-  const canSave = !disabled && !loading && !saving && !invalidIndex && !isTestingKeys;
+  const canSave = validRequestLimits(form) && !disabled && !loading && !saving && !invalidIndex && !isTestingKeys;
 
   const isDirty = useMemo(() => {
     const normalizedPriority =
@@ -286,6 +290,7 @@ export function OpenAIEditDrawer({
         ? Math.trunc(form.priority)
         : null;
     return (
+      requestLimitsChanged(baseline, form) ||
       baseline.name !== form.name.trim() ||
       baseline.priority !== normalizedPriority ||
       baseline.prefix !== form.prefix.trim() ||
@@ -650,6 +655,7 @@ export function OpenAIEditDrawer({
     setSaving(true);
     try {
       const payload: OpenAIProviderConfig = {
+        ...requestLimits(form),
         name,
         prefix: form.prefix?.trim() || undefined,
         baseUrl,
@@ -878,6 +884,7 @@ export function OpenAIEditDrawer({
               disabled={saving || disabled || isTestingKeys}
               required
             />
+            <RequestLimitsInput value={form} onChange={(limits) => setForm((prev) => ({ ...prev, ...limits }))} disabled={disabled || saving} />
             <Input
               label={t('ai_providers.priority_label')}
               hint={t('ai_providers.priority_hint')}

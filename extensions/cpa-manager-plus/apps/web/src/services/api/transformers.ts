@@ -173,6 +173,11 @@ const normalizeApiKeyEntry = (entry: unknown): ApiKeyEntry | null => {
   return result;
 };
 
+const normalizeRequestLimits = (record: Record<string, unknown> | null) => ({
+  concurrencyLimit: normalizeNumber(record?.['concurrency-limit'] ?? record?.concurrencyLimit ?? record?.concurrency_limit),
+  rpmLimit: normalizeNumber(record?.['rpm-limit'] ?? record?.rpmLimit ?? record?.rpm_limit),
+});
+
 const normalizeProviderKeyConfig = (item: unknown): ProviderKeyConfig | null => {
   if (item === undefined || item === null) return null;
   const record = isRecord(item) ? item : null;
@@ -183,7 +188,7 @@ const normalizeProviderKeyConfig = (item: unknown): ProviderKeyConfig | null => 
   );
   if (!trimmed && !authIndex) return null;
 
-  const config: ProviderKeyConfig = { apiKey: trimmed };
+  const config: ProviderKeyConfig = { apiKey: trimmed, ...normalizeRequestLimits(record) };
   const name = String(record?.name ?? '').trim();
   if (name) config.name = name;
   const priority = record?.priority ?? record?.['priority'];
@@ -278,7 +283,7 @@ const normalizeGeminiKeyConfig = (item: unknown): GeminiKeyConfig | null => {
   );
   if (!trimmed && !authIndex) return null;
 
-  const config: GeminiKeyConfig = { apiKey: trimmed };
+  const config: GeminiKeyConfig = { apiKey: trimmed, ...normalizeRequestLimits(record) };
   const name = String(record?.name ?? '').trim();
   if (name) config.name = name;
   const priority = record?.priority ?? record?.['priority'];
@@ -359,6 +364,7 @@ const normalizeOpenAIProvider = (provider: unknown): OpenAIProviderConfig | null
   const testModel = provider['test-model'] ?? provider.testModel;
 
   const result: OpenAIProviderConfig = {
+    ...normalizeRequestLimits(provider),
     name: String(name),
     baseUrl: String(baseUrl),
     apiKeyEntries,
@@ -417,7 +423,7 @@ const normalizeOauthExcluded = (payload: unknown): Record<string, string[]> | un
 };
 
 /**
- * 规范化 /config 返回值
+ * Normalize the /config response.
  */
 export const normalizeConfigResponse = (raw: unknown): Config => {
   const config: Config = { raw: isRecord(raw) ? raw : {} };

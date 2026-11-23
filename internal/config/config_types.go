@@ -462,6 +462,7 @@ type CloakConfig struct {
 // ClaudeKey represents the configuration for a Claude API key,
 // including the API key itself and an optional base URL for the API endpoint.
 type ClaudeKey struct {
+	RequestLimits `yaml:",inline"`
 	// Name is an optional user-defined remark used only for display.
 	Name string `yaml:"name,omitempty" json:"name,omitempty"`
 
@@ -580,6 +581,7 @@ func (m ClaudeModel) GetThinking() *registry.ThinkingSupport { return m.Thinking
 // CodexKey represents the configuration for a Codex API key,
 // including the API key itself and an optional base URL for the API endpoint.
 type CodexKey struct {
+	RequestLimits `yaml:",inline"`
 	// Name is an optional user-defined remark used only for display.
 	Name string `yaml:"name,omitempty" json:"name,omitempty"`
 
@@ -693,6 +695,7 @@ type MetaModel = CodexModel
 // GeminiKey represents the configuration for a Gemini API key,
 // including optional overrides for upstream base URL, proxy routing, and headers.
 type GeminiKey struct {
+	RequestLimits `yaml:",inline"`
 	// Name is an optional user-defined remark used only for display.
 	Name string `yaml:"name,omitempty" json:"name,omitempty"`
 
@@ -784,6 +787,7 @@ func (m GeminiModel) GetThinking() *registry.ThinkingSupport { return m.Thinking
 // OpenAICompatibility represents the configuration for OpenAI API compatibility
 // with external providers, allowing model aliases to be routed through OpenAI API format.
 type OpenAICompatibility struct {
+	RequestLimits `yaml:",inline"`
 	// Name is the identifier for this OpenAI compatibility configuration.
 	Name string `yaml:"name" json:"name"`
 

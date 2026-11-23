@@ -96,6 +96,10 @@ func writeConfigCollectionPage[T any](c *gin.Context, responseKey string, items 
 func readConfigCollectionBody(c *gin.Context) ([]byte, bool) {
 	body, err := readManagementRequestBody(c, maxConfigCollectionBodyBytes)
 	if err == nil {
+		if errValidate := validateRequestLimitsJSON(body); errValidate != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": errValidate.Error()})
+			return nil, false
+		}
 		return body, true
 	}
 	if isManagementRequestTooLarge(err) {

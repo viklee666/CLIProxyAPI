@@ -43,12 +43,21 @@ func newAdaptiveAttemptTracker() *adaptiveAttemptTracker {
 	return &adaptiveAttemptTracker{}
 }
 
-func (t *adaptiveAttemptTracker) begin(m *Manager, authID string) {
+func (t *adaptiveAttemptTracker) begin(m *Manager, auth *Auth) error {
 	if t == nil {
-		return
+		return nil
 	}
 	t.release()
-	t.finish = m.beginAdaptiveAttempt(authID)
+	releaseLimit, errLimit := m.requestLimiter.acquire(auth)
+	if errLimit != nil {
+		return errLimit
+	}
+	releaseAdaptive := m.beginAdaptiveAttempt(auth.ID)
+	t.finish = func() {
+		releaseLimit()
+		releaseAdaptive()
+	}
+	return nil
 }
 
 func (t *adaptiveAttemptTracker) release() {

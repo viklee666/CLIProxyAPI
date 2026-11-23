@@ -4,6 +4,8 @@ import { useTranslation } from 'react-i18next';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
+import { RequestLimitsInput } from '@/components/providers/RequestLimitsInput';
+import { requestLimits, requestLimitsChanged, validRequestLimits } from '@/components/providers/requestLimits';
 import { HeaderInputList } from '@/components/ui/HeaderInputList';
 import { ModelInputList } from '@/components/ui/ModelInputList';
 import { modelsToEntries } from '@/components/ui/modelInputListUtils';
@@ -49,6 +51,8 @@ const normalizeModelEntries = (entries: Array<{ name: string; alias: string }>) 
   }, []);
 
 type VertexFormBaseline = {
+  concurrencyLimit?: number;
+  rpmLimit?: number;
   name: string;
   apiKey: string;
   priority: number | null;
@@ -61,6 +65,7 @@ type VertexFormBaseline = {
 };
 
 const buildVertexBaseline = (form: VertexFormState): VertexFormBaseline => ({
+  ...requestLimits(form),
   name: String(form.name ?? '').trim(),
   apiKey: String(form.apiKey ?? '').trim(),
   priority:
@@ -181,7 +186,7 @@ export function AiProvidersVertexEditPage() {
     setBaseline(buildVertexBaseline(nextForm));
   }, [initialData, loading]);
 
-  const canSave = !disableControls && !saving && !loading && !invalidIndexParam && !invalidIndex;
+  const canSave = validRequestLimits(form) && !disableControls && !saving && !loading && !invalidIndexParam && !invalidIndex;
 
   const normalizedHeaders = useMemo(() => normalizeHeaderEntries(form.headers), [form.headers]);
   const normalizedModels = useMemo(
@@ -210,6 +215,7 @@ export function AiProvidersVertexEditPage() {
     [baseline.excludedModels, normalizedExcludedModels]
   );
   const isDirty =
+    requestLimitsChanged(baseline, form) ||
     baseline.name !== String(form.name ?? '').trim() ||
     baseline.apiKey !== form.apiKey.trim() ||
     baseline.priority !== normalizedPriority ||
@@ -244,6 +250,7 @@ export function AiProvidersVertexEditPage() {
     setError('');
     try {
       const payload: ProviderKeyConfig = {
+        ...requestLimits(form),
         name: form.name?.trim() || undefined,
         apiKey: form.apiKey.trim(),
         priority:
@@ -363,6 +370,7 @@ export function AiProvidersVertexEditPage() {
               onChange={(e) => setForm((prev) => ({ ...prev, apiKey: e.target.value }))}
               disabled={disableControls || saving}
             />
+            <RequestLimitsInput value={form} onChange={(limits) => setForm((prev) => ({ ...prev, ...limits }))} disabled={disableControls || saving} />
             <Input
               label={t('ai_providers.prefix_label')}
               placeholder={t('ai_providers.prefix_placeholder')}

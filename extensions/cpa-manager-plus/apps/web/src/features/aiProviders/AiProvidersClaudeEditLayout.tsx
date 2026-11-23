@@ -1,5 +1,6 @@
 import type { Dispatch, SetStateAction } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { requestLimits, requestLimitsChanged, validRequestLimits } from '@/components/providers/requestLimits';
 import { Outlet, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard';
@@ -105,6 +106,7 @@ const normalizeCloakConfig = (cloak: ProviderFormState['cloak']) => {
 };
 
 const buildClaudeBaseline = (form: ProviderFormState): ClaudeEditBaseline => ({
+  ...requestLimits(form),
   name: String(form.name ?? '').trim(),
   apiKey: String(form.apiKey ?? '').trim(),
   authIndex: normalizeAuthIndex(form.authIndex) ?? '',
@@ -326,7 +328,7 @@ export function AiProvidersClaudeEditLayout() {
   const isDirty =
     Boolean(draft?.initialized) &&
     baseline !== null &&
-    (baseline.name !== String(form.name ?? '').trim() ||
+    (requestLimitsChanged(baseline, form) || baseline.name !== String(form.name ?? '').trim() ||
       baseline.apiKey !== form.apiKey.trim() ||
       baseline.authIndex !== (normalizeAuthIndex(form.authIndex) ?? '') ||
       baseline.priority !== normalizedPriority ||
@@ -421,12 +423,13 @@ export function AiProvidersClaudeEditLayout() {
 
   const handleSave = useCallback(async () => {
     const canSave =
-      !disableControls && !saving && !resolvedLoading && !invalidIndexParam && !invalidIndex;
+      validRequestLimits(form) && !disableControls && !saving && !resolvedLoading && !invalidIndexParam && !invalidIndex;
     if (!canSave) return;
 
     setSaving(true);
     try {
       const payload: ProviderKeyConfig = {
+        ...requestLimits(form),
         name: form.name?.trim() || undefined,
         apiKey: form.apiKey.trim(),
         priority: form.priority !== undefined ? Math.trunc(form.priority) : undefined,

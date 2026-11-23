@@ -1,4 +1,12 @@
 {
+  "request_limits": {
+    "unlimited": "無限制",
+    "native_title": "xAI / Meta 提供商請求限制",
+    "concurrencyLimit": "並行請求數限制",
+    "rpmLimit": "RPM 限制（每分鐘請求數）",
+    "hint": "填寫正整數啟用限制，0 表示無限制。",
+    "invalid": "請輸入大於或等於 0 的整數。"
+  },
   "common": {
     "login": "登入",
     "logout": "登出",
@@ -506,6 +514,22 @@
     "delete_confirm": "確定要刪除這個 API 金鑰嗎？"
   },
   "ai_providers": {
+    "request_scoped_errors_label": "自訂上游錯誤處理",
+    "request_scoped_errors_hint": "新增規則、選擇狀態碼、填寫比對內容，再選擇處理方式。",
+    "error_rule_add": "新增錯誤處理規則",
+    "error_rule_remove": "刪除此規則",
+    "error_rule_number": "規則 {{number}}",
+    "error_rule_status": "上游 HTTP 狀態碼",
+    "error_rule_status_hint": "填寫要比對的 HTTP 狀態碼（100–599）。",
+    "error_rule_match": "錯誤內容包含",
+    "error_rule_match_hint": "每行填寫一項，至少填寫一條文字或正則表達式；任一項符合即可。規則依序生效。",
+    "error_rule_regex": "正則表達式（選填，每行一項）",
+    "request_scoped_errors_empty_match": "請至少填寫一條錯誤內容或正則表達式。",
+    "error_rule_action": "符合時的處理方式",
+    "error_rule_action_stop": "停止請求，不冷卻憑證",
+    "error_rule_action_stop-and-cooldown": "停止請求，並冷卻憑證",
+    "error_rule_action_continue": "嘗試其他憑證，不冷卻目前憑證",
+    "error_rule_action_continue-and-cooldown": "冷卻目前憑證，並嘗試其他憑證",
     "title": "AI 供應商設定",
     "remark_name_label": "備註名稱 (可選)",
     "remark_name_placeholder": "例如: 主要線路",

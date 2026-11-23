@@ -1,5 +1,6 @@
 import type { Dispatch, SetStateAction } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { requestLimits, requestLimitsChanged, validRequestLimits } from '@/components/providers/requestLimits';
 import { Outlet, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard';
@@ -118,6 +119,7 @@ const normalizeApiKeyEntries = (entries: ApiKeyEntry[]) =>
   }, []);
 
 const buildOpenAIBaseline = (form: OpenAIFormState, testModel: string): OpenAIEditBaseline => ({
+  ...requestLimits(form),
   name: String(form.name ?? '').trim(),
   priority:
     form.priority !== undefined && Number.isFinite(form.priority)
@@ -319,6 +321,7 @@ export function AiProvidersOpenAIEditLayout() {
       const modelEntries = modelsToEntries(initialData.models);
       const seededForm: OpenAIFormState = {
         name: initialData.name,
+        ...requestLimits(initialData),
         priority: initialData.priority,
         prefix: initialData.prefix ?? '',
         baseUrl: initialData.baseUrl,
@@ -453,7 +456,7 @@ export function AiProvidersOpenAIEditLayout() {
   const isDirty =
     Boolean(draft?.initialized) &&
     baseline !== null &&
-    (baseline.name !== form.name.trim() ||
+    (requestLimitsChanged(baseline, form) || baseline.name !== form.name.trim() ||
       baseline.priority !== normalizedPriority ||
       baseline.prefix !== form.prefix.trim() ||
       baseline.baseUrl !== form.baseUrl.trim() ||
@@ -489,6 +492,7 @@ export function AiProvidersOpenAIEditLayout() {
   });
 
   const handleSave = useCallback(async () => {
+    if (!validRequestLimits(form)) return;
     const name = form.name.trim();
     const baseUrl = form.baseUrl.trim();
     const parsedRequestScopedErrors = parseRequestScopedErrors(form.requestScopedErrorsText);
@@ -508,6 +512,7 @@ export function AiProvidersOpenAIEditLayout() {
     setSaving(true);
     try {
       const payload: OpenAIProviderConfig = {
+        ...requestLimits(form),
         name,
         prefix: form.prefix?.trim() || undefined,
         baseUrl,
@@ -550,7 +555,7 @@ export function AiProvidersOpenAIEditLayout() {
       try {
         syncedProviders = await providersApi.getOpenAIProviders();
       } catch {
-        // 保存成功后刷新失败时，回退到本地计算结果，避免页面数据为空或回退
+        // Keep the locally calculated list if reloading after a successful save fails.
       }
 
       setProviders(syncedProviders);

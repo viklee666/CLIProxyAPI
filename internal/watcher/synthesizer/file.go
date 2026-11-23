@@ -105,6 +105,9 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 		return nil, nil
 	}
 	coreauth.NormalizeCredentialMetadata(metadata)
+	if errLimit := coreauth.ValidateAuthRequestLimits(&coreauth.Auth{Metadata: metadata}); errLimit != nil {
+		return nil, fmt.Errorf("invalid request limits in %s: %w", filepath.Base(fullPath), errLimit)
+	}
 	if errWeight := coreauth.ValidateAuthWeight(&coreauth.Auth{Metadata: metadata}); errWeight != nil {
 		return nil, fmt.Errorf("invalid weight in %s: %w", filepath.Base(fullPath), errWeight)
 	}
@@ -134,6 +137,14 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 					continue
 				}
 				coreauth.NormalizeCredentialMetadata(auth.Metadata)
+				if auth.Metadata == nil {
+					auth.Metadata = make(map[string]any)
+				}
+				for _, key := range []string{"concurrency_limit", "rpm_limit"} {
+					if value, exists := metadata[key]; exists {
+						auth.Metadata[key] = value
+					}
+				}
 				if len(auths) > 1 {
 					coreauth.MarkPluginVirtualAuth(auth, fullPath, index)
 				}

@@ -3,6 +3,8 @@ import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import { Drawer } from '@/components/ui/Drawer';
 import { Input } from '@/components/ui/Input';
+import { RequestLimitsInput } from '@/components/providers/RequestLimitsInput';
+import { requestLimits, requestLimitsChanged, validRequestLimits } from '@/components/providers/requestLimits';
 import { HeaderInputList } from '@/components/ui/HeaderInputList';
 import { ModelInputList } from '@/components/ui/ModelInputList';
 import { providersApi } from '@/services/api';
@@ -51,6 +53,7 @@ const normalizeModelEntries = (entries: Array<{ name: string; alias: string }>) 
   }, []);
 
 const buildVertexBaseline = (form: VertexFormState) => ({
+  ...requestLimits(form),
   name: String(form.name ?? '').trim(),
   apiKey: String(form.apiKey ?? '').trim(),
   priority:
@@ -152,7 +155,7 @@ export function VertexEditDrawer({
     }
   }, [open, loaded, initialData]);
 
-  const canSave = !disabled && !saving && !loading && !invalidIndex;
+  const canSave = validRequestLimits(form) && !disabled && !saving && !loading && !invalidIndex;
 
   const isDirty = useMemo(() => {
     const normalizedPriority =
@@ -160,6 +163,7 @@ export function VertexEditDrawer({
         ? Math.trunc(form.priority)
         : null;
     return (
+      requestLimitsChanged(baseline, form) ||
       baseline.name !== String(form.name ?? '').trim() ||
       baseline.apiKey !== form.apiKey.trim() ||
       baseline.priority !== normalizedPriority ||
@@ -196,6 +200,7 @@ export function VertexEditDrawer({
     setError('');
     try {
       const payload: ProviderKeyConfig = {
+        ...requestLimits(form),
         name: form.name?.trim() || undefined,
         apiKey: form.apiKey.trim(),
         priority:
@@ -307,6 +312,7 @@ export function VertexEditDrawer({
               disabled={disabled || saving}
               required
             />
+            <RequestLimitsInput value={form} onChange={(limits) => setForm((prev) => ({ ...prev, ...limits }))} disabled={disabled || saving} />
             <Input
               label={t('ai_providers.prefix_label')}
               placeholder={t('ai_providers.prefix_placeholder')}

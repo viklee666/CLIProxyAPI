@@ -699,6 +699,9 @@ func (h *Handler) authFileQueryEntry(candidate authFileCandidate, view string) g
 	if websockets, ok := authWebsocketsValue(auth); ok {
 		entry["websockets"] = websockets
 	}
+	limits := auth.RequestLimits()
+	entry["concurrency_limit"] = limits.ConcurrencyLimit
+	entry["rpm_limit"] = limits.RPMLimit
 	if requestRetry, ok := auth.RequestRetryOverride(); ok {
 		entry["request_retry"] = requestRetry
 	}

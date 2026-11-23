@@ -3,6 +3,8 @@ import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import { Drawer } from '@/components/ui/Drawer';
 import { Input } from '@/components/ui/Input';
+import { RequestLimitsInput } from '@/components/providers/RequestLimitsInput';
+import { requestLimits, requestLimitsChanged, validRequestLimits } from '@/components/providers/requestLimits';
 import { HeaderInputList } from '@/components/ui/HeaderInputList';
 import { ModelInputList } from '@/components/ui/ModelInputList';
 import { Modal } from '@/components/ui/Modal';
@@ -68,6 +70,7 @@ const normalizeModelEntries = (entries: Array<{ name: string; alias: string }>) 
   }, []);
 
 const buildGeminiBaseline = (form: GeminiFormState) => ({
+  ...requestLimits(form),
   name: String(form.name ?? '').trim(),
   apiKey: String(form.apiKey ?? '').trim(),
   authIndex: normalizeAuthIndex(form.authIndex) ?? '',
@@ -191,7 +194,7 @@ export function GeminiEditDrawer({
     }
   }, [open, loaded, initialData]);
 
-  const canSave = !disabled && !saving && !loading && !invalidIndex;
+  const canSave = validRequestLimits(form) && !disabled && !saving && !loading && !invalidIndex;
 
   const isDirty = useMemo(() => {
     const normalizedPriority =
@@ -199,6 +202,7 @@ export function GeminiEditDrawer({
         ? Math.trunc(form.priority)
         : null;
     return (
+      requestLimitsChanged(baseline, form) ||
       baseline.name !== String(form.name ?? '').trim() ||
       baseline.apiKey !== form.apiKey.trim() ||
       baseline.authIndex !== (normalizeAuthIndex(form.authIndex) ?? '') ||
@@ -328,6 +332,7 @@ export function GeminiEditDrawer({
         name: stripGeminiModelResourceName(entry.name),
       }));
       const payload: GeminiKeyConfig = {
+        ...requestLimits(form),
         name: form.name?.trim() || undefined,
         apiKey,
         priority: form.priority !== undefined ? Math.trunc(form.priority) : undefined,
@@ -518,6 +523,7 @@ export function GeminiEditDrawer({
               onChange={(e) => setForm((prev) => ({ ...prev, baseUrl: e.target.value }))}
               disabled={disabled || saving}
             />
+            <RequestLimitsInput value={form} onChange={(limits) => setForm((prev) => ({ ...prev, ...limits }))} disabled={disabled || saving} />
             <Input
               label={t('ai_providers.priority_label')}
               hint={t('ai_providers.priority_hint')}

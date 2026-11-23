@@ -4,6 +4,8 @@ import { useTranslation } from 'react-i18next';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
+import { RequestLimitsInput } from '@/components/providers/RequestLimitsInput';
+import { validRequestLimits } from '@/components/providers/requestLimits';
 import { Select } from '@/components/ui/Select';
 import { HeaderInputList } from '@/components/ui/HeaderInputList';
 import { ModelInputList } from '@/components/ui/ModelInputList';
@@ -90,7 +92,7 @@ export function AiProvidersClaudeEditPage() {
   }, [form.cloak]);
 
   const canSave =
-    !disableControls && !loading && !saving && !invalidIndexParam && !invalidIndex && !isTesting;
+    validRequestLimits(form) && !disableControls && !loading && !saving && !invalidIndexParam && !invalidIndex && !isTesting;
 
   const modelSelectOptions = useMemo(() => {
     const seen = new Set<string>();
@@ -324,6 +326,7 @@ export function AiProvidersClaudeEditPage() {
               onChange={(e) => setForm((prev) => ({ ...prev, apiKey: e.target.value }))}
               disabled={saving || disableControls || isTesting}
             />
+            <RequestLimitsInput value={form} onChange={(limits) => setForm((prev) => ({ ...prev, ...limits }))} disabled={disableControls || saving} />
             <Input
               label={t('ai_providers.priority_label')}
               hint={t('ai_providers.priority_hint')}

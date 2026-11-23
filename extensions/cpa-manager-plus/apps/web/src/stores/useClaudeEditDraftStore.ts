@@ -21,6 +21,8 @@ export type ClaudeCloakBaseline = {
 } | null;
 
 export type ClaudeEditBaseline = {
+  concurrencyLimit?: number;
+  rpmLimit?: number;
   name: string;
   apiKey: string;
   authIndex: string;

@@ -76,6 +76,9 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 	if auth == nil {
 		return "", fmt.Errorf("auth filestore: auth is nil")
 	}
+	if errLimit := cliproxyauth.ValidateAuthRequestLimits(auth); errLimit != nil {
+		return "", fmt.Errorf("auth filestore: %w", errLimit)
+	}
 	if errWeight := cliproxyauth.ValidateAuthWeight(auth); errWeight != nil {
 		return "", fmt.Errorf("auth filestore: %w", errWeight)
 	}
@@ -235,6 +238,9 @@ func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Au
 		return nil, fmt.Errorf("unmarshal auth json: %w", err)
 	}
 	cliproxyauth.NormalizeCredentialMetadata(metadata)
+	if errLimit := cliproxyauth.ValidateAuthRequestLimits(&cliproxyauth.Auth{Metadata: metadata}); errLimit != nil {
+		return nil, fmt.Errorf("auth filestore: %w", errLimit)
+	}
 	if errWeight := cliproxyauth.ValidateAuthWeight(&cliproxyauth.Auth{Metadata: metadata}); errWeight != nil {
 		return nil, errWeight
 	}
@@ -289,6 +295,14 @@ func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Au
 				}
 				if errWeight := cliproxyauth.ApplyAuthWeightMetadata(auth, metadata); errWeight != nil {
 					return nil, errWeight
+				}
+				if auth.Metadata == nil {
+					auth.Metadata = make(map[string]any)
+				}
+				for _, key := range []string{"concurrency_limit", "rpm_limit"} {
+					if value, exists := metadata[key]; exists {
+						auth.Metadata[key] = value
+					}
 				}
 				cliproxyauth.ApplyCustomHeadersFromMetadata(auth)
 			}

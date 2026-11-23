@@ -3,6 +3,8 @@ import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 import { Input } from '@/components/ui/Input';
+import { RequestLimitsInput } from '@/components/providers/RequestLimitsInput';
+import { validRequestLimits } from '@/components/providers/requestLimits';
 import { ToggleSwitch } from '@/components/ui/ToggleSwitch';
 import type {
   PrefixProxyEditorField,
@@ -75,6 +77,7 @@ export function AuthFilesPrefixProxyEditorModal(props: AuthFilesPrefixProxyEdito
               editor?.saving === true ||
               !dirty ||
               !editor?.json ||
+              !validRequestLimits({ concurrencyLimit: Number(editor?.concurrencyLimit || 0), rpmLimit: Number(editor?.rpmLimit || 0) }) ||
               Boolean(editor?.headersTouched && editor.headersError)
             }
           >
@@ -137,6 +140,11 @@ export function AuthFilesPrefixProxyEditorModal(props: AuthFilesPrefixProxyEdito
                     placeholder={t('auth_files.proxy_url_placeholder')}
                     disabled={disableControls || editor.saving || !editor.json}
                     onChange={(e) => onChange('proxyUrl', e.target.value)}
+                  />
+                  <RequestLimitsInput
+                    value={{ concurrencyLimit: Number(editor.concurrencyLimit || 0), rpmLimit: Number(editor.rpmLimit || 0) }}
+                    onChange={(limits) => { onChange('concurrencyLimit', String(limits.concurrencyLimit)); onChange('rpmLimit', String(limits.rpmLimit)); }}
+                    disabled={disableControls || editor.saving}
                   />
                   <Input
                     label={t('auth_files.priority_label')}

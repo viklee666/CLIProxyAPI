@@ -13,6 +13,7 @@ import (
 //
 // Example services: zenmux.ai and similar Vertex-compatible providers.
 type VertexCompatKey struct {
+	RequestLimits `yaml:",inline"`
 	// Name is an optional user-defined remark used only for display.
 	Name string `yaml:"name,omitempty" json:"name,omitempty"`
 

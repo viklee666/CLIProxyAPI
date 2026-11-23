@@ -5,6 +5,8 @@ import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { HeaderInputList } from '@/components/ui/HeaderInputList';
 import { Input } from '@/components/ui/Input';
+import { RequestLimitsInput } from '@/components/providers/RequestLimitsInput';
+import { validRequestLimits } from '@/components/providers/requestLimits';
 import { ModelInputList } from '@/components/ui/ModelInputList';
 import { Select } from '@/components/ui/Select';
 import { ToggleSwitch } from '@/components/ui/ToggleSwitch';
@@ -81,7 +83,7 @@ export function AiProvidersOpenAIEditPage() {
   }, [handleBack]);
 
   const canSave =
-    !disableControls &&
+    validRequestLimits(form) && !disableControls &&
     !loading &&
     !saving &&
     !invalidIndexParam &&
@@ -385,7 +387,7 @@ export function AiProvidersOpenAIEditPage() {
           </Button>
         </div>
         <div className={styles.keyTableShell}>
-          {/* 表头 */}
+          {/* Table header */}
           <div className={styles.keyTableHeader}>
             <div className={styles.keyTableColIndex}>#</div>
             <div className={styles.keyTableColStatus}>{t('common.status')}</div>
@@ -394,7 +396,7 @@ export function AiProvidersOpenAIEditPage() {
             <div className={styles.keyTableColAction}>{t('common.action')}</div>
           </div>
 
-          {/* 数据行 */}
+          {/* Data rows */}
           {list.map((entry, index) => {
             const keyStatus = keyTestStatuses[index]?.status ?? 'idle';
             const canTestKey =
@@ -403,10 +405,10 @@ export function AiProvidersOpenAIEditPage() {
 
             return (
               <div key={index} className={styles.keyTableRow}>
-                {/* 序号 */}
+                {/* Row number */}
                 <div className={styles.keyTableColIndex}>{index + 1}</div>
 
-                {/* 状态指示灯 */}
+                {/* Status indicator */}
                 <div className={styles.keyTableColStatus}>
                   <OpenAIKeyTestStatusIndicator
                     status={keyStatus as KeyTestStatus['status']}
@@ -414,7 +416,7 @@ export function AiProvidersOpenAIEditPage() {
                   />
                 </div>
 
-                {/* Key 输入框 */}
+                {/* API key input */}
                 <div className={styles.keyTableColKey}>
                   <input
                     type="text"
@@ -426,7 +428,7 @@ export function AiProvidersOpenAIEditPage() {
                   />
                 </div>
 
-                {/* Proxy 输入框 */}
+                {/* Proxy input */}
                 <div className={styles.keyTableColProxy}>
                   <input
                     type="text"
@@ -438,7 +440,7 @@ export function AiProvidersOpenAIEditPage() {
                   />
                 </div>
 
-                {/* 操作按钮 */}
+                {/* Action buttons */}
                 <div className={styles.keyTableColAction}>
                   <Button
                     variant="secondary"
@@ -511,6 +513,7 @@ export function AiProvidersOpenAIEditPage() {
               onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
               disabled={saving || disableControls || isTestingKeys}
             />
+            <RequestLimitsInput value={form} onChange={(limits) => setForm((prev) => ({ ...prev, ...limits }))} disabled={disableControls || saving} />
             <Input
               label={t('ai_providers.priority_label')}
               hint={t('ai_providers.priority_hint')}
@@ -581,9 +584,9 @@ export function AiProvidersOpenAIEditPage() {
               disabled={saving || disableControls || isTestingKeys}
             />
 
-            {/* 模型配置区域 - 统一布局 */}
+            {/* Model configuration */}
             <div className={styles.modelConfigSection}>
-              {/* 标题行 */}
+              {/* Title row */}
               <div className={styles.modelConfigHeader}>
                 <label className={styles.modelConfigTitle}>
                   {hasIndexParam
@@ -615,10 +618,10 @@ export function AiProvidersOpenAIEditPage() {
                 </div>
               </div>
 
-              {/* 提示文本 */}
+              {/* Hint */}
               <div className={styles.sectionHint}>{t('ai_providers.openai_models_hint')}</div>
 
-              {/* 模型列表 */}
+              {/* Model list */}
               <ModelInputList
                 entries={form.modelEntries}
                 onChange={(entries) => setForm((prev) => ({ ...prev, modelEntries: entries }))}
@@ -639,7 +642,7 @@ export function AiProvidersOpenAIEditPage() {
                 outputModalitiesPlaceholder={t('ai_providers.output_modalities_placeholder')}
               />
 
-              {/* 测试区域 */}
+              {/* Connectivity test */}
               <div className={styles.modelTestPanel}>
                 <div className={styles.modelTestMeta}>
                   <label className={styles.modelTestLabel}>

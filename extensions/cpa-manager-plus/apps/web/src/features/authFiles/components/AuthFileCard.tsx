@@ -345,6 +345,12 @@ export function AuthFileCard(props: AuthFileCardProps) {
               <span className={styles.metaLabel}>{t('auth_files.file_modified')}</span>
               <span className={styles.metaValue}>{formatModified(file)}</span>
             </div>
+            {(['concurrency_limit', 'rpm_limit'] as const).map((key) => Number(file[key]) > 0 && (
+              <div key={key} className={styles.metaItem}>
+                <span className={styles.metaLabel}>{t(`request_limits.${key === 'concurrency_limit' ? 'concurrencyLimit' : 'rpmLimit'}`)}</span>
+                <span className={styles.metaValue}>{Number(file[key])}</span>
+              </div>
+            ))}
             {priorityValue !== undefined && (
               <div className={`${styles.metaItem} ${styles.priorityBadge}`}>
                 <span className={styles.metaLabel}>{t('auth_files.priority_display')}</span>

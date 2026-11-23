@@ -27,6 +27,22 @@ beforeEach(() => {
   mocks.patch.mockReset();
 });
 
+describe('providersApi request limits', () => {
+  it('loads limits and explicitly resets them through record updates', async () => {
+    mocks.get.mockResolvedValueOnce({ 'codex-api-key': [{ 'api-key': 'limited', 'base-url': 'https://example.com', 'concurrency-limit': 2, 'rpm-limit': 30 }] });
+    const [record] = await providersApi.getCodexConfigs();
+    expect(record).toMatchObject({ concurrencyLimit: 2, rpmLimit: 30 });
+    await providersApi.updateCodexConfig(record, { ...record, concurrencyLimit: 0, rpmLimit: 0 });
+    expect(mocks.patch).toHaveBeenCalledWith('/codex-api-key', expect.objectContaining({ value: expect.objectContaining({ 'concurrency-limit': 0, 'rpm-limit': 0 }) }));
+  });
+
+  it('preserves omitted limits during a full-list save', async () => {
+    mocks.get.mockResolvedValueOnce({ 'codex-api-key': [{ 'api-key': 'limited', 'concurrency-limit': 2, 'rpm-limit': 30 }] });
+    await providersApi.saveCodexConfigs([{ apiKey: 'limited', priority: 4 }]);
+    expect(mocks.put).toHaveBeenCalledWith('/codex-api-key', [expect.objectContaining({ 'concurrency-limit': 2, 'rpm-limit': 30, priority: 4 })]);
+  });
+});
+
 describe('providersApi auth-index preservation', () => {
   it('normalizes provider remark names from management responses', async () => {
     mocks.get

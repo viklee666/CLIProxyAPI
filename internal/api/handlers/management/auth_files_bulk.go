@@ -218,6 +218,11 @@ func (h *Handler) patchAuthFileFieldsTarget(ctx context.Context, name, authIndex
 	if name == "" {
 		return nil, http.StatusBadRequest, fmt.Errorf("name is required")
 	}
+	var errNormalize error
+	fields, errNormalize = normalizeAuthFilePatchFields(fields)
+	if errNormalize != nil {
+		return nil, http.StatusBadRequest, errNormalize
+	}
 	if len(fields) == 0 {
 		return nil, http.StatusBadRequest, fmt.Errorf("no fields to update")
 	}
@@ -311,6 +316,12 @@ func (h *Handler) PatchAuthFileFieldsBatch(c *gin.Context) {
 		return
 	}
 
+	var errNormalize error
+	req.Fields, errNormalize = normalizeAuthFilePatchFields(req.Fields)
+	if errNormalize != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": errNormalize.Error()})
+		return
+	}
 	targetCount := 0
 	for _, item := range items {
 		count := len(item.AuthIndexes)

@@ -81,6 +81,9 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 		return nil, nil
 	}
 	NormalizeCredentialMetadata(auth.Metadata)
+	if errLimit := ValidateAuthRequestLimits(auth); errLimit != nil {
+		return nil, fmt.Errorf("register auth: %w", errLimit)
+	}
 	if errWeight := ValidateAuthWeight(auth); errWeight != nil {
 		return nil, fmt.Errorf("register auth: %w", errWeight)
 	}
@@ -165,6 +168,9 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
 		return nil, nil
 	}
 	NormalizeCredentialMetadata(auth.Metadata)
+	if errLimit := ValidateAuthRequestLimits(auth); errLimit != nil {
+		return nil, fmt.Errorf("update auth: %w", errLimit)
+	}
 	if errWeight := ValidateAuthWeight(auth); errWeight != nil {
 		return nil, fmt.Errorf("update auth: %w", errWeight)
 	}
@@ -375,6 +381,9 @@ func (m *Manager) Load(ctx context.Context) error {
 			continue
 		}
 		NormalizeCredentialMetadata(auth.Metadata)
+		if errLimit := ValidateAuthRequestLimits(auth); errLimit != nil {
+			continue
+		}
 		if errWeight := ValidateAuthWeight(auth); errWeight != nil {
 			continue
 		}
@@ -425,6 +434,9 @@ type authPersistLock struct {
 func (m *Manager) persist(ctx context.Context, auth *Auth) error {
 	if m.store == nil || auth == nil {
 		return nil
+	}
+	if errLimit := ValidateAuthRequestLimits(auth); errLimit != nil {
+		return fmt.Errorf("persist auth: %w", errLimit)
 	}
 	if errWeight := ValidateAuthWeight(auth); errWeight != nil {
 		return fmt.Errorf("persist auth: %w", errWeight)

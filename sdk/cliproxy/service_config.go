@@ -146,6 +146,10 @@ func (s *Service) commitConfigUpdate(newCfg *config.Config) configCommit {
 	if newCfg == nil {
 		return configCommit{}
 	}
+	if errValidate := newCfg.ValidateRequestLimits(); errValidate != nil {
+		log.WithError(errValidate).Warn("rejected config update with invalid request limits")
+		return configCommit{}
+	}
 	if errValidate := newCfg.ValidateCredentialWeights(); errValidate != nil {
 		log.WithError(errValidate).Warn("rejected config update with invalid credential weights")
 		return configCommit{}

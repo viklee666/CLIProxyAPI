@@ -1,6 +1,6 @@
 /**
- * AI 提供商相关类型
- * 基于原项目 src/modules/ai-providers.js
+ * AI provider types.
+ * Based on the original src/modules/ai-providers.js.
  */
 
 export interface ModelAlias {
@@ -29,7 +29,12 @@ export interface CloakConfig {
   cacheUserId?: boolean;
 }
 
-export interface GeminiKeyConfig {
+export interface RequestLimits {
+  concurrencyLimit?: number;
+  rpmLimit?: number;
+}
+
+export interface GeminiKeyConfig extends RequestLimits {
   name?: string;
   apiKey: string;
   priority?: number;
@@ -43,7 +48,7 @@ export interface GeminiKeyConfig {
   disableCooling?: boolean;
 }
 
-export interface ProviderKeyConfig {
+export interface ProviderKeyConfig extends RequestLimits {
   name?: string;
   apiKey: string;
   priority?: number;
@@ -68,7 +73,7 @@ export interface RequestScopedErrorRule {
   action?: string;
 }
 
-export interface OpenAIProviderConfig {
+export interface OpenAIProviderConfig extends RequestLimits {
   name: string;
   prefix?: string;
   baseUrl: string;

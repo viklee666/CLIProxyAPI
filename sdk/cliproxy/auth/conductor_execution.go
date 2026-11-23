@@ -512,7 +512,11 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		entry := logEntryWithRequestID(ctx)
 		debugLogAuthSelection(entry, auth, provider, routeModel)
 		publishSelectedAuthMetadata(opts.Metadata, auth)
-		attempt.begin(m, auth.ID)
+		if errLimit := attempt.begin(m, auth); errLimit != nil {
+			tried[auth.ID] = struct{}{}
+			lastErr = errLimit
+			continue
+		}
 
 		tried[auth.ID] = struct{}{}
 		execCtx := ctx
@@ -753,7 +757,11 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		entry := logEntryWithRequestID(ctx)
 		debugLogAuthSelection(entry, auth, provider, routeModel)
 		publishSelectedAuthMetadata(opts.Metadata, auth)
-		attempt.begin(m, auth.ID)
+		if errLimit := attempt.begin(m, auth); errLimit != nil {
+			tried[auth.ID] = struct{}{}
+			lastErr = errLimit
+			continue
+		}
 
 		tried[auth.ID] = struct{}{}
 		execCtx := ctx
@@ -1089,7 +1097,17 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			}
 		}
 		publishSelectedAuthMetadata(opts.Metadata, auth)
-		attempt.begin(m, auth.ID)
+		if errLimit := attempt.begin(m, auth); errLimit != nil {
+			tried[auth.ID] = struct{}{}
+			lastErr = errLimit
+			if selection != nil {
+				homeExcludedAuthIDs[auth.ID] = struct{}{}
+				if errEnd := m.endHomeSelectionBeforeRedispatch(ctx, selection, "request_limit"); errEnd != nil {
+					return nil, errEnd
+				}
+			}
+			continue
+		}
 
 		tried[auth.ID] = struct{}{}
 		execCtx := ctx

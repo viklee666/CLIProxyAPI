@@ -453,6 +453,20 @@ func normalizeAuthFilePatchFields(fields map[string]json.RawMessage) (map[string
 		}
 		originalRoot := parts[0]
 		parts[0] = coreauth.CanonicalCredentialMetadataKey(originalRoot)
+		if parts[0] == "concurrency_limit" || parts[0] == "rpm_limit" {
+			if len(parts) != 1 {
+				return nil, fmt.Errorf("%s does not support nested fields", parts[0])
+			}
+			decoded, errDecode := decodeAuthFileFieldValue(value)
+			if errDecode != nil {
+				return nil, fmt.Errorf("%s must be a non-negative integer", parts[0])
+			}
+			if decoded != nil {
+				if _, errLimit := coreauth.ParseRequestLimit(decoded); errLimit != nil {
+					return nil, fmt.Errorf("%s: %w", parts[0], errLimit)
+				}
+			}
+		}
 		canonicalPath := strings.Join(parts, ".")
 		if original, exists := originalNames[canonicalPath]; exists {
 			currentCanonical := originalRoot == parts[0]

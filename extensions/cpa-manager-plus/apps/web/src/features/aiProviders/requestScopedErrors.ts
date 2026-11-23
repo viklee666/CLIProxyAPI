@@ -12,7 +12,10 @@ export type ParsedRequestScopedErrors =
 export const formatRequestScopedErrors = (rules?: RequestScopedErrorRule[]) =>
   JSON.stringify(rules ?? [], null, 2);
 
-export const parseRequestScopedErrors = (text: string): ParsedRequestScopedErrors => {
+export const parseRequestScopedErrors = (
+  text: string,
+  validateValues = true
+): ParsedRequestScopedErrors => {
   let value: unknown;
   try {
     value = JSON.parse(text || '[]');
@@ -28,7 +31,13 @@ export const parseRequestScopedErrors = (text: string): ParsedRequestScopedError
     }
     const record = item as Record<string, unknown>;
     const status = record.status;
-    if (status !== undefined && (!Number.isInteger(status) || typeof status !== 'number')) {
+    if (
+      (validateValues && status === undefined) ||
+      (status !== undefined &&
+        (typeof status !== 'number' ||
+          !Number.isInteger(status) ||
+          (validateValues && (status < 100 || status > 599))))
+    ) {
       return { rules: null, error: 'invalid_status' };
     }
     const match = record.match;
@@ -41,8 +50,22 @@ export const parseRequestScopedErrors = (text: string): ParsedRequestScopedError
     ) {
       return { rules: null, error: 'invalid_match' };
     }
+    if (
+      validateValues &&
+      ![
+        ...((match as string[] | undefined) ?? []),
+        ...((matchRegexr as string[] | undefined) ?? []),
+      ].some((entry) => entry.trim())
+    ) {
+      return { rules: null, error: 'empty_match' };
+    }
     const action = record.action;
-    if (action !== undefined && typeof action !== 'string') {
+    if (
+      (validateValues && action === undefined) ||
+      (action !== undefined &&
+        (typeof action !== 'string' ||
+          !['stop', 'stop-and-cooldown', 'continue', 'continue-and-cooldown'].includes(action)))
+    ) {
       return { rules: null, error: 'invalid_action' };
     }
     rules.push({

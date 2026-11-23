@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { validRequestLimits } from '@/components/providers/requestLimits';
 import { useTranslation } from 'react-i18next';
 import { authFilesApi, type AuthFileFieldsPatch } from '@/services/api';
 import type { AuthFileItem } from '@/types';
@@ -25,6 +26,8 @@ export type PrefixProxyEditorField =
   | 'prefix'
   | 'proxyUrl'
   | 'priority'
+  | 'concurrencyLimit'
+  | 'rpmLimit'
   | 'websockets'
   | 'usingApi'
   | 'note'
@@ -46,6 +49,8 @@ export type PrefixProxyEditorState = {
   prefix: string;
   proxyUrl: string;
   priority: string;
+  concurrencyLimit?: string;
+  rpmLimit?: string;
   websockets: boolean;
   websocketsTouched: boolean;
   usingApi: boolean;
@@ -253,6 +258,12 @@ const buildAuthFileFieldsPatch = (
     }
   }
 
+  for (const [field, key] of [['concurrencyLimit', 'concurrency_limit'], ['rpmLimit', 'rpm_limit']] as const) {
+    const nextLimit = Number(editor[field] || 0);
+    const originalLimit = Number(original[key] ?? original[key.replace('_', '-')] ?? 0);
+    if (nextLimit !== originalLimit) patch[key] = nextLimit;
+  }
+
   if (editor.noteTouched) {
     const originalNote = normalizeTextField(original.note);
     const nextNote = editor.note.trim();
@@ -328,6 +339,13 @@ const buildPrefixProxyUpdatedText = (
     }
   }
 
+  for (const key of ['concurrency_limit', 'rpm_limit'] as const) {
+    if (patch[key] !== undefined) {
+      next[key] = patch[key];
+      delete next[key.replace('_', '-')];
+    }
+  }
+
   applyHeadersPatch(next, patch.headers);
 
   if (patch.websockets !== undefined) {
@@ -348,7 +366,8 @@ export function useAuthFilesPrefixProxyEditor(
   const [prefixProxyEditor, setPrefixProxyEditor] = useState<PrefixProxyEditorState | null>(null);
 
   const hasBlockingValidationError = Boolean(
-    prefixProxyEditor?.headersTouched && prefixProxyEditor.headersError
+    (prefixProxyEditor?.headersTouched && prefixProxyEditor.headersError) ||
+    (prefixProxyEditor && !validRequestLimits({ concurrencyLimit: Number(prefixProxyEditor.concurrencyLimit || 0), rpmLimit: Number(prefixProxyEditor.rpmLimit || 0) }))
   );
   const prefixProxyUpdatedText =
     prefixProxyEditor && !hasBlockingValidationError
@@ -390,6 +409,8 @@ export function useAuthFilesPrefixProxyEditor(
       prefix: '',
       proxyUrl: '',
       priority: '',
+      concurrencyLimit: '0',
+      rpmLimit: '0',
       websockets: false,
       websocketsTouched: false,
       usingApi: false,
@@ -465,6 +486,8 @@ export function useAuthFilesPrefixProxyEditor(
           prefix,
           proxyUrl,
           priority: priority !== undefined ? String(priority) : '',
+          concurrencyLimit: String(json.concurrency_limit ?? json['concurrency-limit'] ?? 0),
+          rpmLimit: String(json.rpm_limit ?? json['rpm-limit'] ?? 0),
           websockets,
           websocketsTouched: false,
           usingApi,
@@ -496,6 +519,7 @@ export function useAuthFilesPrefixProxyEditor(
       if (field === 'prefix') return { ...prev, prefix: String(value) };
       if (field === 'proxyUrl') return { ...prev, proxyUrl: String(value) };
       if (field === 'priority') return { ...prev, priority: String(value) };
+      if (field === 'concurrencyLimit' || field === 'rpmLimit') return { ...prev, [field]: String(value) };
       if (field === 'websockets') {
         return { ...prev, websockets: Boolean(value), websocketsTouched: true };
       }

@@ -77,7 +77,10 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
 	var lastErr error
 	var upstreamErr error
 	var roundTiming homeRetryRoundTiming
+	limitAttempt := newAdaptiveAttemptTracker()
+	defer limitAttempt.release()
 	for homeAuthCount := 1; ; homeAuthCount++ {
+		limitAttempt.release()
 		if maxRetryCredentials > 0 && len(attempted) >= maxRetryCredentials {
 			if lastErr != nil {
 				return cliproxyexecutor.Response{}, markHomeRetryRoundExhausted(preferredExecutionAttemptError(lastErr, upstreamErr), roundTiming.RetryAfter(), true)
@@ -117,6 +120,13 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
 		}
 		tried[auth.ID] = struct{}{}
 		attempted[auth.ID] = struct{}{}
+		if errLimit := limitAttempt.begin(m, auth); errLimit != nil {
+			lastErr = errLimit
+			if errEnd := m.endHomeSelectionBeforeRedispatch(ctx, selection, "request_limit"); errEnd != nil {
+				return cliproxyexecutor.Response{}, errEnd
+			}
+			continue
+		}
 		entry := logEntryWithRequestID(ctx)
 		debugLogAuthSelection(entry, auth, selection.Provider, routeModel)
 		if errRuntimeAuth := m.bindHomeSelectionRuntimeAuth(ctx, opts, selection); errRuntimeAuth != nil {

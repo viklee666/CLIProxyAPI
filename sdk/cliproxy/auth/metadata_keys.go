@@ -8,6 +8,10 @@ func CanonicalCredentialMetadataKey(key string) string {
 		return "api_key"
 	case "base-url":
 		return "base_url"
+	case "concurrency-limit":
+		return "concurrency_limit"
+	case "rpm-limit":
+		return "rpm_limit"
 	case "disable-cooling":
 		return "disable_cooling"
 	case "excluded-models":

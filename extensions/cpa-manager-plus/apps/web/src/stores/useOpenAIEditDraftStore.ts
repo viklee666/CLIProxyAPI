@@ -21,6 +21,8 @@ export type KeyTestStatus = {
 };
 
 export type OpenAIEditBaseline = {
+  concurrencyLimit?: number;
+  rpmLimit?: number;
   name: string;
   priority: number | null;
   prefix: string;

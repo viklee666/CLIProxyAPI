@@ -1,5 +1,5 @@
 /**
- * AI 提供商相关 API
+ * AI provider API.
  */
 
 import { apiClient } from './client';
@@ -14,6 +14,7 @@ import type {
   ProviderKeyConfig,
   ApiKeyEntry,
   ModelAlias,
+  RequestLimits,
 } from '@/types';
 
 const serializeHeaders = (headers?: Record<string, string>) =>
@@ -26,7 +27,10 @@ const AUTH_INDEX_FIELDS = ['auth-index', 'authIndex', 'auth_index'] as const;
 const DISABLE_COOLING_FIELDS = ['disable-cooling', 'disableCooling', 'disable_cooling'] as const;
 const NIM_COMPAT_FIELDS = ['nim-compat', 'nimCompat', 'nim_compat'] as const;
 
+const REQUEST_LIMIT_FIELDS = ['concurrency-limit', 'concurrencyLimit', 'concurrency_limit', 'rpm-limit', 'rpmLimit', 'rpm_limit'] as const;
+
 const COMMON_PROVIDER_KEY_FIELDS = [
+  ...REQUEST_LIMIT_FIELDS,
   'name',
   'api-key',
   'apiKey',
@@ -66,6 +70,7 @@ const GEMINI_KEY_FIELDS = COOLING_PROVIDER_KEY_FIELDS;
 const VERTEX_KEY_FIELDS = COMMON_PROVIDER_KEY_FIELDS;
 
 const OPENAI_PROVIDER_FIELDS = [
+  ...REQUEST_LIMIT_FIELDS,
   'name',
   'priority',
   'disabled',
@@ -297,6 +302,8 @@ const mergeProviderKeyPayload = (
   knownFields: readonly string[]
 ) => {
   const next = mergeKnownFields(raw, payload, knownFields);
+  preserveOmittedRawField(raw, payload, next, ['concurrency-limit', 'concurrencyLimit', 'concurrency_limit']);
+  preserveOmittedRawField(raw, payload, next, ['rpm-limit', 'rpmLimit', 'rpm_limit']);
   preserveOmittedRawField(raw, payload, next, DISABLE_COOLING_FIELDS);
   preserveOmittedRawField(raw, payload, next, [
     'experimental-cch-signing',
@@ -320,6 +327,8 @@ const mergeProviderKeyPayload = (
 
 const mergeOpenAIProviderPayload = (raw: unknown, payload: Record<string, unknown>) => {
   const next = mergeKnownFields(raw, payload, OPENAI_PROVIDER_FIELDS);
+  preserveOmittedRawField(raw, payload, next, ['concurrency-limit', 'concurrencyLimit', 'concurrency_limit']);
+  preserveOmittedRawField(raw, payload, next, ['rpm-limit', 'rpmLimit', 'rpm_limit']);
   preserveOmittedRawField(raw, payload, next, DISABLE_COOLING_FIELDS);
   preserveOmittedRawField(raw, payload, next, NIM_COMPAT_FIELDS);
   preserveOmittedRawField(raw, payload, next, [
@@ -485,8 +494,13 @@ const serializeApiKeyEntry = (entry: ApiKeyEntry) => {
   return payload;
 };
 
+const serializeRequestLimits = (value: RequestLimits): Record<string, unknown> => ({
+  ...(value.concurrencyLimit === undefined ? {} : { 'concurrency-limit': value.concurrencyLimit }),
+  ...(value.rpmLimit === undefined ? {} : { 'rpm-limit': value.rpmLimit }),
+});
+
 const serializeProviderKey = (config: ProviderKeyConfig) => {
-  const payload: Record<string, unknown> = {};
+  const payload: Record<string, unknown> = { ...serializeRequestLimits(config) };
   const name = config.name?.trim();
   if (name) payload.name = name;
   const apiKey = config.apiKey?.trim();
@@ -544,7 +558,7 @@ const serializeVertexModelAliases = (models?: ModelAlias[]) =>
     : undefined;
 
 const serializeVertexKey = (config: ProviderKeyConfig) => {
-  const payload: Record<string, unknown> = {};
+  const payload: Record<string, unknown> = { ...serializeRequestLimits(config) };
   const name = config.name?.trim();
   if (name) payload.name = name;
   const apiKey = config.apiKey?.trim();
@@ -566,7 +580,7 @@ const serializeVertexKey = (config: ProviderKeyConfig) => {
 };
 
 const serializeGeminiKey = (config: GeminiKeyConfig) => {
-  const payload: Record<string, unknown> = {};
+  const payload: Record<string, unknown> = { ...serializeRequestLimits(config) };
   const name = config.name?.trim();
   if (name) payload.name = name;
   const apiKey = config.apiKey?.trim();
@@ -633,6 +647,7 @@ const serializeVertexKeyPatch = (config: ProviderKeyConfig) => ({
 
 const serializeOpenAIProvider = (provider: OpenAIProviderConfig) => {
   const payload: Record<string, unknown> = {
+    ...serializeRequestLimits(provider),
     name: provider.name,
     'base-url': provider.baseUrl,
     'api-key-entries': Array.isArray(provider.apiKeyEntries)
@@ -674,6 +689,19 @@ const serializeOpenAIProviderPatch = (provider: OpenAIProviderConfig) => ({
 });
 
 export const providersApi = {
+  async getNativeProviderLimits(kind: 'xai' | 'meta'): Promise<ProviderKeyConfig[]> {
+    const section = `${kind}-api-key`;
+    const list = await fetchAllProviderRecords(`/${section}`, section);
+    return list.map(normalizeProviderKeyConfig).filter(Boolean) as ProviderKeyConfig[];
+  },
+
+  updateNativeProviderLimits: (kind: 'xai' | 'meta', original: ProviderKeyConfig, limits: RequestLimits) =>
+    apiClient.patch(`/${kind}-api-key`, {
+      match: original.apiKey,
+      'match-base-url': original.baseUrl ?? '',
+      'match-auth-index': original.authIndex,
+      value: serializeRequestLimits(limits),
+    }),
   async getGeminiKeys(): Promise<GeminiKeyConfig[]> {
     const list = await fetchAllProviderRecords('/gemini-api-key', 'gemini-api-key');
     return list.map((item) => normalizeGeminiKeyConfig(item)).filter(Boolean) as GeminiKeyConfig[];

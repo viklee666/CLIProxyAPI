@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { NativeProviderLimits } from './NativeProviderLimits';
 import {
   buildProviderRows,
   ClaudeEditDrawer,
@@ -86,7 +87,7 @@ export function AiProvidersPage() {
 
   const [configSwitchingKey, setConfigSwitchingKey] = useState<string | null>(null);
 
-  // 表格筛选 / 排序 / 详情状态
+  // Table filters, sorting, and detail state
   const [kindFilter, setKindFilter] = useState<ProviderKindFilter>('all');
   const [searchText, setSearchText] = useState('');
   const [selectedModels, setSelectedModels] = useState<Set<string>>(new Set());
@@ -204,7 +205,7 @@ export function AiProvidersPage() {
     void loadConfigs();
   }, [loadConfigs]);
 
-  // 统一行集合与派生数据
+  // Unified rows and derived data
   const rows = useMemo(
     () =>
       buildProviderRows({
@@ -236,7 +237,7 @@ export function AiProvidersPage() {
   }, [rows]);
 
   useEffect(() => {
-    // 配置变更后清理已不存在的模型筛选项，避免筛选结果一直为空。
+    // Drop removed model filters after config changes to prevent an empty result.
     setSelectedModels((prev) => {
       if (prev.size === 0) return prev;
 
@@ -514,7 +515,7 @@ export function AiProvidersPage() {
     await applyProviderEnabledActions(new Map([[providerKey, enabled ? 'enable' : 'disable']]));
   };
 
-  // 启停（key-based providers 走 excludedModels 规则）
+  // Toggle providers; API-key providers use excludedModels rules.
   const setConfigEnabled = async (
     provider: Exclude<ProviderKind, 'openai'>,
     index: number,
@@ -954,7 +955,7 @@ export function AiProvidersPage() {
     const nextPriority = Math.trunc(priority);
     const switchingKey = `${row.key}:priority`;
 
-    // 复用页面级切换锁，避免外层快捷优先级与抽屉保存、开关切换并发写入。
+    // Share the page-level write lock between inline priority edits and drawer actions.
     if (row.kind === 'gemini' || row.kind === 'interactions') {
       const source = row.kind === 'gemini' ? geminiKeys : interactionsKeys;
       const current = source[row.originalIndex];
@@ -1102,7 +1103,7 @@ export function AiProvidersPage() {
     }
   };
 
-  // 删除（按 provider 分派，沿用既有 API 契约）
+  // Dispatch deletions by provider using the existing API contract.
   const deleteGemini = (index: number) => {
     const entry = geminiKeys[index];
     if (!entry) return;
@@ -1235,7 +1236,7 @@ export function AiProvidersPage() {
     });
   };
 
-  // 行级回调分派
+  // Dispatch row callbacks.
   const handleRowToggle = (row: ProviderRow, enabled: boolean) => {
     if (row.kind === 'openai') {
       void setOpenAIProviderEnabled(row.originalIndex, enabled);
@@ -1309,7 +1310,7 @@ export function AiProvidersPage() {
 
   const emptyState =
     rows.length > 0 && kindFilter !== 'all' && kindCounts[kindFilter] === 0 ? (
-      // 当前类型尚无配置：直接给“添加该类型配置”入口，避免“清除筛选”死胡同
+      // Offer creation when the selected provider type has no entries.
       <EmptyState
         title={t('ai_providers.kind_empty_title', { name: PROVIDER_KIND_LABELS[kindFilter] })}
         action={
@@ -1428,6 +1429,7 @@ export function AiProvidersPage() {
         </div>
       </div>
 
+      <NativeProviderLimits disabled={actionsDisabled} />
       <ProviderDetailDrawer
         row={detailRow}
         open={detailRowKey !== null}

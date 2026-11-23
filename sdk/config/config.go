@@ -10,6 +10,8 @@ type SDKConfig = internalconfig.SDKConfig
 
 type Config = internalconfig.Config
 
+type RequestLimits = internalconfig.RequestLimits
+
 type StreamingConfig = internalconfig.StreamingConfig
 type ClaudeCodeConfig = internalconfig.ClaudeCodeConfig
 type ClientAccessConfig = internalconfig.ClientAccessConfig

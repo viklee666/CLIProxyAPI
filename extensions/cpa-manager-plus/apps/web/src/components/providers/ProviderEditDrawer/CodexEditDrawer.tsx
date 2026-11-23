@@ -3,6 +3,8 @@ import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import { Drawer } from '@/components/ui/Drawer';
 import { Input } from '@/components/ui/Input';
+import { RequestLimitsInput } from '@/components/providers/RequestLimitsInput';
+import { requestLimits, requestLimitsChanged, validRequestLimits } from '@/components/providers/requestLimits';
 import { Select } from '@/components/ui/Select';
 import { HeaderInputList } from '@/components/ui/HeaderInputList';
 import { ModelInputList } from '@/components/ui/ModelInputList';
@@ -77,6 +79,7 @@ const normalizeModelEntries = (entries: ProviderFormState['modelEntries']) =>
   }, []);
 
 const buildCodexBaseline = (form: ProviderFormState) => ({
+  ...requestLimits(form),
   name: String(form.name ?? '').trim(),
   apiKey: String(form.apiKey ?? '').trim(),
   authIndex: normalizeAuthIndex(form.authIndex) ?? '',
@@ -191,7 +194,7 @@ export function CodexEditDrawer({
     setTestMessage('');
   }, [open, loaded, initialData]);
 
-  const canSave = !disabled && !saving && !loading && !invalidIndex && !isTesting;
+  const canSave = validRequestLimits(form) && !disabled && !saving && !loading && !invalidIndex && !isTesting;
 
   const isDirty = useMemo(() => {
     const normalizedPriority =
@@ -199,6 +202,7 @@ export function CodexEditDrawer({
         ? Math.trunc(form.priority)
         : null;
     return (
+      requestLimitsChanged(baseline, form) ||
       baseline.name !== String(form.name ?? '').trim() ||
       baseline.apiKey !== form.apiKey.trim() ||
       baseline.authIndex !== (normalizeAuthIndex(form.authIndex) ?? '') ||
@@ -463,6 +467,7 @@ export function CodexEditDrawer({
     setError('');
     try {
       const payload: ProviderKeyConfig = {
+        ...requestLimits(form),
         name: form.name?.trim() || undefined,
         apiKey: form.apiKey.trim(),
         priority: form.priority !== undefined ? Math.trunc(form.priority) : undefined,
@@ -623,6 +628,7 @@ export function CodexEditDrawer({
               disabled={disabled || saving}
               required
             />
+            <RequestLimitsInput value={form} onChange={(limits) => setForm((prev) => ({ ...prev, ...limits }))} disabled={disabled || saving} />
             <Input
               label={t('ai_providers.priority_label')}
               hint={t('ai_providers.priority_hint')}

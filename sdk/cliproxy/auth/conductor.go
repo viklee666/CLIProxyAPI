@@ -141,6 +141,7 @@ type Manager struct {
 	mu                        sync.RWMutex
 	selectorMu                sync.Mutex
 	configCooldownMu          sync.Mutex
+	requestLimiter            requestLimiter
 	auths                     map[string]*Auth
 	authEpochs                map[string]uint64
 	scheduler                 *authScheduler

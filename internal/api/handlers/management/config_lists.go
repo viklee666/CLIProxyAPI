@@ -256,6 +256,7 @@ func (h *Handler) PutGeminiKeys(c *gin.Context) {
 }
 func (h *Handler) PatchGeminiKey(c *gin.Context) {
 	type geminiKeyPatch struct {
+		requestLimitsPatch
 		APIKey              *string                          `json:"api-key"`
 		Weight              json.RawMessage                  `json:"weight"`
 		Prefix              *string                          `json:"prefix"`
@@ -325,6 +326,7 @@ func (h *Handler) PatchGeminiKey(c *gin.Context) {
 	}
 
 	entry := h.cfg.GeminiKey[targetIndex]
+	body.Value.requestLimitsPatch.apply(&entry.RequestLimits)
 	if body.Value.Name != nil {
 		entry.Name = strings.TrimSpace(*body.Value.Name)
 	}
@@ -486,6 +488,7 @@ func (h *Handler) PutInteractionsKeys(c *gin.Context) {
 }
 func (h *Handler) PatchInteractionsKey(c *gin.Context) {
 	type geminiKeyPatch struct {
+		requestLimitsPatch
 		APIKey              *string                          `json:"api-key"`
 		Weight              json.RawMessage                  `json:"weight"`
 		Prefix              *string                          `json:"prefix"`
@@ -555,6 +558,7 @@ func (h *Handler) PatchInteractionsKey(c *gin.Context) {
 	}
 
 	entry := h.cfg.InteractionsKey[targetIndex]
+	body.Value.requestLimitsPatch.apply(&entry.RequestLimits)
 	if body.Value.Name != nil {
 		entry.Name = strings.TrimSpace(*body.Value.Name)
 	}
@@ -719,6 +723,7 @@ func (h *Handler) PutClaudeKeys(c *gin.Context) {
 }
 func (h *Handler) PatchClaudeKey(c *gin.Context) {
 	type claudeKeyPatch struct {
+		requestLimitsPatch
 		APIKey                  *string                          `json:"api-key"`
 		FingerprintProfile      *string                          `json:"fingerprint-profile"`
 		Weight                  json.RawMessage                  `json:"weight"`
@@ -777,6 +782,7 @@ func (h *Handler) PatchClaudeKey(c *gin.Context) {
 	}
 
 	entry := h.cfg.ClaudeKey[targetIndex]
+	body.Value.requestLimitsPatch.apply(&entry.RequestLimits)
 	if body.Value.Name != nil {
 		entry.Name = strings.TrimSpace(*body.Value.Name)
 	}
@@ -956,6 +962,7 @@ func (h *Handler) PutOpenAICompat(c *gin.Context) {
 }
 func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 	type openAICompatPatch struct {
+		requestLimitsPatch
 		Name                  *string                             `json:"name"`
 		Prefix                *string                             `json:"prefix"`
 		Disabled              *bool                               `json:"disabled"`
@@ -1005,6 +1012,7 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 	}
 
 	entry := h.cfg.OpenAICompatibility[targetIndex]
+	body.Value.requestLimitsPatch.apply(&entry.RequestLimits)
 	if body.Value.Name != nil {
 		entry.Name = strings.TrimSpace(*body.Value.Name)
 	}
@@ -1141,6 +1149,7 @@ func (h *Handler) PutVertexCompatKeys(c *gin.Context) {
 }
 func (h *Handler) PatchVertexCompatKey(c *gin.Context) {
 	type vertexCompatPatch struct {
+		requestLimitsPatch
 		Name           *string                     `json:"name"`
 		APIKey         *string                     `json:"api-key"`
 		Weight         json.RawMessage             `json:"weight"`
@@ -1196,6 +1205,7 @@ func (h *Handler) PatchVertexCompatKey(c *gin.Context) {
 	}
 
 	entry := h.cfg.VertexCompatAPIKey[targetIndex]
+	body.Value.requestLimitsPatch.apply(&entry.RequestLimits)
 	if body.Value.Name != nil {
 		entry.Name = strings.TrimSpace(*body.Value.Name)
 	}
@@ -1760,6 +1770,7 @@ func (h *Handler) PutCodexKeys(c *gin.Context) {
 }
 func (h *Handler) PatchCodexKey(c *gin.Context) {
 	type codexKeyPatch struct {
+		requestLimitsPatch
 		APIKey              *string                          `json:"api-key"`
 		Weight              json.RawMessage                  `json:"weight"`
 		Prefix              *string                          `json:"prefix"`
@@ -1816,6 +1827,7 @@ func (h *Handler) PatchCodexKey(c *gin.Context) {
 	}
 
 	entry := h.cfg.CodexKey[targetIndex]
+	body.Value.requestLimitsPatch.apply(&entry.RequestLimits)
 	if body.Value.Name != nil {
 		entry.Name = strings.TrimSpace(*body.Value.Name)
 	}
@@ -1994,6 +2006,7 @@ func (h *Handler) PutXAIKeys(c *gin.Context) {
 
 func (h *Handler) PatchXAIKey(c *gin.Context) {
 	type xaiKeyPatch struct {
+		requestLimitsPatch
 		APIKey              *string                          `json:"api-key"`
 		Name                *string                          `json:"name"`
 		Priority            *int                             `json:"priority"`
@@ -2049,6 +2062,7 @@ func (h *Handler) PatchXAIKey(c *gin.Context) {
 	}
 
 	entry := h.cfg.XAIKey[targetIndex]
+	body.Value.requestLimitsPatch.apply(&entry.RequestLimits)
 	if body.Value.Name != nil {
 		entry.Name = strings.TrimSpace(*body.Value.Name)
 	}
@@ -2196,6 +2210,10 @@ func (h *Handler) PutMetaKeys(c *gin.Context) {
 	filtered := make([]config.MetaKey, 0, len(arr))
 	for i := range arr {
 		entry := arr[i]
+		if errLimit := entry.RequestLimits.Validate(); errLimit != nil {
+			c.JSON(400, gin.H{"error": errLimit.Error()})
+			return
+		}
 		normalizeCodexKey(&entry)
 		if entry.BaseURL == "" {
 			entry.BaseURL = "https://api.meta.ai/v1"
@@ -2214,6 +2232,7 @@ func (h *Handler) PutMetaKeys(c *gin.Context) {
 
 func (h *Handler) PatchMetaKey(c *gin.Context) {
 	type metaKeyPatch struct {
+		requestLimitsPatch
 		APIKey              *string                          `json:"api-key"`
 		Priority            *int                             `json:"priority"`
 		Weight              json.RawMessage                  `json:"weight"`
@@ -2258,6 +2277,7 @@ func (h *Handler) PatchMetaKey(c *gin.Context) {
 	}
 
 	entry := h.cfg.MetaKey[targetIndex]
+	body.Value.requestLimitsPatch.apply(&entry.RequestLimits)
 	if body.Value.APIKey != nil {
 		entry.APIKey = strings.TrimSpace(*body.Value.APIKey)
 	}

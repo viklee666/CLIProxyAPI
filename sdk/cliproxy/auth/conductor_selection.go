@@ -1288,6 +1288,10 @@ func (m *Manager) shouldRetryAfterErrorWithAttempted(ctx context.Context, opts c
 	if err == nil {
 		return 0, false
 	}
+	var localLimit *requestLimitError
+	if errors.As(err, &localLimit) {
+		return 0, false
+	}
 	var homeBusy *HomeConcurrencyBusyError
 	if errors.As(err, &homeBusy) && homeBusy != nil {
 		return 0, false
