@@ -26,6 +26,7 @@ func TestServiceProxyPoolFenceIsPerService(t *testing.T) {
 			WithConfig(&config.Config{AuthDir: dir}).
 			WithConfigPath(filepath.Join(dir, "config.yaml")).
 			Build()
+		registerBuiltServiceCleanup(t, service)
 		if errBuild != nil {
 			t.Fatalf("build service: %v", errBuild)
 		}
@@ -99,6 +100,7 @@ func TestOpenAICompatExecutorRebindsWhenConfigGenerationAdvances(t *testing.T) {
 		WithConfig(&config.Config{AuthDir: dir}).
 		WithConfigPath(filepath.Join(dir, "config.yaml")).
 		Build()
+	registerBuiltServiceCleanup(t, service)
 	if errBuild != nil {
 		t.Fatalf("build service: %v", errBuild)
 	}

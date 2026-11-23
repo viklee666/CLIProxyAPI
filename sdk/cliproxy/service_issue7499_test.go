@@ -275,6 +275,7 @@ func TestIssue7499WithPluginInterceptorHost(t *testing.T) {
 		WithConfigPath(tmpDir + "/config.yaml").
 		WithPluginInterceptorHost(host).
 		Build()
+	registerBuiltServiceCleanup(t, service)
 	if errBuild != nil {
 		t.Fatalf("Build() error = %v", errBuild)
 	}

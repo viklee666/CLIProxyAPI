@@ -74,6 +74,7 @@ func newIssue6631Harness(t *testing.T) *issue6631Harness {
 	}
 
 	service, errBuild := NewBuilder().WithConfig(cfg).WithConfigPath(configPath).Build()
+	registerBuiltServiceCleanup(t, service)
 	if errBuild != nil {
 		t.Fatal(errBuild)
 	}

@@ -3,7 +3,6 @@ package management
 import (
 	"context"
 	"fmt"
-	"github.com/MoeForge/moego/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,9 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clientaccess"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
@@ -578,18 +579,38 @@ func TestSaveTokenRecordInvalidatesAuthFileCandidateCatalog(t *testing.T) {
 		t.Fatalf("register auth: %v", errRegister)
 	}
 	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
-	h.tokenStore = &memoryAuthStore{}
+	h.tokenStore = sdkAuth.NewFileTokenStore()
 	now := time.Now()
 	first, _ := h.cachedAuthFileCandidatesFromManager(now)
-	if _, errSave := h.saveTokenRecord(context.Background(), &coreauth.Auth{
+	savedPath, errSave := h.saveTokenRecord(context.Background(), &coreauth.Auth{
 		ID:       "new.json",
 		FileName: "new.json",
 		Provider: "codex",
-	}); errSave != nil {
+		Metadata: map[string]any{"type": "codex", "access_token": "new-token"},
+	})
+	if errSave != nil {
 		t.Fatalf("saveTokenRecord error: %v", errSave)
 	}
+	if _, errStat := os.Stat(savedPath); errStat != nil {
+		t.Fatalf("saved auth file missing: %v", errStat)
+	}
 	second, _ := h.cachedAuthFileCandidatesFromManager(now.Add(time.Second))
-	if len(first) != 1 || len(second) != 1 || second[0].auth == first[0].auth {
-		t.Fatalf("candidate cache was not rebuilt after saveTokenRecord")
+	if len(first) != 1 || len(second) != 2 {
+		t.Fatalf("catalog counts before=%d after=%d, want 1 and 2", len(first), len(second))
+	}
+	foundNew := false
+	for _, candidate := range second {
+		if candidate.auth == first[0].auth {
+			t.Fatal("candidate cache was not rebuilt after saveTokenRecord")
+		}
+		if candidate.name == "new.json" {
+			foundNew = true
+			if candidate.auth.Metadata["access_token"] != "new-token" {
+				t.Fatal("catalog did not adopt the persisted credential")
+			}
+		}
+	}
+	if !foundNew {
+		t.Fatal("persisted credential missing from rebuilt catalog")
 	}
 }

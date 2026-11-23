@@ -680,7 +680,13 @@ func TestResponsesWebsocketEarly429RetriesAnotherCredentialWithoutClosingDownstr
 						StreamBootstrapBuffering: buffering,
 					},
 				}
-				manager := coreauth.NewManager(nil, &coreauth.FillFirstSelector{}, nil)
+				// This fixture permits quota failover but retains the successful
+				// lower-priority socket while the higher-priority credential is eligible.
+				selector := coreauth.NewSessionAffinitySelectorWithConfig(coreauth.SessionAffinityConfig{
+					Fallback: &coreauth.FillFirstSelector{},
+					RebindOn: coreauth.SessionAffinityRebindOnQuota,
+				})
+				manager := coreauth.NewManager(nil, selector, nil)
 				manager.SetConfig(cfg)
 				manager.SetRetryConfig(cfg.RequestRetry, 0, cfg.MaxRetryCredentials)
 				manager.RegisterExecutor(runtimeexecutor.NewCodexAutoExecutor(cfg))

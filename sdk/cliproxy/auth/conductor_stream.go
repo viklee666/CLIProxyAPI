@@ -59,7 +59,7 @@ func newStreamBootstrapError(err error, headers http.Header) error {
 			existing.headers = cloneHTTPHeader(headers)
 		}
 		if upstreamAttempt {
-			return markUpstreamExecutionAttemptWithProvider(existing, provider)
+			return markUpstreamExecutionAttemptWithProviderAndID(existing, provider, attemptID)
 		}
 		return existing
 	}
@@ -69,7 +69,7 @@ func newStreamBootstrapError(err error, headers http.Header) error {
 		attemptID: attemptID,
 	}
 	if upstreamAttempt {
-		return markUpstreamExecutionAttemptWithProvider(bootstrapErr, provider)
+		return markUpstreamExecutionAttemptWithProviderAndID(bootstrapErr, provider, attemptID)
 	}
 	return bootstrapErr
 }
@@ -239,6 +239,11 @@ func (m *Manager) recordCanceledUpstreamCooldown(ctx context.Context, auth *Auth
 	m.recordExecutionResult(context.WithoutCancel(ctx), result, auth, ephemeral)
 }
 
+func retainedStreamFailureAfterCancellation(err error) bool {
+	return err != nil && (retryAfterFromError(err) != nil || isRequestScopedError(err) ||
+		(statusCodeFromError(err) != 0 && errorCodeFromError(err) == ErrorCodeTransientTransport))
+}
+
 func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, resultModel, routeModel string, headers http.Header, buffered []cliproxyexecutor.StreamChunk, remaining <-chan cliproxyexecutor.StreamChunk, aliasResult OAuthModelAliasResult, ephemeralResult bool, opts cliproxyexecutor.Options, executionSeq uint64) *cliproxyexecutor.StreamResult {
 	return m.wrapStreamResultWithCancel(ctx, auth, provider, resultModel, routeModel, headers, buffered, remaining, aliasResult, ephemeralResult, opts, executionSeq, nil)
 }
@@ -261,29 +266,52 @@ func (m *Manager) wrapStreamResultWithCancel(ctx context.Context, auth *Auth, pr
 		if aliasResult.ForceMapping && strings.TrimSpace(aliasResult.OriginalAlias) != "" {
 			rewriter = NewStreamRewriter(StreamRewriteOptions{RewriteModel: aliasResult.OriginalAlias})
 		}
-		emit := func(chunk cliproxyexecutor.StreamChunk) bool {
-			if chunk.Err != nil && !failed {
-				if ctxErr := ctx.Err(); ctxErr != nil {
-					if retryAfterFromError(chunk.Err) != nil {
-						m.recordCanceledUpstreamCooldown(ctx, auth, provider, resultModel, routeModel, opts, chunk.Err, ephemeralResult, executionSeq)
-						failed = true
-						return false
-					}
-					if !isRequestScopedError(chunk.Err) {
-						failed = true
-						return false
+		recordFailure := func(resultCtx context.Context, err error) (string, bool) {
+			entry := logEntryWithRequestID(resultCtx)
+			warnLogUpstreamFailure(resultCtx, entry, provider, resultModel, auth, time.Since(streamStart), err)
+			action, okAction := matchRequestScopedErrorAction(auth, err, m.requestScopedErrorConfig(resultCtx))
+			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(err), Options: opts, AccessToken: accessToken, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch, ExecutionSeq: executionSeq}
+			result.RetryAfter = retryAfterFromError(err)
+			result.CredentialScope = isCredentialScopedError(err)
+			applyRequestScopedActionToResult(action, okAction, &result)
+			m.recordExecutionResult(resultCtx, result, auth, ephemeralResult)
+			return action, okAction
+		}
+		discardRemaining := func() {
+			if remaining == nil {
+				return
+			}
+			if failed || ctx.Err() == nil {
+				discardStreamChunks(remaining)
+				return
+			}
+			// Executors may publish an already-observed terminal failure while unwinding
+			// cancellation. Drain asynchronously so output closes and admission is released.
+			resultCtx := context.WithoutCancel(ctx)
+			go func() {
+				recorded := false
+				for chunk := range remaining {
+					if !recorded && retainedStreamFailureAfterCancellation(chunk.Err) {
+						recordFailure(resultCtx, chunk.Err)
+						recorded = true
 					}
 				}
+			}()
+		}
+		emit := func(chunk cliproxyexecutor.StreamChunk) bool {
+			if chunk.Err != nil && !failed {
+				resultCtx := ctx
+				if ctx.Err() != nil {
+					if !retainedStreamFailureAfterCancellation(chunk.Err) {
+						return false
+					}
+					resultCtx = context.WithoutCancel(ctx)
+				}
 				failed = true
-				entry := logEntryWithRequestID(ctx)
-				warnLogUpstreamFailure(ctx, entry, provider, resultModel, auth, time.Since(streamStart), chunk.Err)
-				rerr := resultErrorFromError(chunk.Err)
-				action, okAction := matchRequestScopedErrorAction(auth, chunk.Err, m.requestScopedErrorConfig(ctx))
-				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: opts, AccessToken: accessToken, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch, ExecutionSeq: executionSeq}
-				result.RetryAfter = retryAfterFromError(chunk.Err)
-				result.CredentialScope = isCredentialScopedError(chunk.Err)
-				applyRequestScopedActionToResult(action, okAction, &result)
-				m.recordExecutionResult(ctx, result, auth, ephemeralResult)
+				action, okAction := recordFailure(resultCtx, chunk.Err)
+				if ctx.Err() != nil {
+					return false
+				}
 				if okAction && !isRequestTerminatedError(chunk.Err) && !isRequestStopError(chunk.Err) && !isTOSViolationError(chunk.Err) {
 					if isRequestScopedStop(action, okAction) {
 						chunk.Err = wrapRequestStopError(chunk.Err)
@@ -357,7 +385,7 @@ func (m *Manager) wrapStreamResultWithCancel(ctx context.Context, auth *Auth, pr
 				if cancelAttempt != nil {
 					cancelAttempt()
 				}
-				discardStreamChunks(remaining)
+				discardRemaining()
 				return
 			}
 		}
@@ -377,7 +405,7 @@ func (m *Manager) wrapStreamResultWithCancel(ctx context.Context, auth *Auth, pr
 						if cancelAttempt != nil {
 							cancelAttempt()
 						}
-						discardStreamChunks(remaining)
+						discardRemaining()
 						return
 					case chunk, open = <-remaining:
 					}
@@ -395,7 +423,7 @@ func (m *Manager) wrapStreamResultWithCancel(ctx context.Context, auth *Auth, pr
 				if cancelAttempt != nil {
 					cancelAttempt()
 				}
-				discardStreamChunks(remaining)
+				discardRemaining()
 				return
 			}
 		}

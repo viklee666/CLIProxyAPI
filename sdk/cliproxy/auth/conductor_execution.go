@@ -2987,7 +2987,7 @@ func (m *Manager) prepareHomeAuthSnapshot(ctx context.Context, executor Provider
 		if updated == nil {
 			return target, nil
 		}
-		return m.persistPreparedHomeAuth(ctx, updated)
+		return m.persistPreparedHomeAuth(callCtx, updated)
 	}
 
 	key := homeAuthPrepareKey(ctx, auth)
@@ -3051,7 +3051,7 @@ func (m *Manager) prepareHomeAuthSnapshot(ctx context.Context, executor Provider
 				flight.result = snapshot
 				return
 			}
-			flight.result = updated
+			flight.result, flight.err = m.persistPreparedHomeAuth(flightCtx, updated)
 		}()
 	}
 

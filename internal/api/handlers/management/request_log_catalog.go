@@ -133,10 +133,11 @@ func requestLogNameByID(catalog *requestLogCatalog, requestID string) string {
 		return ""
 	}
 	suffix := "-" + logging.ShortRequestID(requestID) + ".log"
+	legacySuffix := "-" + requestID + ".log"
 	var matched string
 	var latestModTime time.Time
 	for _, name := range catalog.fileNames {
-		if !strings.HasSuffix(name, suffix) {
+		if !strings.HasSuffix(name, suffix) && !strings.HasSuffix(name, legacySuffix) {
 			continue
 		}
 		info, err := os.Stat(filepath.Join(catalog.directory, name))

@@ -662,7 +662,7 @@ func (s *Server) unifiedModelsHandler(openaiHandler *openai.OpenAIAPIHandler, cl
 		}
 
 		// Access-controlled callers must never reach the global Home catalog.
-		isScopedRequest := openaiHandler.IsModelCatalogScoped(c)
+		isScopedRequest := openaiHandler != nil && openaiHandler.IsModelCatalogScoped(c)
 		cfg := s.getConfig()
 		if _, ok := c.Request.URL.Query()["client_version"]; ok {
 			clientVersion := c.Query("client_version")
@@ -1123,7 +1123,7 @@ func (s *Server) loadMuseCodeHomeModels(c *gin.Context) ([]musecode.ModelInput, 
 
 func (s *Server) geminiModelsHandler(geminiHandler *gemini.GeminiAPIHandler) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if cfg := s.getConfig(); cfg != nil && cfg.Home.Enabled && !geminiHandler.IsModelCatalogScoped(c) {
+		if cfg := s.getConfig(); cfg != nil && cfg.Home.Enabled && (geminiHandler == nil || !geminiHandler.IsModelCatalogScoped(c)) {
 			s.handleHomeGeminiModels(c)
 			return
 		}
@@ -1134,7 +1134,7 @@ func (s *Server) geminiModelsHandler(geminiHandler *gemini.GeminiAPIHandler) gin
 
 func (s *Server) geminiGetHandler(geminiHandler *gemini.GeminiAPIHandler) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if cfg := s.getConfig(); cfg != nil && cfg.Home.Enabled && !geminiHandler.IsModelCatalogScoped(c) {
+		if cfg := s.getConfig(); cfg != nil && cfg.Home.Enabled && (geminiHandler == nil || !geminiHandler.IsModelCatalogScoped(c)) {
 			s.handleHomeGeminiModel(c)
 			return
 		}

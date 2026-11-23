@@ -223,10 +223,26 @@ func (e *AntigravityExecutor) refreshTokenWithOptions(ctx context.Context, auth 
 
 	now := time.Now()
 	auth.MutateMetadata(func(meta map[string]any) {
+		grantIdentity := antigravitySignatureGrantIdentityForMetadata(meta)
+		grantRetained := strings.TrimSpace(metaStringValue(meta, antigravitySignatureGrantScopeMetadataKey))
+		grantBinding := strings.TrimSpace(metaStringValue(meta, antigravitySignatureGrantBindingMetadataKey))
+		currentBinding := antigravitySignatureGrantBindingForMetadata(meta)
+		if grantRetained != "" && grantBinding == currentBinding {
+			// Retain identity only when a prior refresh bound this exact token pair.
+			if grantIdentity != "" {
+				meta[antigravitySignatureGrantScopeMetadataKey] = grantIdentity
+			}
+		} else {
+			delete(meta, antigravitySignatureGrantScopeMetadataKey)
+		}
 		meta["access_token"] = tokenResp.AccessToken
 		if tokenResp.RefreshToken != "" {
 			meta["refresh_token"] = tokenResp.RefreshToken
 		}
+		if retained := strings.TrimSpace(metaStringValue(meta, antigravitySignatureGrantScopeMetadataKey)); retained == "" {
+			meta[antigravitySignatureGrantScopeMetadataKey] = antigravitySignatureGrantIdentityForMetadata(meta)
+		}
+		meta[antigravitySignatureGrantBindingMetadataKey] = antigravitySignatureGrantBindingForMetadata(meta)
 		meta["expires_in"] = tokenResp.ExpiresIn
 		meta["timestamp"] = now.UnixMilli()
 		meta["expired"] = now.Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339)
@@ -650,6 +666,17 @@ func preserveAntigravityCauseTOSMetadata(dst *statusErr, cause error, statusCode
 				dst.tosAppealURLText = violation.AppealURLText
 			}
 		}
+	}
+}
+
+func metaStringValue(metadata map[string]any, key string) string {
+	switch value := metadata[key].(type) {
+	case string:
+		return strings.TrimSpace(value)
+	case []byte:
+		return strings.TrimSpace(string(value))
+	default:
+		return ""
 	}
 }
 

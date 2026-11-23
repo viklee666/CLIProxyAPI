@@ -1131,6 +1131,7 @@ func TestEndToEndStatusPatch_RestoresModelsThroughServerPipeline(t *testing.T) {
 		WithConfig(cfg).
 		WithConfigPath(filepath.Join(authDir, "config.yaml")).
 		Build()
+	registerBuiltServiceCleanup(t, service)
 	if errBuild != nil {
 		t.Fatalf("Build() failed: %v", errBuild)
 	}
@@ -1629,6 +1630,7 @@ func TestEndToEndAuthFileReplacement_RestoresModelsInV1ModelsWithoutRestart(t *t
 		WithConfig(cfg).
 		WithConfigPath(filepath.Join(authDir, "config.yaml")).
 		Build()
+	registerBuiltServiceCleanup(t, service)
 	if errBuild != nil {
 		t.Fatalf("Build() failed: %v", errBuild)
 	}
@@ -1807,6 +1809,7 @@ func TestEndToEndAuthFilePatch_RestoresModelsInV1ModelsWithoutRestart(t *testing
 		WithConfig(cfg).
 		WithConfigPath(filepath.Join(authDir, "config.yaml")).
 		Build()
+	registerBuiltServiceCleanup(t, service)
 	if errBuild != nil {
 		t.Fatalf("Build() failed: %v", errBuild)
 	}

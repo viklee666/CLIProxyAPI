@@ -160,7 +160,9 @@ func TestManagerWeightedPriorityPoolIsolation(t *testing.T) {
 		for _, pinned := range []bool{false, true} {
 			t.Run(fmt.Sprintf("mixed=%t/pinned=%t", mixed, pinned), func(t *testing.T) {
 				weighted := &WeightedRoundRobinSelector{}
-				selector := NewSessionAffinitySelector(weighted)
+				selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{
+					Fallback: weighted, RebindOn: SessionAffinityRebindOnNever,
+				})
 				t.Cleanup(selector.Stop)
 				manager := NewManager(nil, selector, nil)
 				const provider, model = "pool-isolation", "pool-model"
@@ -223,7 +225,9 @@ func TestWeightedSessionAffinityPoolIsolation(t *testing.T) {
 		for _, weights := range [][2]int{{1, 1}, {3, 1}, {1, 3}, {5, 2}} {
 			t.Run(fmt.Sprintf("%s/%d:%d", reason, weights[0], weights[1]), func(t *testing.T) {
 				weighted := &WeightedRoundRobinSelector{}
-				selector := NewSessionAffinitySelector(weighted)
+				selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{
+					Fallback: weighted, RebindOn: SessionAffinityRebindOnNever,
+				})
 				t.Cleanup(selector.Stop)
 				auths := []*Auth{
 					{ID: "a", Attributes: map[string]string{"priority": "0"}},

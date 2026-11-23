@@ -28,6 +28,7 @@ func TestHandleAuthUpdatesFileSnapshotKeepsCooldown(t *testing.T) {
 			dir := t.TempDir()
 			manager := coreauth.NewManager(nil, nil, nil)
 			service, errBuild := NewBuilder().WithConfig(&internalconfig.Config{AuthDir: dir}).WithConfigPath(filepath.Join(dir, "config.yaml")).WithCoreAuthManager(manager).Build()
+			registerBuiltServiceCleanup(t, service)
 			if errBuild != nil {
 				t.Fatal(errBuild)
 			}
@@ -88,6 +89,7 @@ func TestHandleAuthUpdatesDiscardedSnapshotTriggersWatcherReread(t *testing.T) {
 	dir := t.TempDir()
 	manager := coreauth.NewManager(nil, nil, nil)
 	service, errBuild := NewBuilder().WithConfig(&internalconfig.Config{AuthDir: dir}).WithConfigPath(filepath.Join(dir, "config.yaml")).WithCoreAuthManager(manager).Build()
+	registerBuiltServiceCleanup(t, service)
 	if errBuild != nil {
 		t.Fatal(errBuild)
 	}

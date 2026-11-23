@@ -10,40 +10,46 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
-func TestWeightedWebsocketPreferenceAcrossPriorities(t *testing.T) {
+func TestWeightedWebsocketPreferenceRespectsPriority(t *testing.T) {
 	for _, provider := range []string{"codex", "xai"} {
 		for _, mixed := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/mixed=%t", provider, mixed), func(t *testing.T) {
-				manager := NewManager(nil, &WeightedRoundRobinSelector{}, nil)
-				manager.RegisterExecutor(schedulerTestExecutor{provider: provider})
-				ctx := cliproxyexecutor.WithDownstreamWebsocket(t.Context())
-				const model = "weighted-ws-priority"
-				for _, auth := range []*Auth{
-					{ID: t.Name() + "-http", Provider: provider, Attributes: map[string]string{"priority": "10"}},
-					{ID: t.Name() + "-ws", Provider: provider, Attributes: map[string]string{"priority": "0", "websockets": "true"}},
-				} {
-					registry.GetGlobalRegistry().RegisterClient(auth.ID, provider, []*registry.ModelInfo{{ID: model}})
-					t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
-					if _, errRegister := manager.Register(WithSkipPersist(ctx), auth); errRegister != nil {
-						t.Fatal(errRegister)
+			for _, websocketPriority := range []string{"0", "10", "20"} {
+				t.Run(fmt.Sprintf("%s/mixed=%t/ws-priority=%s", provider, mixed, websocketPriority), func(t *testing.T) {
+					manager := NewManager(nil, &WeightedRoundRobinSelector{}, nil)
+					manager.RegisterExecutor(schedulerTestExecutor{provider: provider})
+					ctx := cliproxyexecutor.WithDownstreamWebsocket(t.Context())
+					const model = "weighted-ws-priority"
+					for _, auth := range []*Auth{
+						{ID: t.Name() + "-http", Provider: provider, Attributes: map[string]string{"priority": "10"}},
+						{ID: t.Name() + "-ws", Provider: provider, Attributes: map[string]string{"priority": websocketPriority, "websockets": "true"}},
+					} {
+						registry.GetGlobalRegistry().RegisterClient(auth.ID, provider, []*registry.ModelInfo{{ID: model}})
+						t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+						if _, errRegister := manager.Register(WithSkipPersist(ctx), auth); errRegister != nil {
+							t.Fatal(errRegister)
+						}
 					}
-				}
-				for _, routeModel := range []string{"", model} {
-					var got *Auth
-					var errPick error
-					if mixed {
-						got, _, _, errPick = manager.pickNextMixed(ctx, []string{provider}, routeModel, cliproxyexecutor.Options{}, nil)
-					} else {
-						got, _, errPick = manager.pickNext(ctx, provider, routeModel, cliproxyexecutor.Options{}, nil)
+					wantID := t.Name() + "-ws"
+					if websocketPriority == "0" {
+						wantID = t.Name() + "-http"
 					}
-					if errPick != nil || got == nil {
-						t.Fatalf("model=%q: selection failed: auth=%v err=%v", routeModel, got, errPick)
+					for _, routeModel := range []string{"", model} {
+						var got *Auth
+						var errPick error
+						if mixed {
+							got, _, _, errPick = manager.pickNextMixed(ctx, []string{provider}, routeModel, cliproxyexecutor.Options{}, nil)
+						} else {
+							got, _, errPick = manager.pickNext(ctx, provider, routeModel, cliproxyexecutor.Options{}, nil)
+						}
+						if errPick != nil || got == nil {
+							t.Fatalf("model=%q: selection failed: auth=%v err=%v", routeModel, got, errPick)
+						}
+						if got.ID != wantID {
+							t.Fatalf("model=%q: got %q, want %q", routeModel, got.ID, wantID)
+						}
 					}
-					if got.ID != t.Name()+"-ws" {
-						t.Fatalf("model=%q: got %q, want lower-priority WebSocket auth", routeModel, got.ID)
-					}
-				}
-			})
+				})
+			}
 		}
 	}
 }

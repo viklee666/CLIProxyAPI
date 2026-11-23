@@ -556,6 +556,7 @@ func TestAntigravityColdStart_RefreshesExpiredTokenUsingAuthProxy(t *testing.T) 
 		WithConfig(cfg).
 		WithConfigPath(configPath).
 		Build()
+	registerBuiltServiceCleanup(t, svc)
 	if errBuild != nil {
 		t.Fatalf("Build error: %v", errBuild)
 	}

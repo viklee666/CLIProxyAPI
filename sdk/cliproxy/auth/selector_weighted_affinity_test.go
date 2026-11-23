@@ -80,7 +80,9 @@ func TestWeightedSessionAffinityChangingPoolsDoNotStarveEqualWeights(t *testing.
 	for _, newSession := range []bool{false, true} {
 		t.Run(fmt.Sprintf("new-session=%t", newSession), func(t *testing.T) {
 			weighted := &WeightedRoundRobinSelector{}
-			selector := NewSessionAffinitySelector(weighted)
+			selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{
+				Fallback: weighted, RebindOn: SessionAffinityRebindOnNever,
+			})
 			t.Cleanup(selector.Stop)
 			auths := []*Auth{
 				{ID: "a", Attributes: map[string]string{"priority": "0"}},

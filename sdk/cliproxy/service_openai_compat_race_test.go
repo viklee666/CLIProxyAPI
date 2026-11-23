@@ -73,6 +73,7 @@ func TestPutOpenAICompatConcurrentWithAuthFieldsPatch_Issue6559(t *testing.T) {
 		WithConfig(cfg).
 		WithConfigPath(configPath).
 		Build()
+	registerBuiltServiceCleanup(t, service)
 	if errBuild != nil {
 		t.Fatalf("Build() failed: %v", errBuild)
 	}
@@ -250,6 +251,7 @@ func TestPutOpenAICompatConcurrentWithConfigReloadAndAuthUpdate_Issue6559(t *tes
 		WithConfig(buildCfg(0)).
 		WithConfigPath(configPath).
 		Build()
+	registerBuiltServiceCleanup(t, service)
 	if errBuild != nil {
 		t.Fatalf("Build() failed: %v", errBuild)
 	}

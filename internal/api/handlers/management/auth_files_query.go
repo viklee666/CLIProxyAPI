@@ -300,8 +300,14 @@ func (h *Handler) listAuthFilesQuery(c *gin.Context) {
 
 	files := make([]gin.H, 0, end-start)
 	if q.view != "count" {
+		quota := authFileQuotaContext{}
+		if q.view == "detail" {
+			if host := h.pluginHostSnapshot(); host != nil {
+				quota.pluginIDs = host.QuotaProviderPluginIDs(c.Request.Context())
+			}
+		}
 		for i := start; i < end; i++ {
-			entry := h.authFileQueryEntry(filtered[i], q.view)
+			entry := h.authFileQueryEntry(filtered[i], q.view, quota)
 			if entry != nil {
 				if filtered[i].auth != nil && h.authManager != nil && !h.authManager.HomeEnabled() {
 					entry["cooldowns"] = coreauth.CooldownSnapshotForAuth(filtered[i].auth, responseTime.UTC())
@@ -655,7 +661,7 @@ func sortAuthFileCandidates(candidates []authFileCandidate, q authFileQuery) {
 	})
 }
 
-func (h *Handler) authFileQueryEntry(candidate authFileCandidate, view string) gin.H {
+func (h *Handler) authFileQueryEntry(candidate authFileCandidate, view string, quota authFileQuotaContext) gin.H {
 	if candidate.entry != nil {
 		return candidate.entry
 	}
@@ -663,7 +669,7 @@ func (h *Handler) authFileQueryEntry(candidate authFileCandidate, view string) g
 		return nil
 	}
 	if view == "detail" {
-		return h.buildAuthFileEntry(candidate.auth)
+		return h.buildAuthFileEntry(candidate.auth, quota)
 	}
 	auth := candidate.auth
 	entry := gin.H{

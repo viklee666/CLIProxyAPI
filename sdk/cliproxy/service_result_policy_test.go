@@ -19,6 +19,7 @@ func TestBuilder_WithResultPolicy(t *testing.T) {
 		WithConfigPath(t.TempDir() + "/config.yaml").
 		WithResultPolicy(policy).
 		Build()
+	registerBuiltServiceCleanup(t, service)
 	if errBuild != nil {
 		t.Fatalf("Build() failed: %v", errBuild)
 	}

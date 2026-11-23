@@ -1024,7 +1024,7 @@ func (m *Manager) availableAuthsForSelector(ctx context.Context, selector Select
 		priorityAuths = highestPriorityAuths(allAuths)
 	}
 
-	if sessionAffinity {
+	if sessionAffinity || usesAdaptiveSelection(selector) {
 		selectorAuths = allAuths
 	} else {
 		selectorAuths = highestPriorityAuths(allAuths)

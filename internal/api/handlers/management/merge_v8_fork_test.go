@@ -62,6 +62,7 @@ api-keys:
   openai-compatibility:
     - name: keyless
       base-url: https://example.com/v1
+      keys: []
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}

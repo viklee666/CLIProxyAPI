@@ -367,6 +367,17 @@ func TestSessionAffinityQuotaPreservedBindingAddsConversationAlias(t *testing.T)
 	guardianTestPick(t, selector, "codex", "model", conversation, []*Auth{authA, authB}, "auth-b")
 }
 
+func TestSessionAffinityGuardianDefaultPriority(t *testing.T) {
+	t.Parallel()
+
+	selector := NewSessionAffinitySelector(&FillFirstSelector{})
+	t.Cleanup(selector.Stop)
+	high := &Auth{ID: "high", Provider: "codex", Attributes: map[string]string{"priority": "1"}}
+	low := &Auth{ID: "low", Provider: "codex", Attributes: map[string]string{"priority": "0"}}
+	guardianTestPick(t, selector, "codex", "parent-model", guardianTestOptions("main-thread", ""), []*Auth{low}, low.ID)
+	guardianTestPick(t, selector, "codex", "review-model", guardianTestOptions("review-thread", "main-thread"), []*Auth{high, low}, high.ID)
+}
+
 func TestSessionAffinityGuardianCandidateEligibility(t *testing.T) {
 	t.Parallel()
 
@@ -376,7 +387,9 @@ func TestSessionAffinityGuardianCandidateEligibility(t *testing.T) {
 			if eligibility == "zero_weight" {
 				fallback = &WeightedRoundRobinSelector{}
 			}
-			selector := NewSessionAffinitySelector(fallback)
+			selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{
+				Fallback: fallback, RebindOn: SessionAffinityRebindOnNever,
+			})
 			t.Cleanup(selector.Stop)
 			authA := &Auth{ID: "auth-a", Provider: "codex", Attributes: map[string]string{"priority": "1"}}
 			authB := &Auth{ID: "auth-b", Provider: "codex", Attributes: map[string]string{"priority": "0"}}

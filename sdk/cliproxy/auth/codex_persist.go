@@ -37,6 +37,10 @@ func PersistCodexAuthFile(ctx context.Context, path string, auth *Auth) (bool, e
 		return false, nil
 	}
 
+	auth.WithMetadataLock(func() {
+		NormalizeCredentialMetadata(auth.Metadata)
+	})
+
 	type metadataSetter interface {
 		SetMetadata(map[string]any)
 	}

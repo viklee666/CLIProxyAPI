@@ -212,6 +212,7 @@ func TestIssue7568BuilderWithExecutorWrapper(t *testing.T) {
 		WithConfigPath(tmpDir + "/config.yaml").
 		WithExecutorWrapper(wrapperFn).
 		Build()
+	registerBuiltServiceCleanup(t, service)
 	if errBuild != nil {
 		t.Fatalf("Build() error = %v", errBuild)
 	}
