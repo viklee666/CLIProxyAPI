@@ -114,6 +114,7 @@ export const buildEventRows = (
       const reasoningEffort = readString(detail.reasoning_effort ?? detail.reasoningEffort);
       const serviceTier = readString(detail.service_tier ?? detail.serviceTier);
       const executorType = readString(detail.executor_type ?? detail.executorType);
+      const userAgent = readString(detail.user_agent ?? detail.userAgent);
       const failStatusCodeRaw = detail.fail_status_code ?? detail.failStatusCode;
       const failStatusCode =
         failStatusCodeRaw === null || failStatusCodeRaw === undefined
@@ -175,6 +176,7 @@ export const buildEventRows = (
         accountMasked,
         authIndex,
         authIndexMasked: maskAuthIndex(authIndex),
+        userAgent: userAgent || undefined,
         authLabel: authMeta?.label || snapshotLabel || sourceMasked,
         projectId,
         apiKeyHash,
@@ -231,6 +233,7 @@ export const buildEventRows = (
           reasoningEffort,
           serviceTier,
           executorType,
+          userAgent,
           normalizedFailStatusCode,
           failSummary,
           headerErrorKind,

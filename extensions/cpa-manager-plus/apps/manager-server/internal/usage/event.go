@@ -19,6 +19,7 @@ type Event struct {
 	Timestamp             string `json:"timestamp"`
 	Provider              string `json:"provider,omitempty"`
 	ExecutorType          string `json:"executor_type,omitempty"`
+	UserAgent             string `json:"user_agent,omitempty"`
 	Model                 string `json:"model"`
 	RequestedModel        string `json:"requested_model,omitempty"`
 	ResolvedModel         string `json:"resolved_model,omitempty"`
@@ -114,6 +115,7 @@ type Detail struct {
 	Timestamp             string                  `json:"timestamp"`
 	Source                string                  `json:"source"`
 	AuthIndex             string                  `json:"auth_index,omitempty"`
+	UserAgent             string                  `json:"user_agent,omitempty"`
 	APIKeyHash            string                  `json:"api_key_hash,omitempty"`
 	AccountSnapshot       string                  `json:"account_snapshot,omitempty"`
 	AuthLabelSnapshot     string                  `json:"auth_label_snapshot,omitempty"`
@@ -324,6 +326,9 @@ func NormalizeRaw(raw []byte) (Event, error) {
 	authIndex := readString(record, "auth_index", "authIndex", "AuthIndex")
 	requestedModel := readString(record, "alias", "requested_model", "requestedModel")
 	resolvedModel := readString(record, "model", "model_name", "modelName", "resolved_model", "resolvedModel")
+	if responseModel := readString(record, "response_model", "responseModel"); responseModel != "" {
+		resolvedModel = responseModel
+	}
 	model := requestedModel
 	if model == "" {
 		model = resolvedModel
@@ -351,6 +356,7 @@ func NormalizeRaw(raw []byte) (Event, error) {
 		Timestamp:                     timestamp,
 		Provider:                      provider,
 		ExecutorType:                  executorType,
+		UserAgent:                     readString(record, "user_agent", "userAgent"),
 		Model:                         model,
 		RequestedModel:                requestedModel,
 		ResolvedModel:                 resolvedModel,
@@ -441,6 +447,7 @@ func BuildPayload(events []Event) Payload {
 			Timestamp:             event.Timestamp,
 			Source:                event.Source,
 			AuthIndex:             event.AuthIndex,
+			UserAgent:             event.UserAgent,
 			APIKeyHash:            event.APIKeyHash,
 			AccountSnapshot:       event.AccountSnapshot,
 			AuthLabelSnapshot:     event.AuthLabelSnapshot,

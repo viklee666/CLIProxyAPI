@@ -840,7 +840,7 @@ export function RealtimeEventsPanel({
                   <td>
                     <div
                       className={`${styles.primaryCell} ${styles.realtimeModelCell}`}
-                      title={[row.model, showResolvedModel ? row.resolvedModel : '']
+                      title={[row.model, showResolvedModel ? row.resolvedModel : '', row.userAgent ? `${t('monitoring.client_user_agent')}: ${row.userAgent}` : '']
                         .filter(Boolean)
                         .join('\n')}
                     >
@@ -850,6 +850,11 @@ export function RealtimeEventsPanel({
                       {showResolvedModel ? (
                         <small className={`${styles.monoCell} ${styles.realtimeModelText}`}>
                           {row.resolvedModel}
+                        </small>
+                      ) : null}
+                      {row.userAgent ? (
+                        <small className={styles.realtimeApiKeyLine} title={row.userAgent}>
+                          {`${t('monitoring.client_user_agent')}: ${row.userAgent}`}
                         </small>
                       ) : null}
                     </div>

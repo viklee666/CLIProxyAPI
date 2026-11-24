@@ -2335,6 +2335,7 @@
     "log_rows": "Log Rows",
     "log_rows_short": "Rows",
     "realtime_api_key_label": "API Key",
+    "client_user_agent": "User-Agent",
     "realtime_api_key_hash": "API Key hash",
     "realtime_api_key_masked": "Masked key",
     "pagination_prev": "Previous",

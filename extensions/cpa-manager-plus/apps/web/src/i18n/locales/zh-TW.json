@@ -2328,6 +2328,7 @@
     "log_rows": "日誌行",
     "log_rows_short": "日誌",
     "realtime_api_key_label": "API Key",
+    "client_user_agent": "客戶端 User-Agent",
     "realtime_api_key_hash": "API Key 雜湊",
     "realtime_api_key_masked": "脫敏金鑰",
     "pagination_prev": "上一頁",

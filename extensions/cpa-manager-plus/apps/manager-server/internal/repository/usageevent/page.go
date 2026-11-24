@@ -101,7 +101,7 @@ func (r *repository) ListRecentPage(ctx context.Context, query RecentPageQuery) 
 
 	rows, err := r.db.QueryContext(ctx, `select
 		id,
-		request_id, event_hash, timestamp_ms, timestamp, provider, executor_type, model, endpoint, method, path,
+		request_id, event_hash, timestamp_ms, timestamp, provider, executor_type, user_agent, model, endpoint, method, path,
 		auth_type, auth_index, source, source_hash, api_key_hash,
 		account_snapshot, auth_label_snapshot, auth_file_snapshot, auth_provider_snapshot, auth_project_id_snapshot, auth_snapshot_at_ms,
 		requested_model, resolved_model, reasoning_effort, service_tier, request_service_tier, response_service_tier, cache_input_mode,
@@ -184,7 +184,7 @@ func recentPageAPIKeyCondition(values []string) (string, []any) {
 func scanRecentPageItem(row recentPageScanner) (recentPageItem, error) {
 	var id int64
 	var event model.UsageEvent
-	var requestID, provider, executorType, endpoint, method, path, authType, authIndex, source, sourceHash, apiKeyHash, accountSnapshot, authLabelSnapshot, authFileSnapshot, authProviderSnapshot, authProjectIDSnapshot, requestedModel, resolvedModel, reasoningEffort, serviceTier, requestServiceTier, responseServiceTier, cacheInputMode, failSummary sql.NullString
+	var requestID, provider, executorType, userAgent, endpoint, method, path, authType, authIndex, source, sourceHash, apiKeyHash, accountSnapshot, authLabelSnapshot, authFileSnapshot, authProviderSnapshot, authProjectIDSnapshot, requestedModel, resolvedModel, reasoningEffort, serviceTier, requestServiceTier, responseServiceTier, cacheInputMode, failSummary sql.NullString
 	var responseMetadataJSON, quotaPlanType, errorKind, errorCode, traceID string
 	var authSnapshotAt sql.NullInt64
 	var latency, ttft sql.NullInt64
@@ -201,6 +201,7 @@ func scanRecentPageItem(row recentPageScanner) (recentPageItem, error) {
 		&event.Timestamp,
 		&provider,
 		&executorType,
+		&userAgent,
 		&event.Model,
 		&endpoint,
 		&method,
@@ -254,6 +255,7 @@ func scanRecentPageItem(row recentPageScanner) (recentPageItem, error) {
 	event.RequestID = requestID.String
 	event.Provider = provider.String
 	event.ExecutorType = executorType.String
+	event.UserAgent = userAgent.String
 	event.Endpoint = endpoint.String
 	event.Method = method.String
 	event.Path = path.String

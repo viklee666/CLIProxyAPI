@@ -2328,6 +2328,7 @@
     "log_rows": "Строки журнала",
     "log_rows_short": "Строки",
     "realtime_api_key_label": "API-ключ",
+    "client_user_agent": "User-Agent клиента",
     "realtime_api_key_hash": "Хэш API-ключа",
     "realtime_api_key_masked": "Маскированный ключ",
     "pagination_prev": "Назад",

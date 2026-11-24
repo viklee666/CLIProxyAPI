@@ -354,6 +354,7 @@ type EventPageItem struct {
 	ReasoningEffort        string
 	ServiceTier            string
 	ExecutorType           string
+	UserAgent              string
 	InputTokens            int64
 	OutputTokens           int64
 	CachedTokens           int64
@@ -1943,6 +1944,7 @@ func (r *repository) EventsPageWithFilter(ctx context.Context, filter AnalyticsF
 	coalesce(reasoning_effort, ''),
 	coalesce(service_tier, ''),
 	coalesce(executor_type, ''),
+	coalesce(user_agent, ''),
 	input_tokens,
 	output_tokens,
 	`+compatCachedExpr+`,
@@ -1998,6 +2000,7 @@ limit ?`, args...)
 			&item.ReasoningEffort,
 			&item.ServiceTier,
 			&item.ExecutorType,
+			&item.UserAgent,
 			&item.InputTokens,
 			&item.OutputTokens,
 			&item.CachedTokens,

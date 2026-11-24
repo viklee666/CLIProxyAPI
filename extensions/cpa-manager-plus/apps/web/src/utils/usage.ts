@@ -142,6 +142,8 @@ export interface UsageDetail {
   cacheInputMode?: CacheInputMode | string;
   executor_type?: string;
   executorType?: string;
+  user_agent?: string;
+  userAgent?: string;
   latency_ms?: number;
   ttft_ms?: number;
   tokens: UsageTokens;

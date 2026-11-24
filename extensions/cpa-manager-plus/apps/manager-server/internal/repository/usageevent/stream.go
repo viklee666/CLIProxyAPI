@@ -95,6 +95,7 @@ func (r *repository) WriteCompatibleUsage(ctx context.Context, writer io.Writer,
 		coalesce(request_service_tier, ''),
 		coalesce(response_service_tier, ''),
 		coalesce(cache_input_mode, ''),
+		coalesce(user_agent, ''),
 		coalesce(executor_type, ''),
 		input_tokens,
 		output_tokens,
@@ -334,7 +335,7 @@ func (r *repository) compatibleUsageTotals(ctx context.Context, snapshot usageSn
 func (r *repository) exportBatch(ctx context.Context, snapshot usageSnapshot, cursorTimestampMS, cursorID int64) ([]exportRow, error) {
 	rows, err := r.db.QueryContext(ctx, `select
 		id,
-		request_id, event_hash, timestamp_ms, timestamp, provider, executor_type, model, endpoint, method, path,
+		request_id, event_hash, timestamp_ms, timestamp, provider, executor_type, user_agent, model, endpoint, method, path,
 		auth_type, auth_index, source, source_hash, api_key_hash,
 		account_snapshot, auth_label_snapshot, auth_file_snapshot, auth_provider_snapshot, auth_project_id_snapshot, auth_snapshot_at_ms,
 		requested_model, resolved_model, reasoning_effort, service_tier,
@@ -410,6 +411,7 @@ func scanCompatibleDetail(rows *sql.Rows) (string, string, rawMetadataDetail, er
 		&detail.RequestServiceTier,
 		&detail.ResponseServiceTier,
 		&detail.CacheInputMode,
+		&detail.UserAgent,
 		&detail.ExecutorType,
 		&detail.Tokens.InputTokens,
 		&detail.Tokens.OutputTokens,
@@ -459,7 +461,7 @@ func scanCompatibleDetail(rows *sql.Rows) (string, string, rawMetadataDetail, er
 func scanExportRow(rows *sql.Rows) (exportRow, error) {
 	var row exportRow
 	event := &row.event
-	var requestID, provider, executorType, endpoint, method, path, authType, authIndex, source, sourceHash, apiKeyHash, accountSnapshot, authLabelSnapshot, authFileSnapshot, authProviderSnapshot, authProjectIDSnapshot, requestedModel, resolvedModel, reasoningEffort, serviceTier, failSummary sql.NullString
+	var requestID, provider, executorType, userAgent, endpoint, method, path, authType, authIndex, source, sourceHash, apiKeyHash, accountSnapshot, authLabelSnapshot, authFileSnapshot, authProviderSnapshot, authProjectIDSnapshot, requestedModel, resolvedModel, reasoningEffort, serviceTier, failSummary sql.NullString
 	var responseMetadataJSON, quotaPlanType, errorKind, errorCode, traceID string
 	var authSnapshotAt sql.NullInt64
 	var latency, ttft sql.NullInt64
@@ -475,6 +477,7 @@ func scanExportRow(rows *sql.Rows) (exportRow, error) {
 		&event.Timestamp,
 		&provider,
 		&executorType,
+		&userAgent,
 		&event.Model,
 		&endpoint,
 		&method,
@@ -521,6 +524,7 @@ func scanExportRow(rows *sql.Rows) (exportRow, error) {
 	event.RequestID = requestID.String
 	event.Provider = provider.String
 	event.ExecutorType = executorType.String
+	event.UserAgent = userAgent.String
 	event.Endpoint = endpoint.String
 	event.Method = method.String
 	event.Path = path.String

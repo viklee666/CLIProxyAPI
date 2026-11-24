@@ -93,3 +93,19 @@ func TestIsLongContextInputBoundary(t *testing.T) {
 		t.Fatal("272001 input tokens should use long-context pricing")
 	}
 }
+
+func TestNormalizeRawUsesUpstreamResponseModelAndUserAgent(t *testing.T) {
+	event, err := NormalizeRaw([]byte(`{"alias":"friendly-model","model":"provider-model","response_model":"served-model","user_agent":"client/1.0","timestamp_ms":1700000000000}`))
+	if err != nil {
+		t.Fatalf("NormalizeRaw() error = %v", err)
+	}
+	if event.Model != "friendly-model" {
+		t.Fatalf("Model = %q, want friendly-model", event.Model)
+	}
+	if event.ResolvedModel != "served-model" {
+		t.Fatalf("ResolvedModel = %q, want served-model", event.ResolvedModel)
+	}
+	if event.UserAgent != "client/1.0" {
+		t.Fatalf("UserAgent = %q, want client/1.0", event.UserAgent)
+	}
+}
