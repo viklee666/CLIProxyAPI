@@ -6,6 +6,7 @@ import { SelectionCheckbox } from '@/components/ui/SelectionCheckbox';
 import {
   IconArrowDownWideNarrow,
   IconArrowUpNarrowWide,
+  IconBinary,
   IconChevronDown,
   IconFilterAll,
   IconSearch,
@@ -38,6 +39,7 @@ interface ProviderToolbarProps {
   resolvedTheme: string;
   onAdd: (kind: ProviderKind) => void;
   onHealthCheck: () => void;
+  onPelicanTest: () => void;
   healthCheckDisabled?: boolean;
 }
 
@@ -69,6 +71,7 @@ export function ProviderToolbar({
   resolvedTheme,
   onAdd,
   onHealthCheck,
+  onPelicanTest,
   healthCheckDisabled = false,
 }: ProviderToolbarProps) {
   const { t } = useTranslation();
@@ -561,6 +564,16 @@ export function ProviderToolbar({
         >
           <IconShield size={14} />
           {t('ai_providers.health_check_button')}
+        </Button>
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={onPelicanTest}
+          disabled={disabled || healthCheckDisabled}
+          className={styles.healthCheckButton}
+        >
+          <IconBinary size={14} />
+          {t('ai_providers.pelican_button')}
         </Button>
         {kind === 'all' ? (
           <DropdownMenu

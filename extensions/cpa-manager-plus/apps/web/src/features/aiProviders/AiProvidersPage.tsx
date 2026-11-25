@@ -11,6 +11,7 @@ import {
   PROVIDER_KIND_LABELS,
   ProviderDetailDrawer,
   ProviderHealthCheckDrawer,
+  PelicanTestDrawer,
   ProviderTable,
   ProviderToolbar,
   VertexEditDrawer,
@@ -95,6 +96,7 @@ export function AiProvidersPage() {
   const [sortDirection, setSortDirection] = useState<ProviderSortDirection>('desc');
   const [detailRowKey, setDetailRowKey] = useState<string | null>(null);
   const [healthCheckOpen, setHealthCheckOpen] = useState(false);
+  const [pelicanTestOpen, setPelicanTestOpen] = useState(false);
   const [editDrawerKind, setEditDrawerKind] = useState<ProviderKind | null>(null);
   const [editDrawerIndex, setEditDrawerIndex] = useState<number | null>(null);
   const [page, setPage] = useState(1);
@@ -1359,6 +1361,7 @@ export function AiProvidersPage() {
             resolvedTheme={resolvedTheme}
             onAdd={handleAdd}
             onHealthCheck={() => setHealthCheckOpen(true)}
+            onPelicanTest={() => setPelicanTestOpen(true)}
             healthCheckDisabled={visibleRows.length === 0}
           />
 
@@ -1453,6 +1456,12 @@ export function AiProvidersPage() {
         onClose={() => setHealthCheckOpen(false)}
         onApplyResultActions={applyProviderEnabledActions}
         onSetProviderEnabled={setHealthCheckProviderEnabled}
+      />
+      <PelicanTestDrawer
+        open={pelicanTestOpen}
+        rows={visibleRows}
+        actionsDisabled={actionsDisabled}
+        onClose={() => setPelicanTestOpen(false)}
       />
       <GeminiEditDrawer
         open={editDrawerKind === 'gemini'}

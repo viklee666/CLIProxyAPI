@@ -39,6 +39,26 @@ func adaptiveTestAuth(id string, priority int) *Auth {
 	}
 }
 
+func TestAdaptiveSelectorPrefersIdleHighestPriorityTier(t *testing.T) {
+	adaptive := NewAdaptiveSelector(internalconfig.AdaptiveRoutingConfig{
+		TopK: 3,
+		Weights: internalconfig.AdaptiveRoutingWeights{
+			Priority:    4,
+			Load:        2,
+			SuccessRate: 2,
+			TTFT:        1,
+		},
+	})
+	high := adaptiveTestAuth("high-idle", 4)
+	low := adaptiveTestAuth("low-idle", 2)
+	for i := 0; i < 20; i++ {
+		got, errPick := adaptive.Pick(context.Background(), "codex", "model", cliproxyexecutor.Options{}, []*Auth{high, low})
+		if errPick != nil || got == nil || got.ID != high.ID {
+			t.Fatalf("Pick() = auth=%v err=%v, want idle highest-priority auth", got, errPick)
+		}
+	}
+}
+
 func TestAdaptiveSelectorScoresPriorityLoadSuccessAndTTFT(t *testing.T) {
 	authA := adaptiveTestAuth("auth-a", 1)
 	authB := adaptiveTestAuth("auth-b", 9)
@@ -106,7 +126,9 @@ func TestAdaptiveSelectorWeightedTopKAndScores(t *testing.T) {
 		},
 	})
 	selector.rand = func() float64 { return 0.999999 }
+	releaseBusy := selector.BeginAttempt(authA.ID)
 	selected, errPick := selector.Pick(context.Background(), "codex", "gpt-test", cliproxyexecutor.Options{}, []*Auth{authA, authB, authC})
+	releaseBusy()
 	if errPick != nil {
 		t.Fatalf("Pick() error = %v", errPick)
 	}

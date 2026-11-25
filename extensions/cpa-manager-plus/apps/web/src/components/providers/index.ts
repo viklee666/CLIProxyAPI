@@ -4,6 +4,7 @@ export * from './ProviderTable';
 export { ProviderToolbar } from './ProviderToolbar';
 export { ProviderDetailDrawer } from './ProviderDetailDrawer';
 export { ProviderHealthCheckDrawer } from './ProviderHealthCheckDrawer';
+export { PelicanTestDrawer } from './PelicanTestDrawer';
 export type {
   ProviderHealthCheckApplyAction,
   ProviderHealthCheckItem,

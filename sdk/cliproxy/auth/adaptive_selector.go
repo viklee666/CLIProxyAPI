@@ -162,6 +162,8 @@ func (s *AdaptiveSelector) scoreEligible(auths []*Auth) []adaptiveCandidateScore
 		return nil
 	}
 	minPriority, maxPriority := 0, 0
+	activeByID := make(map[string]int, len(auths))
+	s.mu.RLock()
 	for i, auth := range auths {
 		priority := authPriority(auth)
 		if i == 0 || priority < minPriority {
@@ -170,10 +172,26 @@ func (s *AdaptiveSelector) scoreEligible(auths []*Auth) []adaptiveCandidateScore
 		if i == 0 || priority > maxPriority {
 			maxPriority = priority
 		}
+		if state := s.states[auth.ID]; state != nil {
+			activeByID[auth.ID] = state.active
+		}
 	}
-	s.mu.RLock()
+	// Keep an idle credential from the highest priority tier ahead of lower tiers.
+	// Lower tiers remain eligible when every highest-priority credential is busy,
+	// allowing adaptive routing to absorb load without randomly bypassing an idle
+	// preferred provider.
+	preferHighestPriority := false
+	for _, auth := range auths {
+		if authPriority(auth) == maxPriority && activeByID[auth.ID] == 0 {
+			preferHighestPriority = true
+			break
+		}
+	}
 	scores := make([]adaptiveCandidateScore, 0, len(auths))
 	for _, auth := range auths {
+		if preferHighestPriority && authPriority(auth) != maxPriority {
+			continue
+		}
 		state := s.states[auth.ID]
 		priorityScore := 1.0
 		if maxPriority != minPriority {
