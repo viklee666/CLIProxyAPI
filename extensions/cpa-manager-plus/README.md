@@ -74,27 +74,39 @@ CPAMP runs scheduled inspections against Codex accounts: checking quota windows,
 
 The dashboard also covers day-to-day CPA operations: managing providers, auth files, OAuth logins, API keys, quota, logs, plugins, and system config. Auth files can be added by JSON paste or batch import.
 
-### Pelican Generation Comparison
+### Intelligence Test: Pelican, Candy & Custom
 
-Use **Pelican test** on an AI provider row or credential card for a single target.
-The provider toolbar opens all filtered providers across pages; the credential
-toolbar loads all managed credential files. The credential batch action opens
-the selected files. In the drawer, search and select one, several, or all targets,
-set a model per target and a shared prompt/reasoning effort, then start explicitly.
-The default challenge is a pelican riding a bicycle, inspired by
-[Cockpit Tools](https://github.com/jlcodes99/cockpit-tools).
+Use **Intelligence test** on an AI provider row, xAI/Meta entry, or credential card
+for a single target. The provider toolbar opens filtered table providers across
+pages and, in the All category, all xAI/Meta entries. The credential toolbar loads
+all managed credential files; its batch action opens selected files. Search and
+select one, several, or all targets in the drawer, then select a runtime model per
+target and shared reasoning effort before explicitly starting.
 
-Each generation is pinned to its runtime credential and uses an isolated session.
-There is no credential failover or automatic batch retry; normal authentication
-refresh, model translation, payload rules, disabled states, and cooldowns remain
-in effect. Compare the complete answer, model and elapsed time; generated HTML/SVG
-is shown in a scriptless, network-blocked preview, not scored as an IQ test.
-Tests consume quota. Cancelling or closing aborts the active request and skips
-queued targets, but already submitted upstream work may still be billed.
+The three modes preserve the pelican animation and candy challenge wording from
+[Cockpit Tools revision d4b7de6](https://github.com/jlcodes99/cockpit-tools/tree/d4b7de6697efc4bc251962e56d71ff6ffa05e956).
+The full prompt is visible and editable; custom mode accepts any challenge, such
+as an octopus animation. Candy results are plain text; the reference answer is
+UI-only and never appended to the model request. No invented IQ score is assigned.
 
-Both CPA and this manager must support `POST /v8/management/requests/pelican`.
-The manager requires its admin key and forwards the request using the saved CPA
-management key. Old servers fail explicitly rather than testing another target.
+Identity and models are resolved together through
+`GET /v8/management/requests/pelican` before execution. Provider selectors use
+original configuration/key positions; credentials use their ID or a uniquely
+resolved name/index pair. `POST` pins the resulting `auth_id`, never a potentially
+colliding index. Missing or ambiguous identities fail explicitly.
+
+Each generation uses an isolated session without credential failover or automatic
+batch retry. Normal credential refresh, model translation, payload rules, disabled
+states and cooldowns remain in effect. Compare the complete answer, model and
+elapsed time. HTML previews preserve root styles and JavaScript animations inside
+nested opaque sandboxes, never the host DOM; CSP restricts network access, frame
+navigation, forms and workers, and WebRTC is disabled before generated scripts.
+Tests consume quota. Cancelling or closing immediately aborts the active request
+and skips queued targets; already submitted upstream work may still be billed.
+
+Both CPA and the manager must support the v8 GET and POST endpoints. The manager
+requires its admin key and forwards requests using the saved CPA management key.
+Old servers fail explicitly rather than testing another target.
 
 ### Self-Hosted & Private
 

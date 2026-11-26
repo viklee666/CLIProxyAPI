@@ -424,6 +424,7 @@ func (s *authScheduler) recordRemovalTombstoneLocked(authID string, tombstoneEpo
 		updatedAt:  now,
 	}
 	s.removeAuthFromProvidersLocked(authID)
+	s.priorityHealth.remove(authID, tombstoneEpoch)
 }
 
 // removeAuth deletes one auth from every scheduler shard that references it.
@@ -1040,6 +1041,7 @@ func (s *authScheduler) upsertAuthRebuildLocked(auth *Auth, existingMetas map[st
 		generation: effectiveGeneration,
 		updatedAt:  effectiveUpdatedAt,
 	}
+	s.priorityHealth.register(authID, authToSchedule.RegistrationEpoch)
 
 	if previousProvider := s.authProviders[authID]; previousProvider != "" && previousProvider != providerKey {
 		if previousState := s.providers[previousProvider]; previousState != nil {
@@ -1073,6 +1075,7 @@ func (s *authScheduler) upsertAuthLifecycleLocked(auth *Auth, now time.Time) {
 		generation: auth.Generation,
 		updatedAt:  auth.UpdatedAt,
 	}
+	s.priorityHealth.register(authID, auth.RegistrationEpoch)
 
 	providerKey := executorKeyFromAuth(auth)
 	if providerKey == "" || auth.Disabled || auth.Status == StatusDisabled {

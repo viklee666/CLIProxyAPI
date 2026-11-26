@@ -1,42 +1,26 @@
-// Render generated markup only inside an opaque-origin, scriptless iframe.
-// Rebuild an allowlisted document: never attach untrusted parsed nodes to the UI.
-const allowedTags: Record<string, true> = {
-  html: true, head: true, body: true, title: true, style: true, div: true, span: true,
-  p: true, main: true, section: true, article: true, header: true, footer: true,
-  h1: true, h2: true, h3: true, strong: true, em: true, small: true, br: true,
-  svg: true, g: true, path: true, circle: true, ellipse: true, rect: true, line: true,
-  polyline: true, polygon: true, text: true, tspan: true, defs: true,
-  lineargradient: true, radialgradient: true, stop: true, clippath: true,
-  mask: true, pattern: true, filter: true, fegaussianblur: true, feoffset: true,
-  femerge: true, femergenode: true, animate: true, animatetransform: true,
-  animatemotion: true, mpath: true, use: true, desc: true,
-};
-const forbiddenAttributes: Record<string, true> = {
-  src: true, srcset: true, action: true, formaction: true, target: true, ping: true,
-  srcdoc: true, data: true, poster: true, background: true, nonce: true,
-  integrity: true, is: true,
-};
-export function buildPelicanPreview(answer: string): string | null {
-  if (typeof document === 'undefined' || answer.length > 1024 * 1024) return null;
-  const markup = answer.trim().replace(/^```(?:html|svg|xml)?\s*\n?([\s\S]*?)\n?```$/i, '$1');
-  if (!/<(?:html|svg|div|main|section)\b/i.test(markup)) return null;
-  const template = document.createElement('template');
-  template.innerHTML = markup;
-  // Remove entire non-display subtrees, including meta refresh, frames and foreignObject.
-  for (const element of Array.from(template.content.querySelectorAll('*'))) {
-    if (allowedTags[element.localName.toLowerCase()] !== true) {
-      element.remove();
-      continue;
-    }
-    for (const attribute of Array.from(element.attributes)) {
-      const name = attribute.name.toLowerCase();
-      if (name.startsWith('on') || forbiddenAttributes[name] === true ||
-          ((name === 'href' || name === 'xlink:href') && !attribute.value.startsWith('#')) ||
-          (name === 'attributename' && /href|src|on/i.test(attribute.value))) {
-        element.removeAttribute(attribute.name);
-      }
-    }
+// Cockpit-compatible execution in an opaque iframe, wrapped in a passive outer
+// frame whose frame-src also blocks the generated frame navigating to a server.
+// Never parse generated markup into the host DOM or strip html/body attributes.
+const resourcePolicy = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; media-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; webrtc 'block'";
+const innerPolicy = `${resourcePolicy}; frame-src 'none'; child-src 'none'`;
+const outerPolicy = `${resourcePolicy}; frame-src data: blob:; child-src data: blob:`;
+const lockdown = `(() => {
+  for (const key of ['RTCPeerConnection', 'webkitRTCPeerConnection', 'mozRTCPeerConnection', 'RTCDataChannel', 'WebTransport']) {
+    try { Object.defineProperty(globalThis, key, {value: undefined, writable: false, configurable: false}); } catch {}
   }
-  const csp = "default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src 'none'; font-src 'none'; connect-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'";
-  return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${csp}"><meta name="referrer" content="no-referrer"></head><body>${template.innerHTML}</body></html>`;
+  for (const key of ['alert', 'confirm', 'prompt', 'print']) {
+    try { Object.defineProperty(globalThis, key, {value: () => undefined, writable: false, configurable: false}); } catch {}
+  }
+})()`;
+
+export function buildPelicanPreview(answer: string): string | null {
+  if (answer.length > 1024 * 1024) return null;
+  const fenced = /```(?:html|svg|xml)?\s*\n([\s\S]*?)```/i.exec(answer);
+  const markup = (fenced?.[1] ?? answer).trim();
+  if (!/<(?:html|svg|div|main|section|canvas)\b/i.test(markup)) return null;
+  // The browser merges later html/body attributes into the implied root nodes.
+  // Lockdown and CSP precede every generated script, including head scripts.
+  const inner = `<!doctype html><meta http-equiv="Content-Security-Policy" content="${innerPolicy}"><meta name="referrer" content="no-referrer"><script>${lockdown}</script>${markup}`;
+  const escaped = inner.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${outerPolicy}"><meta name="referrer" content="no-referrer"><style>html,body{margin:0;width:100%;height:100%;overflow:hidden}iframe{display:block;width:100%;height:100%;border:0}</style></head><body><iframe title="Generated animation" sandbox="allow-scripts" referrerpolicy="no-referrer" srcdoc="${escaped}"></iframe></body></html>`;
 }

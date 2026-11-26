@@ -241,9 +241,19 @@ func (m *Manager) CredentialAllowedForMetadata(candidate *Auth, metadata map[str
 	return allowed
 }
 
+// LocalManagementExecutionMetadataKey marks a management operation that must
+// execute against its explicitly pinned local credential rather than Home.
+// It is intentionally separate from the generic pinned-auth marker so ordinary
+// pinned requests retain Home routing semantics.
+const LocalManagementExecutionMetadataKey = "local_management_execution"
+
 // HomeEnabledForMetadata excludes tenant client-access keys from the global
-// Home control plane. Tenant requests must use their own runtime providers.
+// Home control plane. Explicit local management operations must also bypass
+// Home so their pinned credential remains authoritative.
 func (m *Manager) HomeEnabledForMetadata(metadata map[string]any) bool {
+	if contextBoolValue(metadata[LocalManagementExecutionMetadataKey]) {
+		return false
+	}
 	return m.HomeEnabled() && TenantIDFromMetadata(metadata) <= 0
 }
 

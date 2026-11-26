@@ -16,6 +16,8 @@ interface DrawerProps {
   open: boolean;
   title?: ReactNode;
   onClose: () => void;
+  /** Called immediately when a user starts closing, before the exit animation. */
+  onCloseStart?: () => void;
   footer?: ReactNode;
   /** 桌面端面板宽度，移动端自动转为底部全宽弹层 */
   width?: number | string;
@@ -52,6 +54,7 @@ export function Drawer({
   title,
   onClose,
   footer,
+  onCloseStart,
   width = 420,
   className,
   children,
@@ -64,9 +67,12 @@ export function Drawer({
   const panelRef = useRef<HTMLDivElement | null>(null);
   const previouslyFocusedRef = useRef<HTMLElement | null>(null);
 
+  const onCloseStartRef = useRef(onCloseStart);
+  useEffect(() => { onCloseStartRef.current = onCloseStart; }, [onCloseStart]);
   const startClose = useCallback(
     (notifyParent: boolean) => {
       if (closeTimerRef.current !== null) return;
+      if (notifyParent) onCloseStartRef.current?.();
       setIsClosing(true);
       closeTimerRef.current = window.setTimeout(() => {
         setIsVisible(false);

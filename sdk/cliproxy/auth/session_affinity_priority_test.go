@@ -14,7 +14,7 @@ import (
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
-func TestManagerSessionAffinityRebindsAfterHigherPriorityRecovery(t *testing.T) {
+func TestManagerSessionAffinityRetainsBindingAfterHigherPriorityRecovery(t *testing.T) {
 	for _, testCase := range []struct {
 		name           string
 		providerSuffix string
@@ -54,8 +54,8 @@ func TestManagerSessionAffinityRebindsAfterHigherPriorityRecovery(t *testing.T) 
 			manager.RegisterExecutor(schedulerTestExecutor{provider: provider})
 
 			for _, auth := range []*Auth{
-				{ID: highID, Provider: provider, Status: StatusActive, Attributes: map[string]string{"priority": "1"}},
-				{ID: lowID, Provider: provider, Status: StatusActive, Attributes: map[string]string{"priority": "0"}},
+				{ID: highID, Provider: provider, Status: StatusActive, Attributes: map[string]string{"priority": "1", AttributeSourceBackend: AuthSourceFile}},
+				{ID: lowID, Provider: provider, Status: StatusActive, Attributes: map[string]string{"priority": "0", AttributeSourceBackend: AuthSourceFile}},
 			} {
 				if _, errRegister := manager.Register(WithSkipPersist(ctx), auth); errRegister != nil {
 					t.Fatalf("Register(%s): %v", auth.ID, errRegister)
@@ -95,8 +95,8 @@ func TestManagerSessionAffinityRebindsAfterHigherPriorityRecovery(t *testing.T) 
 			}
 
 			expireSessionAffinityPriorityModelCooldown(t, manager, highID, model)
-			if got := pick(opts); got.ID != highID {
-				t.Fatalf("binding after higher-priority recovery = %q, want %q", got.ID, highID)
+			if got := pick(opts); got.ID != lowID {
+				t.Fatalf("binding after higher-priority recovery = %q, want retained %q", got.ID, lowID)
 			}
 
 			newSessionOpts := cliproxyexecutor.Options{Metadata: map[string]any{
@@ -222,8 +222,8 @@ func TestManagerSessionAffinityRebindOnQuotaPreservesBindingAcrossTransientFailo
 			manager.RegisterExecutor(schedulerTestExecutor{provider: provider})
 
 			for _, auth := range []*Auth{
-				{ID: highID, Provider: provider, Status: StatusActive, Attributes: map[string]string{"priority": "1"}},
-				{ID: lowID, Provider: provider, Status: StatusActive, Attributes: map[string]string{"priority": "0"}},
+				{ID: highID, Provider: provider, Status: StatusActive, Attributes: map[string]string{"priority": "1", AttributeSourceBackend: AuthSourceFile}},
+				{ID: lowID, Provider: provider, Status: StatusActive, Attributes: map[string]string{"priority": "0", AttributeSourceBackend: AuthSourceFile}},
 			} {
 				if _, errRegister := manager.Register(WithSkipPersist(ctx), auth); errRegister != nil {
 					t.Fatalf("Register(%s): %v", auth.ID, errRegister)
@@ -373,8 +373,8 @@ func TestManagerSessionAffinityRebindOnQuotaLCPPreservesBindingAcrossTransientFa
 	manager.RegisterExecutor(schedulerTestExecutor{provider: provider})
 
 	for _, auth := range []*Auth{
-		{ID: highID, Provider: provider, Status: StatusActive, Attributes: map[string]string{"priority": "1"}},
-		{ID: lowID, Provider: provider, Status: StatusActive, Attributes: map[string]string{"priority": "0"}},
+		{ID: highID, Provider: provider, Status: StatusActive, Attributes: map[string]string{"priority": "1", AttributeSourceBackend: AuthSourceFile}},
+		{ID: lowID, Provider: provider, Status: StatusActive, Attributes: map[string]string{"priority": "0", AttributeSourceBackend: AuthSourceFile}},
 	} {
 		if _, errRegister := manager.Register(WithSkipPersist(ctx), auth); errRegister != nil {
 			t.Fatalf("Register(%s): %v", auth.ID, errRegister)
@@ -683,9 +683,9 @@ func TestManagerExecuteAndStreamRebindOnQuotaEndToEnd(t *testing.T) {
 			})
 
 			for _, auth := range []*Auth{
-				{ID: highID, Provider: provider, Status: StatusActive, Attributes: map[string]string{"priority": "2"}},
-				{ID: midID, Provider: provider, Status: StatusActive, Attributes: map[string]string{"priority": "1"}},
-				{ID: lowID, Provider: provider, Status: StatusActive, Attributes: map[string]string{"priority": "0"}},
+				{ID: highID, Provider: provider, Status: StatusActive, Attributes: map[string]string{"priority": "2", AttributeSourceBackend: AuthSourceFile}},
+				{ID: midID, Provider: provider, Status: StatusActive, Attributes: map[string]string{"priority": "1", AttributeSourceBackend: AuthSourceFile}},
+				{ID: lowID, Provider: provider, Status: StatusActive, Attributes: map[string]string{"priority": "0", AttributeSourceBackend: AuthSourceFile}},
 			} {
 				if _, errRegister := manager.Register(WithSkipPersist(ctx), auth); errRegister != nil {
 					t.Fatalf("Register(%s): %v", auth.ID, errRegister)
@@ -813,8 +813,8 @@ func TestManagerSessionAffinityRebindOnNeverRefusesFailoverAndPreservesBinding(t
 			manager.RegisterExecutor(schedulerTestExecutor{provider: provider})
 
 			for _, auth := range []*Auth{
-				{ID: highID, Provider: provider, Status: StatusActive, Attributes: map[string]string{"priority": "1"}},
-				{ID: lowID, Provider: provider, Status: StatusActive, Attributes: map[string]string{"priority": "0"}},
+				{ID: highID, Provider: provider, Status: StatusActive, Attributes: map[string]string{"priority": "1", AttributeSourceBackend: AuthSourceFile}},
+				{ID: lowID, Provider: provider, Status: StatusActive, Attributes: map[string]string{"priority": "0", AttributeSourceBackend: AuthSourceFile}},
 			} {
 				if _, errRegister := manager.Register(WithSkipPersist(ctx), auth); errRegister != nil {
 					t.Fatalf("Register(%s): %v", auth.ID, errRegister)
@@ -1076,9 +1076,11 @@ func TestManagerExecuteAndStreamRebindOnNeverEndToEnd(t *testing.T) {
 		},
 	})
 
+	// In-memory SDK credentials exercise never-rebind retry rounds without
+	// configured providers' single-attempt policy or stored-credential exhaustion.
 	for _, auth := range []*Auth{
-		{ID: authAID, Provider: provider, Status: StatusActive, Attributes: map[string]string{"priority": "1"}},
-		{ID: authBID, Provider: provider, Status: StatusActive, Attributes: map[string]string{"priority": "0"}},
+		{ID: authAID, Provider: provider, Status: StatusActive, Attributes: map[string]string{"priority": "1", AttributeSourceBackend: AuthSourceMemory}},
+		{ID: authBID, Provider: provider, Status: StatusActive, Attributes: map[string]string{"priority": "1", AttributeSourceBackend: AuthSourceMemory}},
 	} {
 		if _, errRegister := manager.Register(WithSkipPersist(ctx), auth); errRegister != nil {
 			t.Fatalf("Register(%s): %v", auth.ID, errRegister)
@@ -1409,5 +1411,56 @@ func TestManagerSessionAffinityRebindOnNeverSingleAuthDisabledOrModelRemovedRetu
 	}
 	if !errors.As(errExec, &authErr) || authErr == nil || authErr.Code != "session_auth_unavailable" {
 		t.Fatalf("Execute model-removed bound auth error = %v, want session_auth_unavailable", errExec)
+	}
+}
+
+func TestManagerSessionAffinityNeverRejectsConflictingPin(t *testing.T) {
+	for _, path := range []string{"single", "mixed"} {
+		for _, client := range []string{"codex", "lcp"} {
+			t.Run(path+"/"+client, func(t *testing.T) {
+				ctx := WithSkipPersist(context.Background())
+				const model = "never-conflicting-pin-model"
+				selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{Fallback: &RoundRobinSelector{}, RebindOn: SessionAffinityRebindOnNever})
+				t.Cleanup(selector.Stop)
+				manager := NewManager(nil, selector, nil)
+				manager.RegisterExecutor(schedulerTestExecutor{provider: "codex"})
+				highID, lowID := t.Name()+"-high", t.Name()+"-low"
+				for _, candidate := range []*Auth{
+					{ID: highID, Provider: "codex", Status: StatusActive, Attributes: map[string]string{"priority": "10", AttributeSourceBackend: AuthSourceConfig}},
+					{ID: lowID, Provider: "codex", Status: StatusActive, Attributes: map[string]string{"priority": "0", AttributeSourceBackend: AuthSourceConfig}},
+				} {
+					registry.GetGlobalRegistry().RegisterClient(candidate.ID, candidate.Provider, []*registry.ModelInfo{{ID: model}})
+					t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(candidate.ID) })
+					if _, err := manager.Register(ctx, candidate); err != nil {
+						t.Fatal(err)
+					}
+				}
+				pick := func(opts cliproxyexecutor.Options) (*Auth, error) {
+					if path == "single" {
+						selected, _, err := manager.pickNext(ctx, "codex", model, opts, nil)
+						return selected, err
+					}
+					selected, _, _, err := manager.pickNextMixed(ctx, []string{"codex"}, model, opts, nil)
+					return selected, err
+				}
+				options := priorityRoutingClientOptions()[client]
+				if got, err := pick(options()); err != nil || got == nil || got.ID != highID {
+					t.Fatalf("initial binding = %v, %v", got, err)
+				}
+				manager.MarkResult(ctx, Result{AuthID: highID, Provider: "codex", Model: model, Error: &Error{HTTPStatus: http.StatusTooManyRequests, Message: "quota"}})
+				pinned := options()
+				pinned.EnsureMetadata()
+				pinned.Metadata[cliproxyexecutor.PinnedAuthMetadataKey] = lowID
+				got, err := pick(pinned)
+				var authErr *Error
+				if got != nil || !errors.As(err, &authErr) || authErr.Code != "session_auth_unavailable" {
+					t.Fatalf("conflicting pin = %v, %v; want session_auth_unavailable", got, err)
+				}
+				manager.MarkResult(ctx, Result{AuthID: highID, Provider: "codex", Model: model, Success: true, CompletedResponse: true})
+				if got, err := pick(options()); err != nil || got == nil || got.ID != highID {
+					t.Fatalf("binding after conflicting pin = %v, %v; want %s", got, err, highID)
+				}
+			})
+		}
 	}
 }

@@ -19,10 +19,10 @@ func (s *SessionAffinitySelector) shouldEscapeAuth(authID string) bool {
 }
 
 func (s *SessionAffinitySelector) pickAvoiding(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth, avoidID string) (*Auth, bool) {
-	if s == nil || s.fallback == nil || len(auths) < 2 {
+	if s == nil || s.fallback == nil || len(auths) == 0 {
 		return nil, false
 	}
-	alternatives := make([]*Auth, 0, len(auths)-1)
+	alternatives := make([]*Auth, 0, len(auths))
 	for _, auth := range auths {
 		if auth != nil && auth.ID != avoidID {
 			alternatives = append(alternatives, auth)

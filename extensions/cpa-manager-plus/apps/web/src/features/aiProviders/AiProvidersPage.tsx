@@ -101,6 +101,8 @@ export function AiProvidersPage() {
   const [detailRowKey, setDetailRowKey] = useState<string | null>(null);
   const [healthCheckOpen, setHealthCheckOpen] = useState(false);
   const [pelicanTargets, setPelicanTargets] = useState<PelicanTestTarget[] | null>(null);
+  const [nativePelicanTargets, setNativePelicanTargets] = useState<PelicanTestTarget[] | null>(null);
+  const closePelican = useCallback(() => setPelicanTargets(null), []);
   const [editDrawerKind, setEditDrawerKind] = useState<ProviderKind | null>(null);
   const [editDrawerIndex, setEditDrawerIndex] = useState<number | null>(null);
   const [page, setPage] = useState(1);
@@ -1365,7 +1367,11 @@ export function AiProvidersPage() {
             resolvedTheme={resolvedTheme}
             onAdd={handleAdd}
             onHealthCheck={() => setHealthCheckOpen(true)}
-            onPelicanTest={() => setPelicanTargets(buildPelicanTestTargets(visibleRows))}
+            onPelicanTest={() => setPelicanTargets([
+              ...buildPelicanTestTargets(visibleRows),
+              ...(kindFilter === 'all' ? nativePelicanTargets ?? [] : []),
+            ])}
+            pelicanDisabled={kindFilter === 'all' ? nativePelicanTargets === null || (!visibleRows.length && !nativePelicanTargets.length) : !visibleRows.length}
             healthCheckDisabled={visibleRows.length === 0}
           />
 
@@ -1437,7 +1443,7 @@ export function AiProvidersPage() {
         </div>
       </div>
 
-      <NativeProviderLimits disabled={actionsDisabled} />
+      <NativeProviderLimits disabled={actionsDisabled} onPelicanTest={setPelicanTargets} onPelicanTargetsChange={setNativePelicanTargets} />
       <ProviderDetailDrawer
         row={detailRow}
         open={detailRowKey !== null}
@@ -1466,7 +1472,7 @@ export function AiProvidersPage() {
         open={pelicanTargets !== null}
         targets={pelicanTargets ?? []}
         actionsDisabled={actionsDisabled}
-        onClose={() => setPelicanTargets(null)}
+        onClose={closePelican}
       />
       <GeminiEditDrawer
         open={editDrawerKind === 'gemini'}

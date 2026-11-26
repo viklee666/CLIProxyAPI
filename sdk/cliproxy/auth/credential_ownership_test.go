@@ -170,4 +170,15 @@ func TestManagerHomeEnabledForMetadataExcludesTenantKeys(t *testing.T) {
 	}) {
 		t.Fatal("HomeEnabledForMetadata(tenant) = true, want false")
 	}
+	if !manager.HomeEnabledForMetadata(map[string]any{
+		cliproxyexecutor.PinnedAuthMetadataKey: "ordinary-pinned-auth",
+	}) {
+		t.Fatal("ordinary pinned requests must retain Home routing")
+	}
+	if manager.HomeEnabledForMetadata(map[string]any{
+		LocalManagementExecutionMetadataKey:    true,
+		cliproxyexecutor.PinnedAuthMetadataKey: "local-management-auth",
+	}) {
+		t.Fatal("local management execution must not dispatch through Home")
+	}
 }

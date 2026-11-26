@@ -34,6 +34,78 @@ func TestPriorityHealthConsecutiveFailureBoundary(t *testing.T) {
 	}
 }
 
+func TestPriorityHealthLowFrequencyStreakPersistsAndRequiresProbeSuccess(t *testing.T) {
+	now := time.Date(2026, time.November, 26, 12, 0, 0, 0, time.UTC)
+	health := newPriorityHealthTracker(nil)
+	health.nowFunc = func() time.Time { return now }
+	auth := &Auth{ID: "low-frequency", RegistrationEpoch: 1, Attributes: map[string]string{"priority": "10"}}
+	failure := func() {
+		health.observe(Result{AuthID: auth.ID, RegistrationEpoch: auth.RegistrationEpoch, Model: "model", Error: &Error{Code: "upstream", Retryable: true}})
+	}
+	for index := range priorityHealthFailureStreak {
+		now = now.Add(2 * priorityHealthWindow)
+		failure()
+		if got := health.unhealthy(auth, "model", nil, now); got != (index == priorityHealthFailureStreak-1) {
+			t.Fatalf("unhealthy after failure %d = %t", index+1, got)
+		}
+	}
+	now = now.Add(priorityHealthWindow - time.Nanosecond)
+	if !health.unhealthy(auth, "model", nil, now) {
+		t.Fatal("isolation expired early")
+	}
+	now = now.Add(time.Nanosecond)
+	if health.unhealthy(auth, "model", nil, now) {
+		t.Fatal("expired isolation did not allow a probe")
+	}
+	failure()
+	if !health.unhealthy(auth, "model", nil, now) {
+		t.Fatal("failed probe did not re-isolate the credential")
+	}
+	health.observe(Result{AuthID: auth.ID, RegistrationEpoch: auth.RegistrationEpoch, Model: "model", Success: true, CompletedResponse: true})
+	if health.unhealthy(auth, "model", nil, now) {
+		t.Fatal("successful probe did not clear the streak")
+	}
+	for range 5 {
+		now = now.Add(2 * priorityHealthWindow)
+		failure()
+	}
+	if health.unhealthy(auth, "model", nil, now) {
+		t.Fatal("successful probe did not reset the failure count")
+	}
+}
+
+func TestPriorityHealthLifecycleDiscardsObsoleteRegistrations(t *testing.T) {
+	health := newPriorityHealthTracker(nil)
+	scheduler := newAuthScheduler(&RoundRobinSelector{})
+	scheduler.priorityHealth = health
+	auth := &Auth{ID: t.Name(), Provider: "codex", RegistrationEpoch: 1}
+	scheduler.upsertAuth(auth)
+	failure := Result{AuthID: auth.ID, RegistrationEpoch: 1, Model: "model", Error: &Error{Code: "upstream", Retryable: true}}
+	for range 6 {
+		health.observe(failure)
+	}
+	auth.RegistrationEpoch = 2
+	scheduler.upsertAuth(auth)
+	if len(health.records) != 0 || health.unhealthy(auth, "model", nil, time.Now()) {
+		t.Fatal("re-registration retained obsolete health")
+	}
+	health.observe(failure)
+	if len(health.records) != 0 {
+		t.Fatal("stale result recreated an obsolete registration")
+	}
+	failure.RegistrationEpoch = 2
+	health.observe(failure)
+	scheduler.RecordRemovalTombstone(auth.ID, 1)
+	if len(health.records) != 1 {
+		t.Fatal("stale removal erased current health")
+	}
+	scheduler.RecordRemovalTombstone(auth.ID, 2)
+	health.observe(failure)
+	if len(health.records) != 0 || len(health.registrations) != 0 {
+		t.Fatal("removed credential retained or recreated health records")
+	}
+}
+
 func TestPriorityHealthSustainedRateNeedsTenSamplesAndExceedsSixtyPercent(t *testing.T) {
 	now := time.Date(2026, time.November, 26, 12, 0, 0, 0, time.UTC)
 	health := newPriorityHealthTracker(nil)

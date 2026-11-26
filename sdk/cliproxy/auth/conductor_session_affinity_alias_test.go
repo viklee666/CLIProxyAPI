@@ -40,8 +40,8 @@ func TestManagerSessionAffinityAliasCooldownPreservesSelection(t *testing.T) {
 						})
 					}
 					for _, candidate := range []*Auth{
-						{ID: highID, Provider: "codex", Status: StatusActive, Attributes: map[string]string{"priority": "4", AttributeWeight: "1"}},
-						{ID: lowID, Provider: "codex", Status: StatusActive, Attributes: map[string]string{"priority": "3", AttributeWeight: "1"}},
+						{ID: highID, Provider: "codex", Status: StatusActive, Attributes: map[string]string{"priority": "4", AttributeWeight: "1", AttributeSourceBackend: AuthSourceFile}},
+						{ID: lowID, Provider: "codex", Status: StatusActive, Attributes: map[string]string{"priority": "3", AttributeWeight: "1", AttributeSourceBackend: AuthSourceFile}},
 					} {
 						registry.GetGlobalRegistry().RegisterClient(candidate.ID, "codex", []*registry.ModelInfo{{ID: routeModel}, {ID: targetModel}})
 						t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(candidate.ID) })
@@ -133,7 +133,11 @@ func TestManagerSessionAffinityAliasCooldownPreservesSelection(t *testing.T) {
 					cool(highID, targetModel)
 					assertPick("actual target cooldown triggers failover", "stable", lowID)
 					expireSessionAffinityPriorityModelCooldown(t, manager, highID, targetModel)
-					assertPick("higher-priority recovery overrides old binding", "stable", highID)
+					wantAfterRecovery := lowID
+					if mode == "no-session" {
+						wantAfterRecovery = highID
+					}
+					assertPick("higher-priority recovery preserves healthy binding", "stable", wantAfterRecovery)
 					assertPick("fresh session uses highest priority", "fresh", highID)
 					cool(highID, targetModel)
 					cool(lowID, targetModel)

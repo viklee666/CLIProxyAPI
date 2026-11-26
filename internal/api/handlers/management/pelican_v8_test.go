@@ -10,6 +10,7 @@ import (
 	"github.com/MoeForge/moego/json"
 	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
@@ -18,14 +19,16 @@ import (
 
 type pelicanTestExecutor struct {
 	apiCallAgentIdentityExecutor
-	calls    []string
-	sessions []string
-	request  coreexecutor.Request
-	options  coreexecutor.Options
-	err      error
-	response coreexecutor.Response
-	retryOff bool
-	cancel   bool
+	calls         []string
+	sessions      []string
+	request       coreexecutor.Request
+	options       coreexecutor.Options
+	err           error
+	response      coreexecutor.Response
+	retryOff      bool
+	cancel        bool
+	oauthRecovery bool
+	refreshCalls  []string
 }
 
 func (e *pelicanTestExecutor) Identifier() string { return "pelican-test" }
@@ -39,7 +42,17 @@ func (e *pelicanTestExecutor) Execute(ctx context.Context, auth *coreauth.Auth, 
 		<-ctx.Done()
 		return coreexecutor.Response{}, ctx.Err()
 	}
+	if e.oauthRecovery && auth.ReadMetadataString("access_token") != "refreshed-token" {
+		return coreexecutor.Response{}, &coreauth.Error{HTTPStatus: http.StatusUnauthorized, Message: "stale token"}
+	}
 	return e.response, e.err
+}
+
+func (e *pelicanTestExecutor) Refresh(_ context.Context, auth *coreauth.Auth) (*coreauth.Auth, error) {
+	e.refreshCalls = append(e.refreshCalls, auth.ID)
+	updated := auth.Clone()
+	updated.Metadata["access_token"] = "refreshed-token"
+	return updated, nil
 }
 
 func setupPelicanTest(t *testing.T) (*gin.Engine, *pelicanTestExecutor, []*coreauth.Auth) {
@@ -62,6 +75,8 @@ func setupPelicanTest(t *testing.T) (*gin.Engine, *pelicanTestExecutor, []*corea
 			auth.Attributes["priority"] = "1"
 		} else {
 			auth.FileName = "pelican-credential.json"
+			auth.Metadata["access_token"] = "stale-token"
+			auth.Metadata["refresh_token"] = "refresh-token"
 		}
 		registered, errRegister := manager.Register(coreauth.WithSkipPersist(t.Context()), auth)
 		if errRegister != nil {
@@ -74,6 +89,7 @@ func setupPelicanTest(t *testing.T) (*gin.Engine, *pelicanTestExecutor, []*corea
 	handler := &Handler{authManager: manager}
 	router := gin.New()
 	router.POST("/pelican", handler.PelicanTestV8)
+	router.GET("/pelican", handler.GetPelicanTargetV8)
 	return router, executor, auths
 }
 
@@ -102,7 +118,7 @@ func TestPelicanV8PinsProviderAndCredential(t *testing.T) {
 			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 		}
 		body := ojson.Parse(response.Body.String())
-		if body.Get("auth_index").String() != target.Index || body.Get("answer").String() != "<svg><text>pelican</text></svg>" || body.Get("model").String() != "actual-model" || body.Get("usage.total_tokens").Int() != 28 {
+		if body.Get("auth_id").String() != target.ID || body.Get("auth_index").String() != target.Index || body.Get("answer").String() != "<svg><text>pelican</text></svg>" || body.Get("model").String() != "actual-model" || body.Get("usage.total_tokens").Int() != 28 {
 			t.Fatalf("wrong target/artifact: %s", response.Body.String())
 		}
 		if executor.calls[len(executor.calls)-1] != target.ID || !executor.retryOff {
@@ -143,6 +159,8 @@ func TestPelicanV8RejectsInvalidAndMismatchedTargets(t *testing.T) {
 		{"unsupported effort", pelicanRequest{AuthIndex: auths[0].Index, Model: "pelican-model", Prompt: "draw", Effort: "invalid"}, http.StatusBadRequest},
 		{"unknown index", pelicanRequest{AuthIndex: "missing", Model: "pelican-model", Prompt: "draw", Effort: "low"}, http.StatusNotFound},
 		{"mismatched name", pelicanRequest{AuthIndex: auths[0].Index, Name: auths[1].FileName, Model: "pelican-model", Prompt: "draw", Effort: "low"}, http.StatusNotFound},
+		{"mismatched id and index", pelicanRequest{AuthID: auths[0].ID, AuthIndex: auths[1].Index, Model: "pelican-model", Prompt: "draw"}, http.StatusNotFound},
+		{"mismatched id and name", pelicanRequest{AuthID: auths[0].ID, Name: auths[1].FileName, Model: "pelican-model", Prompt: "draw"}, http.StatusNotFound},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			response := callPelican(t, router, tc.request)
@@ -201,5 +219,41 @@ func TestPelicanV8UpstreamUnauthorizedDoesNotInvalidateManagementSession(t *test
 	response := callPelican(t, router, pelicanRequest{AuthIndex: auths[0].Index, Model: "pelican-model", Prompt: "Draw a pelican.", Effort: "medium"})
 	if response.Code != http.StatusBadGateway || ojson.Get(response.Body.String(), "upstream_status").Int() != http.StatusUnauthorized {
 		t.Fatalf("target error confused with management authentication: status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestPelicanV8DefaultsEffortAndBypassesHome(t *testing.T) {
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.SetConfig(&config.Config{Home: config.HomeConfig{Enabled: true}})
+	executor := &pelicanTestExecutor{response: coreexecutor.Response{Payload: []byte(`{"choices":[{"message":{"content":"answer"}}]}`)}}
+	manager.RegisterExecutor(executor)
+	target, err := manager.Register(coreauth.WithSkipPersist(t.Context()), &coreauth.Auth{
+		ID: t.Name(), Provider: executor.Identifier(), Status: coreauth.StatusActive,
+		Attributes: map[string]string{coreauth.AttributeAuthKind: coreauth.AuthKindOAuth},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(target.ID, target.Provider, []*registry.ModelInfo{{ID: "pelican-model"}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(target.ID) })
+	handler := &Handler{authManager: manager}
+	router := gin.New()
+	router.POST("/pelican", handler.PelicanTestV8)
+	response := callPelican(t, router, pelicanRequest{AuthID: target.ID, Model: "pelican-model", Prompt: "draw"})
+	if response.Code != http.StatusOK || len(executor.calls) != 1 || executor.calls[0] != target.ID || !executor.retryOff {
+		t.Fatalf("local pinned generation failed: status=%d calls=%v body=%s", response.Code, executor.calls, response.Body.String())
+	}
+	if effort := ojson.ParseBytes(executor.request.Payload).Get("reasoning_effort").String(); effort != "medium" {
+		t.Fatalf("default effort = %q, want medium", effort)
+	}
+}
+
+func TestPelicanV8OAuthRecoveryStaysOnPinnedIdentity(t *testing.T) {
+	router, executor, auths := setupPelicanTest(t)
+	executor.oauthRecovery = true
+	target := auths[1]
+	response := callPelican(t, router, pelicanRequest{AuthID: target.ID, Model: "pelican-model", Prompt: "draw"})
+	if response.Code != http.StatusOK || len(executor.calls) != 2 || executor.calls[0] != target.ID || executor.calls[1] != target.ID || len(executor.refreshCalls) != 1 || executor.refreshCalls[0] != target.ID {
+		t.Fatalf("OAuth recovery escaped pinned target: status=%d calls=%v refreshes=%v body=%s", response.Code, executor.calls, executor.refreshCalls, response.Body.String())
 	}
 }

@@ -9,6 +9,7 @@ type downstreamWebsocketContextKey struct{}
 type requireUpstreamWebsocketContextKey struct{}
 type upstreamAttemptTrackerContextKey struct{}
 type requestRetryStateContextKey struct{}
+type oauthRecoveryAllowedContextKey struct{}
 
 type requestRetryState struct {
 	disabled atomic.Bool
@@ -97,6 +98,24 @@ func RequestRetriesDisabled(ctx context.Context) bool {
 	}
 	state, ok := ctx.Value(requestRetryStateContextKey{}).(*requestRetryState)
 	return ok && state != nil && state.disabled.Load()
+}
+
+// WithOAuthRecoveryAllowed permits same-credential OAuth recovery even when
+// ordinary retries are disabled. It never enables credential or model fallback.
+func WithOAuthRecoveryAllowed(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, oauthRecoveryAllowedContextKey{}, true)
+}
+
+// OAuthRecoveryAllowed reports whether a caller explicitly permits OAuth recovery.
+func OAuthRecoveryAllowed(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	allowed, _ := ctx.Value(oauthRecoveryAllowedContextKey{}).(bool)
+	return allowed
 }
 
 // WithUpstreamAttemptTracker installs a fresh tracker for one provider execution attempt.

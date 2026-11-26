@@ -12,7 +12,7 @@ import (
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
-func TestManagerCodexPriorityOverridesClientSessionBinding(t *testing.T) {
+func TestManagerCodexSessionBindingSurvivesHigherPriorityCandidate(t *testing.T) {
 	for strategy, newFallback := range map[string]func() Selector{
 		"round-robin":          func() Selector { return &RoundRobinSelector{} },
 		"weighted-round-robin": func() Selector { return &WeightedRoundRobinSelector{} },
@@ -76,8 +76,12 @@ func TestManagerCodexPriorityOverridesClientSessionBinding(t *testing.T) {
 
 					pick(oauth.ID)
 					register(apiKey, model)
-					pick(apiKey.ID)
-					pick(apiKey.ID)
+					want := oauth.ID
+					if client == "no-session" {
+						want = apiKey.ID
+					}
+					pick(want)
+					pick(want)
 				})
 			}
 		}
@@ -106,7 +110,7 @@ func priorityRoutingClientOptions() map[string]func() cliproxyexecutor.Options {
 	}
 }
 
-func TestSessionAffinityPriorityOverridesParentBinding(t *testing.T) {
+func TestSessionAffinityParentBindingSurvivesHigherPriorityCandidate(t *testing.T) {
 	for _, client := range []struct {
 		name   string
 		header string
@@ -126,8 +130,8 @@ func TestSessionAffinityPriorityOverridesParentBinding(t *testing.T) {
 			}
 			childOpts := cliproxyexecutor.Options{Headers: http.Header{client.header: {"child"}, client.parent: {"parent"}}}
 			got, errPick := selector.Pick(context.Background(), "codex", "model", childOpts, []*Auth{low, high})
-			if errPick != nil || got == nil || got.ID != high.ID {
-				t.Fatalf("child Pick() = auth=%v error=%v, want %s", got, errPick, high.ID)
+			if errPick != nil || got == nil || got.ID != low.ID {
+				t.Fatalf("child Pick() = auth=%v error=%v, want %s", got, errPick, low.ID)
 			}
 		})
 	}
@@ -173,7 +177,7 @@ func TestSessionAffinityWeightedPrioritySkipsZeroWeight(t *testing.T) {
 	}
 }
 
-func TestSessionAffinityAdaptiveRebindsToHigherHealthyTier(t *testing.T) {
+func TestSessionAffinityAdaptiveRetainsHealthyLowerTier(t *testing.T) {
 	for client, options := range priorityRoutingClientOptions() {
 		t.Run(client, func(t *testing.T) {
 			adaptive := NewAdaptiveSelector(internalconfig.AdaptiveRoutingConfig{
@@ -186,7 +190,10 @@ func TestSessionAffinityAdaptiveRebindsToHigherHealthyTier(t *testing.T) {
 			if _, errPick := selector.Pick(context.Background(), "codex", "model", options(), []*Auth{low}); errPick != nil {
 				t.Fatal(errPick)
 			}
-			want := high.ID
+			want := low.ID
+			if client == "no-session" {
+				want = high.ID
+			}
 			got, errPick := selector.Pick(context.Background(), "codex", "model", options(), []*Auth{low, high})
 			if errPick != nil || got == nil || got.ID != want {
 				t.Fatalf("adaptive binding Pick() = auth=%v error=%v, want %s", got, errPick, want)
@@ -260,5 +267,97 @@ func TestManagerAdaptiveSelectionUsesResolvedAliasAvailability(t *testing.T) {
 				t.Fatalf("resolved alias Pick() = auth=%v error=%v, want %s", got, errPick, high.ID)
 			}
 		})
+	}
+}
+
+func TestManagerSessionAffinityPriorityHotUpdate(t *testing.T) {
+	for strategy, newFallback := range map[string]func() Selector{
+		"round-robin":          func() Selector { return &RoundRobinSelector{} },
+		"fill-first":           func() Selector { return &FillFirstSelector{} },
+		"weighted-round-robin": func() Selector { return &WeightedRoundRobinSelector{} },
+		"adaptive":             func() Selector { return NewAdaptiveSelector(internalconfig.AdaptiveRoutingConfig{}) },
+	} {
+		for _, rebind := range []string{SessionAffinityRebindOnAny, SessionAffinityRebindOnQuota, SessionAffinityRebindOnNever} {
+			for client, options := range priorityRoutingClientOptions() {
+				if client == "no-session" {
+					continue
+				}
+				t.Run(strategy+"/"+rebind+"/"+client, func(t *testing.T) {
+					selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{Fallback: newFallback(), RebindOn: rebind})
+					t.Cleanup(selector.Stop)
+					manager, high, low := newPriorityHealthRoutingManager(t, selector)
+					high.Metadata = map[string]any{"concurrency_limit": 1}
+					if _, err := manager.Update(WithSkipPersist(context.Background()), high); err != nil {
+						t.Fatal(err)
+					}
+					manager.requestLimiter.states = map[string]*requestLimitState{"auth:" + high.ID: {active: 1}}
+					assertPick := func(opts cliproxyexecutor.Options, want string) {
+						t.Helper()
+						got, err := pickPriorityHealthMixed(t, manager, opts, nil)
+						if err != nil || got == nil || got.ID != want {
+							t.Fatalf("Pick() = %v, %v; want %s", got, err, want)
+						}
+					}
+					assertPick(options(), low.ID)
+					manager.requestLimiter.states["auth:"+high.ID].active = 0
+					assertPick(options(), low.ID)
+					high.Attributes["priority"] = "100"
+					if _, err := manager.Update(WithSkipPersist(context.Background()), high); err != nil {
+						t.Fatal(err)
+					}
+					assertPick(options(), low.ID)
+					assertPick(cliproxyexecutor.Options{Headers: http.Header{"Session-Id": {"fresh-session"}}}, high.ID)
+					if !manager.CanReuseSessionAuth(context.Background(), low.ID, []string{"codex", "gemini"}, priorityHealthRoutingModel, options()) {
+						t.Fatal("priority update invalidated automatic session reuse")
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestManagerSessionAffinityRetentionDoesNotLeakFallbackTier(t *testing.T) {
+	for _, unavailable := range []string{"cooldown", "tried"} {
+		for _, client := range []string{"codex", "lcp"} {
+			t.Run(unavailable+"/"+client, func(t *testing.T) {
+				selector := NewSessionAffinitySelector(&RoundRobinSelector{})
+				t.Cleanup(selector.Stop)
+				manager, high, low := newPriorityHealthRoutingManager(t, selector)
+				high.Metadata = map[string]any{"concurrency_limit": 1}
+				if _, err := manager.Update(WithSkipPersist(context.Background()), high); err != nil {
+					t.Fatal(err)
+				}
+				manager.requestLimiter.states = map[string]*requestLimitState{"auth:" + high.ID: {active: 1}}
+				options := priorityRoutingClientOptions()[client]
+				got, err := pickPriorityHealthMixed(t, manager, options(), nil)
+				if err != nil || got == nil || got.ID != low.ID {
+					t.Fatalf("initial binding = %v, %v", got, err)
+				}
+				manager.requestLimiter.states["auth:"+high.ID].active = 0
+				var tried map[string]struct{}
+				if unavailable == "tried" {
+					tried = map[string]struct{}{high.ID: {}}
+				} else {
+					high.ModelStates = map[string]*ModelState{priorityHealthRoutingModel: {Unavailable: true, NextRetryAfter: time.Now().Add(time.Hour)}}
+					if _, err := manager.Update(WithSkipPersist(context.Background()), high); err != nil {
+						t.Fatal(err)
+					}
+				}
+				got, err = pickPriorityHealthMixed(t, manager, options(), tried)
+				if err != nil || got == nil || got.ID != low.ID {
+					t.Fatalf("retained binding = %v, %v; want %s", got, err, low.ID)
+				}
+				for _, fresh := range []cliproxyexecutor.Options{{}, {Headers: http.Header{"Session-Id": {"unbound"}}}, {
+					SourceFormat:    sdktranslator.FormatOpenAI,
+					OriginalRequest: []byte(`{"messages":[{"role":"system","content":"different environment"},{"role":"user","content":"new request"}]}`),
+					Metadata:        map[string]any{cliproxyexecutor.CallerScopeMetadataKey: "unbound-caller"},
+				}} {
+					got, err = pickPriorityHealthMixed(t, manager, fresh, tried)
+					if err == nil || got != nil {
+						t.Fatalf("new session escaped closed priority tier: %v, %v", got, err)
+					}
+				}
+			})
+		}
 	}
 }

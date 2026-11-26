@@ -44,3 +44,36 @@ func TestPelicanProxyRequiresAdminAndPreservesPinnedTarget(t *testing.T) {
 		}
 	}
 }
+
+func TestPelicanTargetDiscoveryProxyRequiresAdminAndPreservesSelector(t *testing.T) {
+	const path = "/v8/management/requests/pelican"
+	const query = "provider_kind=openai&config_index=3&key_index=1"
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.Method != http.MethodGet || r.URL.Path != path || r.URL.RawQuery != query || r.Header.Get("Authorization") != "Bearer management-key" {
+			t.Errorf("unexpected target discovery: method=%s url=%s", r.Method, r.URL)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"auth_id":"exact-runtime-id","auth_index":"shared-index","name":"exact-runtime-id","models":["only-this-target"]}`))
+	}))
+	t.Cleanup(upstream.Close)
+	handler := newTestHandler(t, upstream.URL, true)
+	for _, key := range []string{"", "tenant-a", "wrong-admin-key", testutil.AdminKey} {
+		recorder := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, path+"?"+query, nil)
+		if key != "" {
+			req.Header.Set("Authorization", "Bearer "+key)
+		}
+		handler.ServeHTTP(recorder, req)
+		if key != testutil.AdminKey {
+			if recorder.Code != http.StatusUnauthorized || calls.Load() != 0 {
+				t.Fatalf("unauthorized discovery reached upstream: status=%d calls=%d", recorder.Code, calls.Load())
+			}
+		} else if recorder.Code != http.StatusOK || calls.Load() != 1 || !strings.Contains(recorder.Body.String(), `"auth_id":"exact-runtime-id"`) {
+			t.Fatalf("target discovery was not proxied: status=%d calls=%d body=%s", recorder.Code, calls.Load(), recorder.Body.String())
+		}
+	}
+}

@@ -1428,7 +1428,7 @@ func (m *Manager) RefreshAfterUnauthorized(ctx context.Context, auth *Auth, exec
 // tryRefreshAfterUnauthorized refreshes local OAuth credentials once after a
 // 401 so the current auth can be retried before fallback/suspend.
 func (m *Manager) tryRefreshAfterUnauthorized(ctx context.Context, auth *Auth, execErr error, alreadyTried bool, clientHeaders ...http.Header) (*Auth, bool) {
-	if m == nil || auth == nil || execErr == nil || auth.AuthSourceKind() == AuthSourceConfig || auth.AuthKind() == AuthKindAgentIdentity || cliproxyexecutor.RequestRetriesDisabled(ctx) {
+	if m == nil || auth == nil || execErr == nil || auth.AuthSourceKind() == AuthSourceConfig || auth.AuthKind() == AuthKindAgentIdentity || (cliproxyexecutor.RequestRetriesDisabled(ctx) && !cliproxyexecutor.OAuthRecoveryAllowed(ctx)) {
 		return auth, false
 	}
 	// Request-scoped and explicit hard-stop failures describe this request, not stale credentials.

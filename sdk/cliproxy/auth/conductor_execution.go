@@ -1327,7 +1327,19 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		if homeMode {
 			syncPublishedSelectedAuthMetadata(pickOpts.Metadata, opts.Metadata)
 		}
+		didRefreshOnUnauthorized := false
 		preparedAuth, errPrepare := m.prepareRequestAuth(execCtx, executor, auth)
+		if errPrepare != nil && cliproxyexecutor.OAuthRecoveryAllowed(execCtx) {
+			if preparedAuth != nil {
+				auth = preparedAuth
+			}
+			if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(execCtx, auth, errPrepare, false, pickOpts.Headers); okRefresh {
+				didRefreshOnUnauthorized = true
+				auth = refreshed
+				publishSelectedAuthMetadata(opts.Metadata, auth)
+				preparedAuth, errPrepare = m.prepareRequestAuth(execCtx, executor, auth)
+			}
+		}
 		if errPrepare != nil {
 			if preparedAuth != nil {
 				auth = preparedAuth
@@ -1372,7 +1384,6 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		}
 		executor = executorForAuth(executor, auth)
 		var authErr error
-		didRefreshOnUnauthorized := false
 		didRecoverRequestAuth := false
 		for _, upstreamModel := range models {
 			execCtx = m.newUpstreamAttemptContext(execCtx)

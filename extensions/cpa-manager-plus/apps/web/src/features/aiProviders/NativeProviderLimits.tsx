@@ -11,13 +11,18 @@ import {
 import { providersApi } from '@/services/api';
 import { useNotificationStore } from '@/stores';
 import type { ProviderKeyConfig } from '@/types';
+import { buildNativePelicanTestTargets, type PelicanTestTarget } from '@/components/providers/PelicanTestDrawer/pelicanTest';
 
 // Native providers without a dedicated editor still expose the same admission controls.
-export function NativeProviderLimits({ disabled }: { disabled: boolean }) {
+export function NativeProviderLimits({ disabled, onPelicanTest, onPelicanTargetsChange }: {
+  disabled: boolean;
+  onPelicanTest: (targets: PelicanTestTarget[]) => void;
+  onPelicanTargetsChange: (targets: PelicanTestTarget[]) => void;
+}) {
   const { t } = useTranslation();
   const { showNotification } = useNotificationStore();
   const [items, setItems] = useState<
-    Array<{ kind: 'xai' | 'meta'; original: ProviderKeyConfig; draft: ProviderKeyConfig }>
+    Array<{ kind: 'xai' | 'meta'; original: ProviderKeyConfig; draft: ProviderKeyConfig; target: PelicanTestTarget }>
   >([]);
   const [saving, setSaving] = useState<number | null>(null);
   const [error, setError] = useState('');
@@ -26,11 +31,16 @@ export function NativeProviderLimits({ disabled }: { disabled: boolean }) {
     void Promise.all(
       (['xai', 'meta'] as const).map(async (kind) => {
         const configs = await providersApi.getNativeProviderLimits(kind);
-        return configs.map((original) => ({ kind, original, draft: { ...original } }));
+        const targets = buildNativePelicanTestTargets(kind, configs);
+        return configs.map((original, index) => ({ kind, original, draft: { ...original }, target: targets[index] }));
       })
     )
       .then((groups) => {
-        if (!cancelled) setItems(groups.flat());
+        if (!cancelled) {
+          const entries = groups.flat();
+          setItems(entries);
+          onPelicanTargetsChange(entries.map((entry) => entry.target));
+        }
       })
       .catch((err: unknown) => {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
@@ -38,7 +48,7 @@ export function NativeProviderLimits({ disabled }: { disabled: boolean }) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [onPelicanTargetsChange]);
 
   if (!items.length && !error) return null;
   return (
@@ -97,6 +107,9 @@ export function NativeProviderLimits({ disabled }: { disabled: boolean }) {
             }}
           >
             {t('common.save')}
+          </Button>
+          <Button variant="secondary" disabled={disabled || saving !== null} onClick={() => onPelicanTest([item.target])}>
+            {t('ai_providers.pelican_button')}
           </Button>
         </fieldset>
       ))}

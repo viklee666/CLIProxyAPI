@@ -321,7 +321,9 @@ describe('AuthFilesPage Pelican target loading', () => {
         )!.props.onClick();
       });
       expect(mocks.pelicanProps?.open).toBe(true);
-      expect(mocks.pelicanProps?.targets.map((target) => target.authIndex)).toEqual(['first', 'later']);
+      expect(mocks.pelicanProps?.targets.map((target) => target.selector)).toEqual([
+        { name: 'first-page.json', auth_index: 'first' }, { name: 'later-page.json', auth_index: 'later' },
+      ]);
       act(() => mocks.pelicanProps!.onClose());
       expect(mocks.pelicanProps?.open).toBe(false);
     } finally {

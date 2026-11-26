@@ -1671,10 +1671,12 @@ func TestResponsesWebsocketSameSessionLaterCreate429FailoverToAlternativeCredent
 					Provider: "codex",
 					Status:   coreauth.StatusActive,
 					Attributes: map[string]string{
-						"api_key":    spec.key,
-						"base_url":   upstream.URL,
-						"websockets": "true",
-						"priority":   spec.priority,
+						// Cross-tier exhaustion failover applies to stored credentials.
+						coreauth.AttributeSourceBackend: coreauth.AuthSourceFile,
+						"api_key":                       spec.key,
+						"base_url":                      upstream.URL,
+						"websockets":                    "true",
+						"priority":                      spec.priority,
 					},
 				}); errRegister != nil {
 					t.Fatal(errRegister)

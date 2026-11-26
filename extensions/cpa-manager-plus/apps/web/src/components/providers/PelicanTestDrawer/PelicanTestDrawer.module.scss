@@ -20,4 +20,6 @@
 .artifact summary { cursor: pointer; color: var(--text-secondary); }
 .preview { width: 100%; height: 340px; border: 1px solid var(--border-color); border-radius: 6px; margin-top: 8px; }
 .answer { max-height: 400px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 monospace; color: var(--text-primary); }
+.reference { font-size: 13px; line-height: 1.6; color: var(--text-secondary); }
+.reference summary { cursor: pointer; }
 @media (max-width: 560px) { .controls { grid-template-columns: 1fr; } .preview { height: 260px; } }

@@ -222,6 +222,10 @@ export function AuthFilesPage() {
   const [pelicanLoading, setPelicanLoading] = useState(false);
   const pelicanLoadID = useRef(0);
   useEffect(() => () => { pelicanLoadID.current += 1; }, []);
+  const closePelican = useCallback(() => {
+    pelicanLoadID.current += 1;
+    setPelicanTargets(null);
+  }, []);
   const openPelicanTests = async (selected?: AuthFileItem[]) => {
     const loadID = ++pelicanLoadID.current;
     setPelicanLoading(true);
@@ -1906,10 +1910,7 @@ export function AuthFilesPage() {
         open={pelicanTargets !== null}
         targets={pelicanTargets ?? []}
         actionsDisabled={disableControls}
-        onClose={() => {
-          pelicanLoadID.current += 1;
-          setPelicanTargets(null);
-        }}
+        onClose={closePelican}
       />
 
       <OAuthExcludedCard

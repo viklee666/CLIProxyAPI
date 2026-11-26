@@ -2,7 +2,6 @@ package openai
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http/httptest"
 	"strings"
@@ -17,7 +16,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
-func TestResponsesWebsocketCompactionPinRespectsPriority(t *testing.T) {
+func TestResponsesWebsocketCompactionPinSurvivesPriorityChange(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	for _, providerRoute := range []bool{false, true} {
 		t.Run(fmt.Sprintf("provider-route=%t", providerRoute), func(t *testing.T) {
@@ -84,14 +83,14 @@ func TestResponsesWebsocketCompactionPinRespectsPriority(t *testing.T) {
 					t.Fatalf("response = %s, want response.completed", payload)
 				}
 			}
-			if got := executor.authIDs; len(got) != 2 || got[0] != low.ID || got[1] != high.ID {
-				t.Fatalf("compaction auth IDs = %v, want [%s %s]", got, low.ID, high.ID)
+			if got := executor.authIDs; len(got) != 2 || got[0] != low.ID || got[1] != low.ID {
+				t.Fatalf("compaction auth IDs = %v, want [%s %s]", got, low.ID, low.ID)
 			}
 		})
 	}
 }
 
-func TestResponsesWebsocketRechecksPinnedAuthPriority(t *testing.T) {
+func TestResponsesWebsocketRetainsPinnedAuthAfterPriorityChange(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	for _, crossProvider := range []bool{false, true} {
 		for _, followup := range []string{"full", "previous-response", "append"} {
@@ -171,27 +170,18 @@ func TestResponsesWebsocketRechecksPinnedAuthPriority(t *testing.T) {
 						if followup == "previous-response" {
 							request = []byte(fmt.Sprintf(`{"type":"response.create","model":%q,"previous_response_id":"resp-1","input":[]}`, model))
 						}
-						if errWrite := conn.WriteMessage(websocket.TextMessage, request); errWrite != nil {
-							t.Fatal(errWrite)
-						}
-						_, payload, errRead := conn.ReadMessage()
-						var closeErr *websocket.CloseError
-						if !errors.As(errRead, &closeErr) || closeErr.Code != websocket.CloseServiceRestart || closeErr.Text != wsHTTPReplayRequiredCloseReason {
-							t.Fatalf("incremental response = %s, error = %v, want full replay close", payload, errRead)
-						}
-						if got := codexExecutor.AuthIDs(); len(got) != 1 {
-							t.Fatalf("incremental request executed with stale upstream state: %v", got)
-						}
-						if crossProvider && len(upstreamExecutor.AuthIDs()) != 0 {
-							t.Fatal("incremental request was sent to a new provider without replay")
-						}
-						return
 					}
 					execute()
+					if followup == "previous-response" {
+						request = []byte(fmt.Sprintf(`{"type":"response.create","model":%q,"previous_response_id":"resp-2","input":[]}`, model))
+					}
 					execute()
-					got := upstreamExecutor.AuthIDs()
-					if len(got) < 2 || got[len(got)-2] != upstream.ID || got[len(got)-1] != upstream.ID {
-						t.Fatalf("auth IDs after raising upstream priority = %v, want last two auths %s", got, upstream.ID)
+					got := codexExecutor.AuthIDs()
+					if len(got) != 3 || got[1] != oauth.ID || got[2] != oauth.ID {
+						t.Fatalf("auth IDs after raising upstream priority = %v, want all auths %s", got, oauth.ID)
+					}
+					if crossProvider && len(upstreamExecutor.AuthIDs()) != 0 {
+						t.Fatal("priority change moved an existing session to another provider")
 					}
 				})
 			}

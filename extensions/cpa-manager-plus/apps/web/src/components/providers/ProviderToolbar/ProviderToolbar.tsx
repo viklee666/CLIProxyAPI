@@ -41,6 +41,7 @@ interface ProviderToolbarProps {
   onHealthCheck: () => void;
   onPelicanTest: () => void;
   healthCheckDisabled?: boolean;
+  pelicanDisabled?: boolean;
 }
 
 type ProviderKindTab = {
@@ -73,6 +74,7 @@ export function ProviderToolbar({
   onHealthCheck,
   onPelicanTest,
   healthCheckDisabled = false,
+  pelicanDisabled = false,
 }: ProviderToolbarProps) {
   const { t } = useTranslation();
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
@@ -569,7 +571,7 @@ export function ProviderToolbar({
           variant="secondary"
           size="sm"
           onClick={onPelicanTest}
-          disabled={disabled || healthCheckDisabled}
+          disabled={disabled || pelicanDisabled}
           className={styles.healthCheckButton}
         >
           <IconBinary size={14} />

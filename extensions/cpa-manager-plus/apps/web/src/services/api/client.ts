@@ -218,6 +218,17 @@ class ApiClient {
     return response.data;
   }
 
+  async getV8<T = unknown>(url: string, config?: AxiosRequestConfig): Promise<T> {
+    if (__DEMO_SITE__ && isDemoMode()) return handleDemoApiRequest<T>('get', url, undefined, config);
+    if (!url.startsWith('/v8/management/') || url.includes('..') || url.includes('\\')) {
+      throw new Error('Invalid v8 management path');
+    }
+    const baseUrl = this.apiBase.replace(/\/v0\/management\/?$/i, '');
+    if (!baseUrl) throw new Error('Management connection is not configured');
+    const response = await this.instance.get<T>(`${baseUrl}${url}`, config);
+    return response.data;
+  }
+
   async postV8<T = unknown>(url: string, data?: unknown, config?: AxiosRequestConfig): Promise<T> {
     if (__DEMO_SITE__ && isDemoMode()) return handleDemoApiRequest<T>('post', url, data, config);
     if (!url.startsWith('/v8/management/') || url.includes('..') || url.includes('\\')) {

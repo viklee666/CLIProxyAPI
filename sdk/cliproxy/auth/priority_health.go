@@ -23,11 +23,11 @@ type priorityHealthSample struct {
 	success bool
 }
 
-// A reusable ring retains every outcome in the rolling window, regardless of RPM.
+// A reusable ring retains the rolling error rate; streaks outlive that window.
 type priorityHealthRecord struct {
 	samples                       []priorityHealthSample
 	head, count, failures, streak int
-	last                          time.Time
+	isolatedUntil                 time.Time
 }
 
 type priorityHealthRecordKey struct {
@@ -36,11 +36,12 @@ type priorityHealthRecordKey struct {
 }
 
 type priorityHealthTracker struct {
-	mu          sync.Mutex
-	records     map[priorityHealthRecordKey]*priorityHealthRecord
-	nowFunc     func() time.Time
-	limits      *requestLimiter
-	lastCleanup time.Time
+	mu            sync.Mutex
+	records       map[priorityHealthRecordKey]*priorityHealthRecord
+	registrations map[string]uint64
+	nowFunc       func() time.Time
+	limits        *requestLimiter
+	lastCleanup   time.Time
 }
 
 type priorityHealthMetadataKey struct{}
@@ -115,9 +116,11 @@ func (r *priorityHealthRecord) prune(now time.Time) {
 		r.head = (r.head + 1) % len(r.samples)
 		r.count--
 	}
-	r.streak = min(r.streak, r.count)
 	if r.count == 0 {
-		r.head, r.streak = 0, 0
+		r.head = 0
+		if len(r.samples) > 16 {
+			r.samples = nil
+		}
 	}
 }
 
@@ -133,11 +136,14 @@ func (r *priorityHealthRecord) append(at time.Time, success bool) {
 	}
 	r.samples[(r.head+r.count)%len(r.samples)] = priorityHealthSample{at: at, success: success}
 	r.count++
-	r.last = at
 	if success {
 		r.streak = 0
+		r.isolatedUntil = time.Time{}
 	} else {
-		r.streak++
+		r.streak = min(r.streak+1, priorityHealthFailureStreak)
+		if r.streak >= priorityHealthFailureStreak {
+			r.isolatedUntil = at.Add(priorityHealthWindow)
+		}
 		r.failures++
 	}
 }
@@ -170,9 +176,15 @@ func (h *priorityHealthTracker) observe(result Result) {
 	scope := priorityHealthScope(result.Options.Metadata)
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.registrations != nil {
+		if epoch, ok := h.registrations[result.AuthID]; !ok || epoch != result.RegistrationEpoch {
+			return
+		}
+	}
 	if now.Sub(h.lastCleanup) >= priorityHealthWindow {
 		for key, record := range h.records {
-			if !record.last.After(now.Add(-priorityHealthWindow)) {
+			record.prune(now)
+			if record.streak == 0 && record.count == 0 {
 				delete(h.records, key)
 			}
 		}
@@ -194,14 +206,52 @@ func (h *priorityHealthTracker) observe(result Result) {
 	}
 }
 
+// Lifecycle changes discard obsolete streaks without time-based recovery or
+// allowing delayed results from removed registrations to recreate them.
+func (h *priorityHealthTracker) register(authID string, epoch uint64) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.registrations == nil {
+		h.registrations = make(map[string]uint64)
+	}
+	if current, ok := h.registrations[authID]; ok && current >= epoch {
+		return
+	}
+	h.registrations[authID] = epoch
+	for key := range h.records {
+		if key.authID == authID && key.registrationEpoch != epoch {
+			delete(h.records, key)
+		}
+	}
+}
+
+func (h *priorityHealthTracker) remove(authID string, epoch uint64) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if current, ok := h.registrations[authID]; ok && current <= epoch {
+		delete(h.registrations, authID)
+	}
+	for key := range h.records {
+		if key.authID == authID && key.registrationEpoch <= epoch {
+			delete(h.records, key)
+		}
+	}
+}
+
 func (h *priorityHealthTracker) hasRecords(authID, model string, metadata map[string]any) bool {
 	if h == nil || strings.TrimSpace(authID) == "" {
 		return false
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	record := h.records[priorityHealthRecordKey{authID: authID, model: canonicalModelLookupKey(model), scope: priorityHealthScope(metadata)}]
-	return record != nil && record.count > 0
+	record := h.records[priorityHealthRecordKey{authID: authID, model: canonicalModelLookupKey(model), scope: priorityHealthScope(metadata), registrationEpoch: h.registrations[authID]}]
+	return record != nil && (record.count > 0 || record.streak > 0)
 }
 
 func (h *priorityHealthTracker) unhealthyInScope(auth *Auth, model, scope string, now time.Time) bool {
@@ -215,7 +265,9 @@ func (h *priorityHealthTracker) unhealthyInScope(auth *Auth, model, scope string
 		return false
 	}
 	record.prune(now)
-	return record.streak >= priorityHealthFailureStreak || record.count >= priorityHealthMinSamples && record.failures*5 > record.count*3
+	// Expiry permits a probe, not recovery: the next failure immediately isolates
+	// the credential again, and only a completed success clears the streak.
+	return record.isolatedUntil.After(now) || record.count >= priorityHealthMinSamples && record.failures*5 > record.count*3
 }
 
 func (h *priorityHealthTracker) unhealthy(auth *Auth, model string, metadata map[string]any, now time.Time) bool {
@@ -247,28 +299,33 @@ func (h *priorityHealthTracker) viable(auth *Auth, model string, metadata map[st
 	return auth != nil && !isAuthDisabled(auth) && !h.unhealthy(auth, model, metadata, now) && !h.concurrencyAtLimit(auth)
 }
 
-// Select the tier before cooldown and tried-ID filtering, never because a target
-// was merely busy, rate limited, or already attempted. Pins never fail over.
+// Select the tier before cooldown and tried-ID filtering. Only unhealthy or
+// concurrency-saturated targets permit demotion; explicit pins never fail over.
 func (h *priorityHealthTracker) filter(auths []*Auth, model string, metadata map[string]any, now time.Time) []*Auth {
+	if pinnedAuthIDFromMetadata(metadata) != "" {
+		return auths
+	}
+	return highestPriorityAuths(h.filterViable(auths, model, metadata, now))
+}
+
+func (h *priorityHealthTracker) filterViable(auths []*Auth, model string, metadata map[string]any, now time.Time) []*Auth {
 	if pinnedAuthIDFromMetadata(metadata) != "" {
 		return auths
 	}
 	scope := priorityHealthScope(metadata)
 	model = canonicalModelLookupKey(model)
-	best, found := 0, false
-	filtered := make([]*Auth, 0, len(auths))
-	for _, auth := range auths {
-		if auth == nil || isAuthDisabled(auth) || h.unhealthyInScope(auth, model, scope, now) || h.concurrencyAtLimit(auth) {
-			continue
-		}
-		priority := authPriority(auth)
-		if !found || priority > best {
-			best, found = priority, true
-			filtered = filtered[:0]
-		}
-		if priority == best {
+	var filtered []*Auth
+	for i, auth := range auths {
+		skip := auth == nil || isAuthDisabled(auth) || h.unhealthyInScope(auth, model, scope, now) || h.concurrencyAtLimit(auth)
+		if skip && filtered == nil {
+			filtered = make([]*Auth, 0, len(auths)-1)
+			filtered = append(filtered, auths[:i]...)
+		} else if !skip && filtered != nil {
 			filtered = append(filtered, auth)
 		}
 	}
-	return filtered
+	if filtered != nil {
+		return filtered
+	}
+	return auths
 }
