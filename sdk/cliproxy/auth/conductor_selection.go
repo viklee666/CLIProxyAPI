@@ -989,10 +989,8 @@ func (m *Manager) availableAuthsForRouteModelForRequest(ctx context.Context, aut
 	return availableAuthsFromPriorityBuckets(availableByPriority, allPriorities), nil
 }
 
-// availableAuthsForSelector reports the candidates handed to priority-scoped consumers such as
-// the plugin scheduler, plus the candidates handed to the configured selector. Both are equal
-// unless session affinity or an across-priorities scheduler is active, in which case the selector
-// or scheduler additionally receives lower priority tiers.
+// availableAuthsForSelector applies the shared priority gate before cooldowns,
+// attempted IDs, affinity, or strategy-specific scoring can narrow candidates.
 func (m *Manager) availableAuthsForSelector(ctx context.Context, selector Selector, auths []*Auth, provider, routeModel string, now time.Time, schedulerAcross bool, clientHeaders ...http.Header) (priorityAuths, selectorAuths []*Auth, err error) {
 	_, sessionAffinity := selector.(*SessionAffinitySelector)
 	if UnwrapWeightedRoundRobinSelector(selector) != nil {
@@ -1001,7 +999,16 @@ func (m *Manager) availableAuthsForSelector(ctx context.Context, selector Select
 		auths = positiveWeightAuths(auths)
 	}
 
-	if !sessionAffinity && !schedulerAcross && !usesAdaptiveSelection(selector) {
+	if m.priorityHealth != nil {
+		auths = m.priorityHealth.filter(auths, routeModel, priorityHealthMetadata(ctx), now)
+	}
+	if tried := priorityHealthTried(ctx); len(tried) > 0 {
+		auths = filterAuthsExcluding(auths, tried)
+	}
+	if len(auths) == 0 {
+		return nil, nil, &Error{Code: "auth_not_found", Message: "no auth available"}
+	}
+	if m.priorityHealth == nil && !sessionAffinity && !schedulerAcross && !usesAdaptiveSelection(selector) {
 		priorityAuths, err = m.availableAuthsForRouteModelForRequest(ctx, auths, provider, routeModel, now, false, clientHeaders...)
 		if err != nil {
 			return nil, nil, err
@@ -1064,6 +1071,9 @@ func (m *Manager) transientlyUnavailableSessionAffinityAuthIDs(ctx context.Conte
 	}
 	if _, weighted := affinity.fallback.(*WeightedRoundRobinSelector); weighted {
 		affinityCandidates = positiveWeightAuths(affinityCandidates)
+	}
+	if m.priorityHealth != nil {
+		affinityCandidates = m.priorityHealth.filter(affinityCandidates, routeModel, priorityHealthMetadata(ctx), now)
 	}
 	var authIDs map[string]struct{}
 	for _, candidate := range affinityCandidates {
@@ -2439,6 +2449,8 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	opts.EnsureMetadata()
 	clearSchedulerSelectionID(opts.Metadata)
 	opts.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey] = provider
+	ctx = withPriorityHealthMetadata(ctx, opts.Metadata)
+	ctx = withPriorityHealthTried(ctx, tried)
 
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
 	eligibility := authSelectionEligibilityForRequest(ctx, opts)
@@ -2502,9 +2514,6 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		if trackTransientAffinity {
 			affinityCandidates = append(affinityCandidates, candidate)
 		}
-		if used {
-			continue
-		}
 		candidates = append(candidates, candidate)
 	}
 	canInspectUnavailableAffinity := hasAffinity && affinitySelector != nil && affinitySelector.rebindOnNever && pluginScheduler == nil
@@ -2546,9 +2555,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	}
 	if !handled {
 		if len(excluded) > 0 {
-			candidates = filterAuthsExcluding(candidates, excluded)
-			accountingCandidates = filterAuthsExcluding(accountingCandidates, excluded)
-			affinityCandidates = filterAuthsExcluding(affinityCandidates, excluded)
+			ctx = withPriorityHealthTried(ctx, effectiveTried)
 			if len(candidates) == 0 {
 				return nil, nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 			}
@@ -2895,8 +2902,8 @@ func (m *Manager) mixedAuthCandidatesLocked(ctx context.Context, providerSet map
 }
 
 // CanReuseSessionAuth checks an automatic session binding against current request eligibility
-// without selecting a credential or changing selector state. Ordinary strategies require the
-// highest available priority tier; adaptive and explicit retention policies can reuse across tiers.
+// without selecting a credential or changing selector state. Automatic reuse
+// must satisfy the same priority tier as a new selection.
 func (m *Manager) CanReuseSessionAuth(ctx context.Context, authID string, providers []string, model string, opts cliproxyexecutor.Options) bool {
 	if m == nil || strings.TrimSpace(authID) == "" || m.HomeEnabledForMetadata(opts.Metadata) {
 		return false
@@ -2909,15 +2916,14 @@ func (m *Manager) CanReuseSessionAuth(ctx context.Context, authID string, provid
 	defer m.mu.RUnlock()
 	candidates := m.mixedAuthCandidatesLocked(ctx, providerSet, model, opts, nil)
 	selector := m.selector
-	acrossPriorities := usesAdaptiveSelection(selector)
 	if affinity, ok := selector.(*SessionAffinitySelector); ok {
-		acrossPriorities = acrossPriorities || affinity.rebindOnNever || affinity.rebindOnQuotaOnly
 		selector = affinity.fallback
 	}
 	if _, weighted := selector.(*WeightedRoundRobinSelector); weighted {
 		candidates = positiveWeightAuths(candidates)
 	}
-	available, errAvailable := m.availableAuthsForRouteModelForRequest(ctx, candidates, "mixed", model, time.Now(), acrossPriorities, opts.Headers)
+	ctx = withPriorityHealthMetadata(ctx, opts.Metadata)
+	available, _, errAvailable := m.availableAuthsForSelector(ctx, selector, candidates, "mixed", model, time.Now(), false, opts.Headers)
 	if errAvailable != nil {
 		return false
 	}
@@ -2966,7 +2972,7 @@ func (m *Manager) HasAlternativeTargetForModel(ctx context.Context, providers []
 			continue
 		}
 		candidateID := strings.TrimSpace(candidate.ID)
-		if candidateID == "" || candidateID == excludedAuthID {
+		if candidateID == "" {
 			continue
 		}
 		if !eligibility.allows(candidate) {
@@ -2990,6 +2996,8 @@ func (m *Manager) HasAlternativeTargetForModel(ctx context.Context, providers []
 	if len(candidates) == 0 {
 		return false
 	}
+	ctx = withPriorityHealthMetadata(ctx, opts.Metadata)
+	ctx = withPriorityHealthTried(ctx, map[string]struct{}{excludedAuthID: {}})
 	available, _, errAvailable := m.availableAuthsForSelector(ctx, m.selector, candidates, "mixed", model, time.Now(), false, opts.Headers)
 	return errAvailable == nil && len(available) > 0
 }
@@ -3003,6 +3011,8 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	opts.EnsureMetadata()
 	clearSchedulerSelectionID(opts.Metadata)
 	opts.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey] = "mixed"
+	ctx = withPriorityHealthMetadata(ctx, opts.Metadata)
+	ctx = withPriorityHealthTried(ctx, tried)
 
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
 	eligibility := authSelectionEligibilityForRequest(ctx, opts)
@@ -3082,9 +3092,6 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		if trackTransientAffinity {
 			affinityCandidates = append(affinityCandidates, candidate)
 		}
-		if used {
-			continue
-		}
 		candidates = append(candidates, candidate)
 	}
 	canInspectUnavailableAffinity := hasAffinity && affinitySelector != nil && affinitySelector.rebindOnNever && pluginScheduler == nil
@@ -3126,9 +3133,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	}
 	if !handled {
 		if len(excluded) > 0 {
-			candidates = filterAuthsExcluding(candidates, excluded)
-			accountingCandidates = filterAuthsExcluding(accountingCandidates, excluded)
-			affinityCandidates = filterAuthsExcluding(affinityCandidates, excluded)
+			ctx = withPriorityHealthTried(ctx, effectiveTried)
 			if len(candidates) == 0 {
 				return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 			}

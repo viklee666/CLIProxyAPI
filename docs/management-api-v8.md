@@ -143,6 +143,16 @@ Compensation arrives after completion and uses Home's current eligible
 pool and API-key permissions, so it remains approximate. Old peers ignore the
 optional metadata; missing usage cannot compensate a reused turn.
 
+### Strict priority tiers and health-gated fallback
+
+Routing compares every eligible provider credential and credential file in one descending priority order for the requested model. Provider and file credentials participate as peers after model aliases, model capabilities, client-group access, and ownership checks are resolved. The configured strategy runs inside the selected tier, including round-robin, fill-first, weighted round-robin, adaptive routing, session affinity, scheduler fast paths, and retry rounds.
+
+A lower tier becomes eligible when every eligible target in the preferred tier is unhealthy or has reached its configured concurrency limit. Health uses completed upstream results scoped by credential, requested model, and client-access partition. The sixth consecutive upstream failure demotes a target. A trailing 60-second error rate must exceed 60 percent across at least 10 completed samples before it demotes a target. Five consecutive failures and exactly 60 percent errors remain eligible. Busy targets below their positive concurrency limit remain eligible. A zero or omitted concurrency limit means unlimited. RPM saturation does not demote a tier. Busy and time-to-first-token observations alone do not demote a target.
+
+The health window expires after 60 seconds without matching samples, and a successful completed result clears the consecutive-failure condition. Higher tiers become eligible again after recovery. Keys with the same authorized group set share health; different client-group partitions do not demote one another. Administrative keys evaluate aggregate target outcomes and the complete eligible target set without inheriting a group-specific priority override. Existing tenant ownership checks still apply.
+
+Cooldown and attempted-ID filtering run after the tier gate: one failure, a cooldown, or an exhausted retry list alone does not unlock a lower healthy tier. Existing cooldowns remain enforced, so a request can return unavailable instead of bypassing the preferred tier. Explicit pinned credentials bypass tier preference, not authorization or cooldowns, and never fail over to another identity.
+
 ### Codex multi-agent configuration migration
 
 `client.codex.optimize-multi-agent-v2` is the sole runtime setting. Loading older
@@ -170,6 +180,7 @@ retain the corresponding business operation's fields.
 | `/server/server-id` | GET | Get the active deployment UUID. |
 | `/server/latest-version` | GET | Get latest release information. |
 | `/requests/api-call` | POST | Make an authenticated upstream call. |
+| `/requests/pelican` | POST | Generate an artifact with an exact provider-key or credential-file identity for manual comparison. |
 | `/routing/cooldown/reset` | POST | Clear credential cooldown. |
 | `/routing/model-definitions/<channel>` | GET | Get model definitions. |
 | `/observability/logs` | GET, DELETE | Read or clear application logs. |
@@ -197,6 +208,22 @@ retain the corresponding business operation's fields.
 | `/plugins/store` | GET | List the plugin store (supports optional `?refresh=true` to bypass cached release checks). |
 | `/plugins/store/<id>/install` | POST | Install or update a plugin. |
 | `/plugins/<id>/quota` | GET, POST, DELETE | Read, fetch, or reset plugin quota. |
+
+### Pelican generation comparison
+
+`POST /v8/management/requests/pelican` requires management authentication. The manager extension forwards only this explicit v8 path using its saved CPA management key.
+
+```json
+{"auth_index":"credential-index","model":"configured-model-alias","prompt":"Create an animated inline SVG of a pelican riding a bicycle.","effort":"high"}
+```
+
+Supply `auth_index`, credential-file `name`, or both; if both are supplied they must identify the same target. `model` and `prompt` are required. Optional `effort` accepts `low`, `medium`, `high`, or `xhigh`. The request body is limited to 128 KiB, the prompt to 100,000 bytes, and the model to 512 bytes. Disabled or sign-in-required targets are rejected.
+
+The normal executor pipeline performs model translation, credential refresh, proxy handling, and final user payload rules. Each generation uses an isolated session and a pinned identity; ordinary retries and credential failover are disabled. Disconnecting or cancelling cancels the generation. Calls consume the selected account's upstream quota.
+
+Success returns `auth_index`, `name`, the actual `model`, complete `answer`, `duration_ms`, and `usage`. Empty, incomplete, truncated, or tool-only responses are failures. Upstream authentication failures return HTTP 502 with `upstream_status`, rather than invalidating the operator's management login. Management authentication failures still return HTTP 401.
+
+The UI supports individual targets, multiple selection, and selecting all matching targets. Generated HTML/SVG is rendered only in a script-free, network-blocked sandbox; the unmodified answer remains available as escaped source. This is manual artifact comparison, not an intelligence score or a guaranteed-quality benchmark.
 
 ## OAuth
 

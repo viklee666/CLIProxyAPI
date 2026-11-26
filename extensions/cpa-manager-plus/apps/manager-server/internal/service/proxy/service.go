@@ -24,6 +24,9 @@ const cpaManagementPrefix = "/v0/management"
 const codexInviteOriginHeader = "X-Codex-Invite-Origin"
 const managementOriginJSONField = "management_origin"
 
+// PelicanTestPath is the isolated v8 inference operation exposed by the manager.
+const PelicanTestPath = "/v8/management/requests/pelican"
+
 var cpaBuiltinManagementPathHeads = map[string]struct{}{
 	"account-action-candidates": {},
 	"accounts":                  {},
@@ -85,7 +88,7 @@ func (s *Service) ProxyPluginResourceWithCallerAuth(w http.ResponseWriter, r *ht
 
 func (s *Service) proxyWithSavedManagementKey(w http.ResponseWriter, r *http.Request, writeError func(http.ResponseWriter, int, error)) {
 	if !isManagementPath(r.URL.Path) {
-		writeError(w, http.StatusNotFound, errors.New("proxy path must be under /v0/management/"))
+		writeError(w, http.StatusNotFound, errors.New("proxy path must be a supported management path"))
 		return
 	}
 	s.proxyToSavedSetup(w, r, writeError, true, false)
@@ -244,7 +247,7 @@ func isModelListPath(path string) bool {
 }
 
 func isManagementPath(path string) bool {
-	if isStrictManagementPath(path) {
+	if path == PelicanTestPath || isStrictManagementPath(path) {
 		return true
 	}
 	return IsCPAPluginResourcePath(path)

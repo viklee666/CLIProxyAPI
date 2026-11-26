@@ -591,7 +591,9 @@ const listAllAuthFiles = async (
     }
     facets = response.facets ?? facets;
     if (!response.has_more && files.length >= total) break;
-    if (response.files.length === 0 || response.files.length < AUTH_FILES_BULK_PAGE_SIZE) break;
+    if (response.files.length === 0) {
+      throw new Error('Credential listing ended before all targets were returned');
+    }
     page += 1;
   }
 

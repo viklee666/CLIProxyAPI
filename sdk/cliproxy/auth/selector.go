@@ -1609,7 +1609,7 @@ func (s *SessionAffinitySelector) availableAuths(ctx context.Context, auths []*A
 	if _, weighted := s.fallback.(*WeightedRoundRobinSelector); weighted {
 		auths = positiveWeightAuths(auths)
 	}
-	return getSelectorAvailableAuthsWithPriorityMode(ctx, auths, provider, model, now, s.rebindOnNever || s.rebindOnQuotaOnly || usesAdaptiveSelection(s.fallback))
+	return getSelectorAvailableAuthsWithPriorityMode(ctx, highestPriorityAuths(auths), provider, model, now, false)
 }
 
 // Pick selects an auth with session affinity when possible.
@@ -1617,9 +1617,8 @@ func (s *SessionAffinitySelector) availableAuths(ctx context.Context, auths []*A
 // are absolute authority. Requests without those signals use the Merkle LCP
 // matcher before retaining the legacy derived/hash fallback behavior.
 //
-// Session bindings are reused within the highest available priority tier. A higher-priority
-// credential becoming available causes rebinding. Adaptive routing instead retains all tiers
-// for configured scoring and preserves bindings until its sticky-escape policy requires failover.
+// Session bindings are reused only within the selected priority tier. The manager
+// applies health and concurrency eligibility before handing candidates to affinity.
 //
 // Note: The cache key includes provider, session ID, and model to handle cases where
 // a session uses multiple models (e.g., gemini-2.5-pro and gemini-3-flash-preview)
@@ -1743,7 +1742,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 				return s.pickWithAffinityReservation(ctx, provider, model, opts, available, auth, &reservation)
 			}
 		}
-		if s.rebindOnNever {
+		if s.rebindOnNever && (len(available) == 0 || pickSchedulerAuthByID(availabilityCandidates, cachedAuthID) != nil) {
 			bind(cachedAuthID, false)
 			errBound := s.unavailableBoundAuthError(ctx, availabilityCandidates, model, cachedAuthID, now)
 			entry.Infof("session-affinity: cache hit but bound auth unavailable, refusing failover | session=%s bound_auth=%s code=%s provider=%s model=%s", truncateSessionID(primaryID), cachedAuthID, errBound.Code, provider, model)
@@ -1815,7 +1814,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 					}
 				}
 			}
-			if !isSubagent && !isFork && s.rebindOnNever {
+			if !isSubagent && !isFork && s.rebindOnNever && (len(available) == 0 || pickSchedulerAuthByID(availabilityCandidates, cachedAuthID) != nil) {
 				bind(cachedAuthID, false)
 				errBound := s.unavailableBoundAuthError(ctx, availabilityCandidates, model, cachedAuthID, now)
 				entry.Infof("session-affinity: fallback cache hit but bound auth unavailable, refusing failover | session=%s fallback=%s bound_auth=%s code=%s provider=%s model=%s", truncateSessionID(primaryID), truncateSessionID(fallbackID), cachedAuthID, errBound.Code, provider, model)
@@ -1939,7 +1938,7 @@ func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model s
 			picked, errPick := s.pickWithAffinityReservation(ctx, provider, model, opts, available, auth, reservation)
 			return picked, true, errPick
 		}
-		if !match.IsFork && s.rebindOnNever {
+		if !match.IsFork && s.rebindOnNever && (len(available) == 0 || pickSchedulerAuthByID(availabilityCandidates, match.AuthID) != nil) {
 			if bindRes := s.matcher.BindFingerprintsWithContext(namespace, fingerprints, tailFingerprints, envDigest, minPrefixLength, match.AuthID); bindRes.SessionID != "" {
 				opts.Metadata[cliproxyexecutor.LCPAffinitySessionIDMetadataKey] = bindRes.SessionID
 				opts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey] = bindRes.SessionID

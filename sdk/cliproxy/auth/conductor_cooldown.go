@@ -2385,6 +2385,11 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		}
 	}
 	m.mu.Unlock()
+	if authSnapshot != nil && m.priorityHealth != nil && (result.CompletedResponse || cliproxyexecutor.UpstreamAttempted(ctx)) {
+		healthResult := result
+		healthResult.RegistrationEpoch = authSnapshot.RegistrationEpoch
+		m.priorityHealth.observe(healthResult)
+	}
 	releaseMutation()
 	if m.scheduler != nil && authSnapshot != nil {
 		credentialScopedResult := result.CredentialScope || scheduleUnauthorizedRefresh

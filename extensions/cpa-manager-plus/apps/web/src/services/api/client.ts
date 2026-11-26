@@ -1,6 +1,6 @@
 /**
- * Axios API 客户端
- * 替代原项目 src/core/api-client.js
+ * Axios API client.
+ * Replaces the original src/core/api-client.js.
  */
 
 import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
@@ -36,7 +36,7 @@ class ApiClient {
   }
 
   /**
-   * 设置 API 配置
+   * Configure the management connection.
    */
   setConfig(config: ApiClientConfig): void {
     this.apiBase = computeApiUrl(config.apiBase);
@@ -102,20 +102,20 @@ class ApiClient {
   }
 
   /**
-   * 设置请求/响应拦截器
+   * Install request and response interceptors.
    */
   private setupInterceptors(): void {
-    // 请求拦截器
+    // Request interceptor.
     this.instance.interceptors.request.use(
       (config) => {
-        // 设置 baseURL
+        // Set the legacy management base URL.
         config.baseURL = this.apiBase;
         if (config.url) {
           // Normalize deprecated Gemini endpoint to the current path.
           config.url = config.url.replace(/\/generative-language-api-key\b/g, '/gemini-api-key');
         }
 
-        // 添加认证头
+        // Attach management authentication.
         if (this.managementKey) {
           config.headers.Authorization = `Bearer ${this.managementKey}`;
         }
@@ -125,7 +125,7 @@ class ApiClient {
       (error) => Promise.reject(this.handleError(error))
     );
 
-    // 响应拦截器
+    // Response interceptor.
     this.instance.interceptors.response.use(
       (response) => {
         const headers = response.headers as Record<string, string | undefined>;
@@ -133,7 +133,7 @@ class ApiClient {
         const buildDate = this.readHeader(headers, BUILD_DATE_HEADER_KEYS);
         const supportsPlugin = this.readBooleanHeader(headers, CPA_SUPPORT_PLUGIN_HEADER_KEYS);
 
-        // 触发版本更新事件（后续通过 store 处理）
+        // Notify stores when server version metadata changes.
         if (version || buildDate) {
           window.dispatchEvent(
             new CustomEvent('server-version-update', {
@@ -156,7 +156,7 @@ class ApiClient {
   }
 
   /**
-   * 错误处理
+   * Normalize transport errors.
    */
   private handleError(error: unknown): ApiError {
     const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -181,7 +181,7 @@ class ApiClient {
       apiError.details = responseData;
       apiError.data = responseData;
 
-      // 401 未授权 - 触发登出事件
+      // Invalid management authentication triggers logout.
       if (error.response?.status === 401) {
         window.dispatchEvent(new Event('unauthorized'));
       }
@@ -197,7 +197,7 @@ class ApiClient {
   }
 
   /**
-   * GET 请求
+   * Send a GET request.
    */
   async get<T = unknown>(url: string, config?: AxiosRequestConfig): Promise<T> {
     if (__DEMO_SITE__ && isDemoMode()) {
@@ -208,7 +208,7 @@ class ApiClient {
   }
 
   /**
-   * POST 请求
+   * Send a POST request.
    */
   async post<T = unknown>(url: string, data?: unknown, config?: AxiosRequestConfig): Promise<T> {
     if (__DEMO_SITE__ && isDemoMode()) {
@@ -218,8 +218,21 @@ class ApiClient {
     return response.data;
   }
 
+  async postV8<T = unknown>(url: string, data?: unknown, config?: AxiosRequestConfig): Promise<T> {
+    if (__DEMO_SITE__ && isDemoMode()) return handleDemoApiRequest<T>('post', url, data, config);
+    if (!url.startsWith('/v8/management/') || url.includes('..') || url.includes('\\')) {
+      throw new Error('Invalid v8 management path');
+    }
+    const baseUrl = this.apiBase.replace(/\/v0\/management\/?$/i, '');
+    if (!baseUrl) throw new Error('Management connection is not configured');
+    // An absolute URL retains the configured origin and deployment prefix even
+    // when the legacy interceptor supplies its v0 baseURL.
+    const response = await this.instance.post<T>(`${baseUrl}${url}`, data, config);
+    return response.data;
+  }
+
   /**
-   * PUT 请求
+   * Send a PUT request.
    */
   async put<T = unknown>(url: string, data?: unknown, config?: AxiosRequestConfig): Promise<T> {
     if (__DEMO_SITE__ && isDemoMode()) {
@@ -230,7 +243,7 @@ class ApiClient {
   }
 
   /**
-   * PATCH 请求
+   * Send a PATCH request.
    */
   async patch<T = unknown>(url: string, data?: unknown, config?: AxiosRequestConfig): Promise<T> {
     if (__DEMO_SITE__ && isDemoMode()) {
@@ -241,7 +254,7 @@ class ApiClient {
   }
 
   /**
-   * DELETE 请求
+   * Send a DELETE request.
    */
   async delete<T = unknown>(url: string, config?: AxiosRequestConfig): Promise<T> {
     if (__DEMO_SITE__ && isDemoMode()) {
@@ -252,7 +265,7 @@ class ApiClient {
   }
 
   /**
-   * 获取原始响应（用于下载等场景）
+   * Return the raw response for downloads.
    */
   async getRaw(url: string, config?: AxiosRequestConfig): Promise<AxiosResponse> {
     if (__DEMO_SITE__ && isDemoMode()) {
@@ -262,7 +275,7 @@ class ApiClient {
   }
 
   /**
-   * 发送 FormData
+   * Send multipart form data.
    */
   async postForm<T = unknown>(
     url: string,
@@ -283,7 +296,7 @@ class ApiClient {
   }
 
   /**
-   * 保留对 axios.request 的访问，便于下载等场景
+   * Expose raw requests for downloads and custom transports.
    */
   async requestRaw(config: AxiosRequestConfig): Promise<AxiosResponse> {
     if (__DEMO_SITE__ && isDemoMode()) {
@@ -293,5 +306,5 @@ class ApiClient {
   }
 }
 
-// 导出单例
+// Shared API client.
 export const apiClient = new ApiClient();

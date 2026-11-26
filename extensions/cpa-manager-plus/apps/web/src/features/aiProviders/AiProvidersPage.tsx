@@ -24,6 +24,10 @@ import {
   type ProviderSortOption,
 } from '@/components/providers';
 import {
+  buildPelicanTestTargets,
+  type PelicanTestTarget,
+} from '@/components/providers/PelicanTestDrawer/pelicanTest';
+import {
   withDisableAllModelsRule,
   withoutDisableAllModelsRule,
 } from '@/components/providers/utils';
@@ -96,7 +100,7 @@ export function AiProvidersPage() {
   const [sortDirection, setSortDirection] = useState<ProviderSortDirection>('desc');
   const [detailRowKey, setDetailRowKey] = useState<string | null>(null);
   const [healthCheckOpen, setHealthCheckOpen] = useState(false);
-  const [pelicanTestOpen, setPelicanTestOpen] = useState(false);
+  const [pelicanTargets, setPelicanTargets] = useState<PelicanTestTarget[] | null>(null);
   const [editDrawerKind, setEditDrawerKind] = useState<ProviderKind | null>(null);
   const [editDrawerIndex, setEditDrawerIndex] = useState<number | null>(null);
   const [page, setPage] = useState(1);
@@ -1361,7 +1365,7 @@ export function AiProvidersPage() {
             resolvedTheme={resolvedTheme}
             onAdd={handleAdd}
             onHealthCheck={() => setHealthCheckOpen(true)}
-            onPelicanTest={() => setPelicanTestOpen(true)}
+            onPelicanTest={() => setPelicanTargets(buildPelicanTestTargets(visibleRows))}
             healthCheckDisabled={visibleRows.length === 0}
           />
 
@@ -1378,6 +1382,7 @@ export function AiProvidersPage() {
               onDelete={handleRowDelete}
               onToggle={handleRowToggle}
               onPriorityChange={handleRowPriorityChange}
+              onPelicanTest={(row) => setPelicanTargets(buildPelicanTestTargets([row]))}
             />
             {visibleRows.length > 0 &&
               (visibleRows.length > PROVIDER_TABLE_DEFAULT_PAGE_SIZE ||
@@ -1458,10 +1463,10 @@ export function AiProvidersPage() {
         onSetProviderEnabled={setHealthCheckProviderEnabled}
       />
       <PelicanTestDrawer
-        open={pelicanTestOpen}
-        rows={visibleRows}
+        open={pelicanTargets !== null}
+        targets={pelicanTargets ?? []}
         actionsDisabled={actionsDisabled}
-        onClose={() => setPelicanTestOpen(false)}
+        onClose={() => setPelicanTargets(null)}
       />
       <GeminiEditDrawer
         open={editDrawerKind === 'gemini'}

@@ -30,6 +30,24 @@ beforeEach(() => {
   mocks.patch.mockReset();
 });
 
+describe('authFilesApi complete test target listing', () => {
+  it('continues when the server clamps page size below the requested bulk size', async () => {
+    mocks.get
+      .mockResolvedValueOnce({ files: [{ name: 'first.json', auth_index: 'one' }], total: 2, page_size: 1, has_more: true })
+      .mockResolvedValueOnce({ files: [{ name: 'second.json', auth_index: 'two' }], total: 2, page_size: 1, has_more: false });
+    const result = await authFilesApi.listSummary();
+    expect(result.files.map((file) => file.name)).toEqual(['first.json', 'second.json']);
+    expect(mocks.get).toHaveBeenNthCalledWith(2, '/auth-files', { params: { view: 'summary', page: 2, page_size: 500 } });
+  });
+
+  it('rejects an incomplete target list rather than silently testing a subset', async () => {
+    mocks.get
+      .mockResolvedValueOnce({ files: [{ name: 'first.json' }], total: 2, has_more: true })
+      .mockResolvedValueOnce({ files: [], total: 2, has_more: true });
+    await expect(authFilesApi.listSummary()).rejects.toThrow('before all targets');
+  });
+});
+
 describe('authFilesApi OAuth model alias normalization', () => {
   it('merges paginated OAuth maps and model definitions', async () => {
     mocks.get

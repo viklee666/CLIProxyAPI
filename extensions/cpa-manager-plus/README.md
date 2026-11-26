@@ -74,6 +74,28 @@ CPAMP runs scheduled inspections against Codex accounts: checking quota windows,
 
 The dashboard also covers day-to-day CPA operations: managing providers, auth files, OAuth logins, API keys, quota, logs, plugins, and system config. Auth files can be added by JSON paste or batch import.
 
+### Pelican Generation Comparison
+
+Use **Pelican test** on an AI provider row or credential card for a single target.
+The provider toolbar opens all filtered providers across pages; the credential
+toolbar loads all managed credential files. The credential batch action opens
+the selected files. In the drawer, search and select one, several, or all targets,
+set a model per target and a shared prompt/reasoning effort, then start explicitly.
+The default challenge is a pelican riding a bicycle, inspired by
+[Cockpit Tools](https://github.com/jlcodes99/cockpit-tools).
+
+Each generation is pinned to its runtime credential and uses an isolated session.
+There is no credential failover or automatic batch retry; normal authentication
+refresh, model translation, payload rules, disabled states, and cooldowns remain
+in effect. Compare the complete answer, model and elapsed time; generated HTML/SVG
+is shown in a scriptless, network-blocked preview, not scored as an IQ test.
+Tests consume quota. Cancelling or closing aborts the active request and skips
+queued targets, but already submitted upstream work may still be billed.
+
+Both CPA and this manager must support `POST /v8/management/requests/pelican`.
+The manager requires its admin key and forwards the request using the saved CPA
+management key. Old servers fail explicitly rather than testing another target.
+
 ### Self-Hosted & Private
 
 CPAMP has no analytics SDKs, cloud account dependency, or registration flow. By default it talks to the CPA gateway you configure; optional features such as model price sync, OAuth, and provider checks may call the external services you explicitly configure or trigger. It runs as a single Docker container or a native binary (Linux, macOS, Windows — amd64 and arm64), with all data stored in local files.

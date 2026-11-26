@@ -113,7 +113,7 @@ func rootHandler(
 			middleware.WithCORS(appCtx.Config, usageHandler.Handle)(w, r)
 			return
 		}
-		if strings.HasPrefix(r.URL.Path, "/v0/management/") {
+		if r.URL.Path == proxysvc.PelicanTestPath || strings.HasPrefix(r.URL.Path, "/v0/management/") {
 			middleware.WithCORS(appCtx.Config, proxyHandler.Management)(w, r)
 			return
 		}

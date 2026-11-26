@@ -133,7 +133,7 @@ func TestSessionAffinityPriorityOverridesParentBinding(t *testing.T) {
 	}
 }
 
-func TestSessionAffinityAdaptiveFallbackUsesAllPriorityTiers(t *testing.T) {
+func TestSessionAffinityAdaptiveFallbackKeepsHealthyHighestTierWhenBusy(t *testing.T) {
 	for client, options := range priorityRoutingClientOptions() {
 		t.Run(client, func(t *testing.T) {
 			adaptive := NewAdaptiveSelector(internalconfig.AdaptiveRoutingConfig{
@@ -146,8 +146,8 @@ func TestSessionAffinityAdaptiveFallbackUsesAllPriorityTiers(t *testing.T) {
 			release := adaptive.BeginAttempt(high.ID)
 			defer release()
 			got, errPick := selector.Pick(context.Background(), "codex", "model", options(), []*Auth{high, low})
-			if errPick != nil || got == nil || got.ID != low.ID {
-				t.Fatalf("adaptive Pick() = auth=%v error=%v, want idle lower-priority auth %s", got, errPick, low.ID)
+			if errPick != nil || got == nil || got.ID != high.ID {
+				t.Fatalf("adaptive Pick() = auth=%v error=%v, want busy unlimited higher-priority auth %s", got, errPick, high.ID)
 			}
 		})
 	}
@@ -173,7 +173,7 @@ func TestSessionAffinityWeightedPrioritySkipsZeroWeight(t *testing.T) {
 	}
 }
 
-func TestSessionAffinityAdaptivePreservesHealthyBindingAcrossPriorityTiers(t *testing.T) {
+func TestSessionAffinityAdaptiveRebindsToHigherHealthyTier(t *testing.T) {
 	for client, options := range priorityRoutingClientOptions() {
 		t.Run(client, func(t *testing.T) {
 			adaptive := NewAdaptiveSelector(internalconfig.AdaptiveRoutingConfig{
@@ -186,10 +186,7 @@ func TestSessionAffinityAdaptivePreservesHealthyBindingAcrossPriorityTiers(t *te
 			if _, errPick := selector.Pick(context.Background(), "codex", "model", options(), []*Auth{low}); errPick != nil {
 				t.Fatal(errPick)
 			}
-			want := low.ID
-			if client == "no-session" {
-				want = high.ID
-			}
+			want := high.ID
 			got, errPick := selector.Pick(context.Background(), "codex", "model", options(), []*Auth{low, high})
 			if errPick != nil || got == nil || got.ID != want {
 				t.Fatalf("adaptive binding Pick() = auth=%v error=%v, want %s", got, errPick, want)
@@ -259,8 +256,8 @@ func TestManagerAdaptiveSelectionUsesResolvedAliasAvailability(t *testing.T) {
 			release := adaptive.BeginAttempt(high.ID)
 			defer release()
 			got, errPick := manager.SelectAuth(ctx, "codex", alias, priorityRoutingClientOptions()["codex"]())
-			if errPick != nil || got == nil || got.ID != low.ID {
-				t.Fatalf("resolved alias Pick() = auth=%v error=%v, want %s", got, errPick, low.ID)
+			if errPick != nil || got == nil || got.ID != high.ID {
+				t.Fatalf("resolved alias Pick() = auth=%v error=%v, want %s", got, errPick, high.ID)
 			}
 		})
 	}

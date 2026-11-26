@@ -1,8 +1,8 @@
 @use '@/styles/variables.scss' as *;
 @use '@/styles/mixins.scss' as *;
 
-// 类型 / 标识 / 地址 / 模型 / 优先级 / 近期请求 / 启用 / 操作
-$table-columns: 92px minmax(132px, 0.72fr) minmax(180px, 1fr) 96px 72px minmax(220px, 0.82fr) 68px 112px;
+// Type / identity / endpoint / models / priority / recent requests / enabled / actions.
+$table-columns: 92px minmax(132px, 0.72fr) minmax(180px, 1fr) 96px 72px minmax(220px, 0.82fr) 68px 144px;
 
 @mixin provider-card-layout {
   @include narrow-laptop {
@@ -72,7 +72,7 @@ $table-columns: 92px minmax(132px, 0.72fr) minmax(180px, 1fr) 96px 72px minmax(2
   }
 }
 
-// 停用行：仅信息单元格降透明度，开关与操作保持可交互的视觉权重
+// Dim information cells only; disabled rows retain interactive controls.
 .rowDisabled {
   .cellType,
   .cellIdentity,
@@ -331,7 +331,7 @@ $table-columns: 92px minmax(132px, 0.72fr) minmax(180px, 1fr) 96px 72px minmax(2
   }
 }
 
-// 仅移动端展示的内联字段名
+// Inline field labels displayed only on mobile.
 .cellCaption {
   display: none;
 
@@ -361,7 +361,7 @@ $table-columns: 92px minmax(132px, 0.72fr) minmax(180px, 1fr) 96px 72px minmax(2
   }
 }
 
-// 中和 ProviderStatusBar 默认样式中的纵向留白，保证单行对齐
+// Remove default status-bar vertical spacing to preserve single-row alignment.
 .recentBarWrap {
   flex: 1 1 88px;
   min-width: 0;

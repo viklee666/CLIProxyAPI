@@ -4,6 +4,7 @@ import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 import { SelectionCheckbox } from '@/components/ui/SelectionCheckbox';
 import { ToggleSwitch } from '@/components/ui/ToggleSwitch';
 import {
+  IconBinary,
   IconDownload,
   IconInfo,
   IconModelCluster,
@@ -60,6 +61,7 @@ export type AuthFileCardProps = {
   quotaCooldown?: QuotaCooldownInfo;
   onShowModels: (file: AuthFileItem) => void;
   onReauth?: (file: AuthFileItem) => void;
+  onPelicanTest?: (file: AuthFileItem) => void;
   onDownload: (name: string) => void;
   onOpenPrefixProxyEditor: (file: AuthFileItem) => void;
   onDelete: (name: string) => void;
@@ -98,6 +100,7 @@ export function AuthFileCard(props: AuthFileCardProps) {
     quotaCooldown,
     onShowModels,
     onReauth,
+    onPelicanTest,
     onDownload,
     onOpenPrefixProxyEditor,
     onDelete,
@@ -435,6 +438,19 @@ export function AuthFileCard(props: AuthFileCardProps) {
                   )}
                   {!isRuntimeOnly && (
                     <>
+                      {onPelicanTest && (
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => onPelicanTest(file)}
+                          className={styles.iconButton}
+                          title={t('ai_providers.pelican_button')}
+                          aria-label={t('ai_providers.pelican_button')}
+                          disabled={disableControls}
+                        >
+                          <IconBinary className={styles.actionIcon} size={16} />
+                        </Button>
+                      )}
                       <Button
                         variant="secondary"
                         size="sm"

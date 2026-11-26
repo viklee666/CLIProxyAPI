@@ -3,6 +3,8 @@ import { create, type ReactTestRenderer } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Button } from '@/components/ui/Button';
 import { AuthFilesPage } from './AuthFilesPage';
+import { authFilesApi } from '@/services/api';
+import type { PelicanTestTarget } from '@/components/providers/PelicanTestDrawer/pelicanTest';
 
 const { mocks } = vi.hoisted(() => {
   return {
@@ -11,6 +13,7 @@ const { mocks } = vi.hoisted(() => {
       savePastedAuthJson: vi.fn(async () => 'saved.json'),
       showNotification: vi.fn(),
       navigate: vi.fn(),
+      pelicanProps: null as { open: boolean; targets: PelicanTestTarget[]; onClose: () => void } | null,
       lastModalProps: null as {
         open: boolean;
         saving: boolean;
@@ -26,6 +29,13 @@ vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string) => key,
   }),
+}));
+
+vi.mock('@/components/providers/PelicanTestDrawer', () => ({
+  PelicanTestDrawer: (props: { open: boolean; targets: PelicanTestTarget[]; onClose: () => void }) => {
+    mocks.pelicanProps = props;
+    return null;
+  },
 }));
 
 vi.mock('react-router-dom', () => ({
@@ -293,5 +303,30 @@ describe('AuthFilesPage auth JSON paste flow', () => {
 
     expect(mocks.lastModalProps?.open).toBe(true);
     renderer!.unmount();
+  });
+});
+
+describe('AuthFilesPage Pelican target loading', () => {
+  it('loads all credential pages rather than using the current visible page', async () => {
+    const allFiles = vi.spyOn(authFilesApi, 'listSummary').mockResolvedValue({ files: [
+      { name: 'first-page.json', authIndex: 'first', type: 'codex' },
+      { name: 'later-page.json', authIndex: 'later', type: 'claude' },
+    ] });
+    let renderer!: ReactTestRenderer;
+    try {
+      await act(async () => { renderer = create(<AuthFilesPage />); });
+      await act(async () => {
+        renderer.root.findAllByType(Button).find((button) =>
+          Array.isArray(button.props.children) && button.props.children.includes('ai_providers.pelican_button')
+        )!.props.onClick();
+      });
+      expect(mocks.pelicanProps?.open).toBe(true);
+      expect(mocks.pelicanProps?.targets.map((target) => target.authIndex)).toEqual(['first', 'later']);
+      act(() => mocks.pelicanProps!.onClose());
+      expect(mocks.pelicanProps?.open).toBe(false);
+    } finally {
+      act(() => renderer?.unmount());
+      allFiles.mockRestore();
+    }
   });
 });

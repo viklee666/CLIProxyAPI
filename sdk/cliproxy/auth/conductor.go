@@ -218,6 +218,7 @@ type Manager struct {
 	authEpochs         map[string]uint64
 	authChangeWatchers map[string]map[chan struct{}]struct{}
 	scheduler          *authScheduler
+	priorityHealth     *priorityHealthTracker
 	// pluginScheduler runs outside m.mu before falling back to native selection.
 	pluginScheduler PluginScheduler
 
@@ -312,6 +313,7 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		providerOffsets:       make(map[string]int),
 		modelPoolOffsets:      make(map[string]int),
 	}
+	manager.priorityHealth = newPriorityHealthTracker(&manager.requestLimiter)
 	// atomic.Value requires non-nil initial value.
 	manager.runtimeConfig.Store(&internalconfig.Config{})
 	manager.apiKeyModelRouting.Store(&apiKeyModelRoutingSnapshot{config: &internalconfig.Config{}})
@@ -320,6 +322,7 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		manager.ApplyHomeInFlightPublisherConfig(defaultInFlightConfig)
 	}
 	manager.scheduler = newAuthScheduler(selector)
+	manager.scheduler.priorityHealth = manager.priorityHealth
 	return manager
 }
 

@@ -22,12 +22,12 @@ func TestManagerCanReuseSessionAuth(t *testing.T) {
 		wantHigh  bool
 	}{
 		{name: "higher priority", wantHigh: true},
-		{name: "explicit never retains lower priority", selector: func() Selector {
+		{name: "explicit never keeps strict tier", selector: func() Selector {
 			return NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{Fallback: &RoundRobinSelector{}, RebindOn: SessionAffinityRebindOnNever})
-		}, wantLow: true, wantHigh: true},
-		{name: "explicit quota retains lower priority", selector: func() Selector {
+		}, wantHigh: true},
+		{name: "explicit quota keeps strict tier", selector: func() Selector {
 			return NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{Fallback: &RoundRobinSelector{}, RebindOn: SessionAffinityRebindOnQuota})
-		}, wantLow: true, wantHigh: true},
+		}, wantHigh: true},
 		{name: "explicit never respects group revocation", selector: func() Selector {
 			return NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{Fallback: &RoundRobinSelector{}, RebindOn: SessionAffinityRebindOnNever})
 		}, opts: clientGroupOptions("1", false), configure: func(manager *Manager, low, high *Auth) {
@@ -40,9 +40,10 @@ func TestManagerCanReuseSessionAuth(t *testing.T) {
 			low.Attributes["priority"], high.Attributes["priority"] = "-2", "-1"
 		}, wantHigh: true},
 		{name: "disabled higher priority", configure: func(_ *Manager, _, high *Auth) { high.Disabled = true }, wantLow: true},
-		{name: "higher priority in cooldown", configure: func(_ *Manager, _, high *Auth) {
+		{name: "higher priority in cooldown keeps tier closed", configure: func(_ *Manager, _, high *Auth) {
+			high.Unavailable = true
 			high.ModelStates = map[string]*ModelState{model: {Unavailable: true, NextRetryAfter: time.Now().Add(time.Hour)}}
-		}, wantLow: true},
+		}},
 		{name: "unrelated higher priority model", highModel: "unrelated-reuse-model", wantLow: true},
 		{name: "weighted zero weight", selector: func() Selector { return &WeightedRoundRobinSelector{} }, configure: func(_ *Manager, _, high *Auth) {
 			high.Attributes[AttributeWeight] = "0"
@@ -50,10 +51,10 @@ func TestManagerCanReuseSessionAuth(t *testing.T) {
 		{name: "affinity weighted zero weight", selector: func() Selector { return NewSessionAffinitySelector(&WeightedRoundRobinSelector{}) }, configure: func(_ *Manager, _, high *Auth) {
 			high.Attributes[AttributeWeight] = "0"
 		}, wantLow: true},
-		{name: "adaptive preserves available tiers", selector: func() Selector { return NewAdaptiveSelector(internalconfig.AdaptiveRoutingConfig{}) }, wantLow: true, wantHigh: true},
-		{name: "affinity adaptive preserves available tiers", selector: func() Selector {
+		{name: "adaptive keeps strict tier", selector: func() Selector { return NewAdaptiveSelector(internalconfig.AdaptiveRoutingConfig{}) }, wantHigh: true},
+		{name: "affinity adaptive keeps strict tier", selector: func() Selector {
 			return NewSessionAffinitySelector(NewAdaptiveSelector(internalconfig.AdaptiveRoutingConfig{}))
-		}, wantLow: true, wantHigh: true},
+		}, wantHigh: true},
 		{name: "group priority override", opts: clientGroupOptions("1", false), configure: func(manager *Manager, low, high *Auth) {
 			manager.SetCredentialGroupResolver(testCredentialGroupResolver{memberships: map[string]map[int64]int{
 				low.Index: {1: 10}, high.Index: {1: 0},

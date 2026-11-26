@@ -18,11 +18,16 @@ import { useDebounce } from '@/hooks/useDebounce';
 import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
 import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
 import { usePageTransitionLayer } from '@/components/common/PageTransitionLayer';
+import { PelicanTestDrawer } from '@/components/providers/PelicanTestDrawer';
+import {
+  buildCredentialPelicanTestTargets,
+  type PelicanTestTarget,
+} from '@/components/providers/PelicanTestDrawer/pelicanTest';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
 import { Select } from '@/components/ui/Select';
-import { IconFilterAll, IconSearch } from '@/components/ui/icons';
+import { IconBinary, IconFilterAll, IconSearch } from '@/components/ui/icons';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { ToggleSwitch } from '@/components/ui/ToggleSwitch';
 import {
@@ -73,7 +78,7 @@ import {
   isUsageHeaderQuotaSnapshotExpired,
 } from '@/utils/usageHeaderSnapshots';
 import { useAuthFilesData } from '@/features/authFiles/hooks/useAuthFilesData';
-import type { AuthFilesListQuery } from '@/services/api';
+import { authFilesApi, type AuthFilesListQuery } from '@/services/api';
 import { useAuthFilesModels } from '@/features/authFiles/hooks/useAuthFilesModels';
 import { useAuthFilesOauth } from '@/features/authFiles/hooks/useAuthFilesOauth';
 import { useAuthFilesPrefixProxyEditor } from '@/features/authFiles/hooks/useAuthFilesPrefixProxyEditor';
@@ -212,6 +217,28 @@ export function AuthFilesPage() {
   const pageTransitionLayer = usePageTransitionLayer();
   const isCurrentLayer = pageTransitionLayer ? pageTransitionLayer.status === 'current' : true;
   const navigate = useNavigate();
+
+  const [pelicanTargets, setPelicanTargets] = useState<PelicanTestTarget[] | null>(null);
+  const [pelicanLoading, setPelicanLoading] = useState(false);
+  const pelicanLoadID = useRef(0);
+  useEffect(() => () => { pelicanLoadID.current += 1; }, []);
+  const openPelicanTests = async (selected?: AuthFileItem[]) => {
+    const loadID = ++pelicanLoadID.current;
+    setPelicanLoading(true);
+    try {
+      const candidates = selected ?? (await authFilesApi.listSummary()).files;
+      if (loadID !== pelicanLoadID.current) return;
+      setPelicanTargets(
+        buildCredentialPelicanTestTargets(candidates.filter((file) => !isRuntimeOnlyAuthFile(file)))
+      );
+    } catch (cause) {
+      if (loadID === pelicanLoadID.current) {
+        showNotification(cause instanceof Error ? cause.message : String(cause), 'error');
+      }
+    } finally {
+      if (loadID === pelicanLoadID.current) setPelicanLoading(false);
+    }
+  };
 
   const [filter, setFilter] = useState<'all' | string>('all');
   const [problemOnly, setProblemOnly] = useState(false);
@@ -1578,6 +1605,16 @@ export function AuthFilesPage() {
                 <Button
                   variant="secondary"
                   size="sm"
+                  onClick={() => void openPelicanTests()}
+                  disabled={disableControls || pelicanLoading}
+                  loading={pelicanLoading}
+                >
+                  <IconBinary size={14} />
+                  {t('ai_providers.pelican_button')}
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
                   onClick={handleHeaderRefresh}
                   disabled={loading}
                 >
@@ -1819,6 +1856,7 @@ export function AuthFilesPage() {
                       onRefreshAntigravitySubscription={refreshSubscription}
                       quotaCooldown={getQuotaCooldownForFile(file)}
                       onShowModels={showModels}
+                      onPelicanTest={(targetFile) => void openPelicanTests([targetFile])}
                       onReauth={(targetFile) =>
                         setCodexReauthTarget(createCodexReauthTargetFromAuthFile(targetFile))
                       }
@@ -1863,6 +1901,16 @@ export function AuthFilesPage() {
           </div>
         </div>
       </section>
+
+      <PelicanTestDrawer
+        open={pelicanTargets !== null}
+        targets={pelicanTargets ?? []}
+        actionsDisabled={disableControls}
+        onClose={() => {
+          pelicanLoadID.current += 1;
+          setPelicanTargets(null);
+        }}
+      />
 
       <OAuthExcludedCard
         disableControls={disableControls}
@@ -2014,6 +2062,15 @@ export function AuthFilesPage() {
                   </Button>
                 </div>
                 <div className={styles.batchActionRight}>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => void openPelicanTests(selectedTargetFiles)}
+                    disabled={disableControls || pelicanLoading || selectedTargetFiles.length === 0}
+                  >
+                    <IconBinary size={14} />
+                    {t('ai_providers.pelican_button')}
+                  </Button>
                   <Button
                     variant="secondary"
                     size="sm"

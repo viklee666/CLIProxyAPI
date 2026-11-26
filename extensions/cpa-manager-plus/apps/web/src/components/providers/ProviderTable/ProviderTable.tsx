@@ -11,6 +11,7 @@ import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import { ToggleSwitch } from '@/components/ui/ToggleSwitch';
 import {
+  IconBinary,
   IconCheck,
   IconEye,
   IconPencil,
@@ -34,6 +35,7 @@ interface ProviderTableProps {
   onDelete: (row: ProviderRow) => void;
   onToggle: (row: ProviderRow, enabled: boolean) => void;
   onPriorityChange: (row: ProviderRow, priority: number) => void;
+  onPelicanTest?: (row: ProviderRow) => void;
 }
 
 const stopPropagation = (event: MouseEvent) => {
@@ -169,6 +171,7 @@ export function ProviderTable({
   onDelete,
   onToggle,
   onPriorityChange,
+  onPelicanTest,
 }: ProviderTableProps) {
   const { t } = useTranslation();
 
@@ -299,6 +302,19 @@ export function ProviderTable({
             </div>
 
             <div className={styles.cellActions} role="cell" onClick={stopPropagation}>
+              {onPelicanTest && (
+                <Button
+                  variant="secondary"
+                  size="xs"
+                  iconOnly
+                  onClick={() => onPelicanTest(row)}
+                  disabled={actionsDisabled}
+                  aria-label={t('ai_providers.pelican_button')}
+                  title={t('ai_providers.pelican_button')}
+                >
+                  <IconBinary size={14} />
+                </Button>
+              )}
               <Button
                 variant="secondary"
                 size="xs"

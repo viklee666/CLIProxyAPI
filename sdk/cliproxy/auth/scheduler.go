@@ -46,6 +46,7 @@ type authScheduler struct {
 	mu                  sync.Mutex
 	strategy            schedulerStrategy
 	weightedSelector    *WeightedRoundRobinSelector
+	priorityHealth      *priorityHealthTracker
 	providers           map[string]*providerScheduler
 	authProviders       map[string]string
 	authGenerations     map[string]scheduledGenerationMeta
@@ -459,6 +460,32 @@ func (s *authScheduler) resetAuthGenerationLocked(authID string) {
 	}
 }
 
+func (s *authScheduler) highestReadyPriorityForRequestLocked(shard *modelScheduler, model string, opts cliproxyexecutor.Options, pinnedAuthID string, basePredicate, selectionPredicate func(*scheduledAuth) bool) (int, bool) {
+	if shard == nil {
+		return 0, false
+	}
+	shard.promoteExpiredLocked(time.Now())
+	if s.priorityHealth == nil || pinnedAuthID != "" {
+		return shard.highestReadyPriorityLocked(selectionPredicate)
+	}
+	now := s.priorityHealth.now()
+	scope := priorityHealthScope(opts.Metadata)
+	model = canonicalModelLookupKey(model)
+	best, found := 0, false
+	// Include cooling and already-tried entries when choosing the tier. Only
+	// health failures or configured concurrency exhaustion permit descent.
+	for _, entry := range shard.entries {
+		if entry == nil || entry.meta == nil || !basePredicate(entry) || isAuthDisabled(entry.auth) ||
+			s.priorityHealth.unhealthyInScope(entry.auth, model, scope, now) || s.priorityHealth.concurrencyAtLimit(entry.auth) {
+			continue
+		}
+		if !found || entry.meta.priority > best {
+			best, found = entry.meta.priority, true
+		}
+	}
+	return best, found
+}
+
 // pickSingle returns the next auth for a single provider/model request using scheduler state.
 func (s *authScheduler) pickSingle(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, error) {
 	return s.pickSingleWithStrategy(ctx, provider, model, opts, tried, schedulerStrategyCurrent)
@@ -487,19 +514,30 @@ func (s *authScheduler) pickSingleWithStrategy(ctx context.Context, provider, mo
 	if shard == nil {
 		return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
+	basePredicate := scheduledAuthPredicate(eligibility, nil, pinnedAuthID, strategy == schedulerStrategyWeightedRoundRobin)
 	predicate := scheduledAuthPredicate(eligibility, tried, pinnedAuthID, strategy == schedulerStrategyWeightedRoundRobin)
 	if strategy == schedulerStrategyWeightedRoundRobin {
 		if ctx != nil && ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 		shard.promoteExpiredLocked(time.Now())
-		priority, ready := shard.highestReadyPriorityLocked(predicate)
+		priority, ready := s.highestReadyPriorityForRequestLocked(shard, model, opts, pinnedAuthID, basePredicate, predicate)
 		if !ready {
+			return nil, shard.unavailableErrorLocked(provider, model, predicate)
+		}
+		bucket := shard.readyByPriority[priority]
+		if bucket == nil {
 			return nil, shard.unavailableErrorLocked(provider, model, predicate)
 		}
 		// A pin controls selection, not the peers against which traffic is charged.
 		accountingPredicate := scheduledAuthPredicate(eligibility, tried, "", true)
-		bucket := shard.readyByPriority[priority]
+		if s.priorityHealth != nil && pinnedAuthID == "" {
+			now := s.priorityHealth.now()
+			baseAccountingPredicate := accountingPredicate
+			accountingPredicate = func(entry *scheduledAuth) bool {
+				return baseAccountingPredicate(entry) && s.priorityHealth.viable(entry.auth, model, opts.Metadata, now)
+			}
+		}
 		entries := bucket.all.flat
 		nonWebsocketOnly := false
 		transportClass := ""
@@ -523,8 +561,18 @@ func (s *authScheduler) pickSingleWithStrategy(ctx context.Context, provider, mo
 		route := namespace + ":" + canonicalModelLookupKey(weightedSelectorStateModel(ctx, model))
 		return s.pickWeightedPoolLocked(route, priority, transportClass, entries, accountingPredicate, pinnedAuthID, nonWebsocketOnly)
 	}
-	if picked := shard.pickReadyLocked(preferWebsocket, strategy, predicate); picked != nil {
-		return picked, nil
+	priority, ready := s.highestReadyPriorityForRequestLocked(shard, model, opts, pinnedAuthID, basePredicate, predicate)
+	if ready {
+		pickPredicate := predicate
+		if s.priorityHealth != nil && pinnedAuthID == "" {
+			now := s.priorityHealth.now()
+			pickPredicate = func(entry *scheduledAuth) bool {
+				return predicate(entry) && s.priorityHealth.viable(entry.auth, model, opts.Metadata, now)
+			}
+		}
+		if picked := shard.pickReadyAtPriorityLocked(preferWebsocket, priority, strategy, pickPredicate); picked != nil {
+			return picked, nil
+		}
 	}
 	return nil, shard.unavailableErrorLocked(provider, model, predicate)
 }
@@ -590,6 +638,7 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 		return nil, "", shard.unavailableErrorLocked("mixed", model, predicate)
 	}
 
+	basePredicate := scheduledAuthPredicate(eligibility, nil, "", strategy == schedulerStrategyWeightedRoundRobin)
 	predicate := scheduledAuthPredicate(eligibility, tried, "", strategy == schedulerStrategyWeightedRoundRobin)
 	candidateShards := make([]*modelScheduler, len(normalized))
 	bestPriority := 0
@@ -605,7 +654,7 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 		if shard == nil {
 			continue
 		}
-		priorityReady, okPriority := shard.highestReadyPriorityLocked(predicate)
+		priorityReady, okPriority := s.highestReadyPriorityForRequestLocked(shard, model, opts, pinnedAuthID, basePredicate, predicate)
 		if !okPriority {
 			continue
 		}
@@ -640,7 +689,14 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 			if shard == nil {
 				continue
 			}
-			picked := shard.pickReadyAtPriorityLocked(false, bestPriority, strategy, predicate)
+			pickPredicate := predicate
+			if s.priorityHealth != nil && pinnedAuthID == "" {
+				now := s.priorityHealth.now()
+				pickPredicate = func(entry *scheduledAuth) bool {
+					return predicate(entry) && s.priorityHealth.viable(entry.auth, model, opts.Metadata, now)
+				}
+			}
+			picked := shard.pickReadyAtPriorityLocked(false, bestPriority, strategy, pickPredicate)
 			if picked != nil {
 				return picked, providerKey, nil
 			}
@@ -673,7 +729,14 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 			return nil, "", ctx.Err()
 		}
 		route := "mixed:" + canonicalModelLookupKey(weightedSelectorStateModel(ctx, model))
-		picked, errPick := s.pickWeightedPoolLocked(route, bestPriority, "", entries, predicate, pinnedAuthID, false)
+		weightedPredicate := predicate
+		if s.priorityHealth != nil && pinnedAuthID == "" {
+			now := s.priorityHealth.now()
+			weightedPredicate = func(entry *scheduledAuth) bool {
+				return predicate(entry) && s.priorityHealth.viable(entry.auth, model, opts.Metadata, now)
+			}
+		}
+		picked, errPick := s.pickWeightedPoolLocked(route, bestPriority, "", entries, weightedPredicate, pinnedAuthID, false)
 		if errPick != nil {
 			return nil, "", errPick
 		}
@@ -681,13 +744,20 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 	}
 
 	weights := make([]int, len(normalized))
+	selectionPredicate := predicate
+	if s.priorityHealth != nil && pinnedAuthID == "" {
+		now := s.priorityHealth.now()
+		selectionPredicate = func(entry *scheduledAuth) bool {
+			return predicate(entry) && s.priorityHealth.viable(entry.auth, model, opts.Metadata, now)
+		}
+	}
 	segmentStarts := make([]int, len(normalized))
 	segmentEnds := make([]int, len(normalized))
 	totalWeight := 0
 	for providerIndex, shard := range candidateShards {
 		segmentStarts[providerIndex] = totalWeight
 		if shard != nil {
-			weights[providerIndex] = shard.readyCountAtPriorityLocked(false, bestPriority, predicate)
+			weights[providerIndex] = shard.readyCountAtPriorityLocked(false, bestPriority, selectionPredicate)
 		}
 		totalWeight += weights[providerIndex]
 		segmentEnds[providerIndex] = totalWeight
@@ -725,7 +795,7 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 		if shard == nil {
 			continue
 		}
-		picked := shard.pickReadyAtPriorityLocked(false, bestPriority, schedulerStrategyRoundRobin, predicate)
+		picked := shard.pickReadyAtPriorityLocked(false, bestPriority, schedulerStrategyRoundRobin, selectionPredicate)
 		if picked == nil {
 			continue
 		}

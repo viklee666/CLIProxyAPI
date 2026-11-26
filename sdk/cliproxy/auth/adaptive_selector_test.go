@@ -117,7 +117,7 @@ func TestAdaptiveSelectorScoresPriorityLoadSuccessAndTTFT(t *testing.T) {
 
 func TestAdaptiveSelectorWeightedTopKAndScores(t *testing.T) {
 	authA := adaptiveTestAuth("auth-a", 9)
-	authB := adaptiveTestAuth("auth-b", 5)
+	authB := adaptiveTestAuth("auth-b", 9)
 	authC := adaptiveTestAuth("auth-c", 1)
 	selector := NewAdaptiveSelector(internalconfig.AdaptiveRoutingConfig{
 		TopK: 2,
