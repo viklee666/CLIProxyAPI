@@ -102,6 +102,7 @@ type authSelectionEligibility struct {
 	requiredKind     string
 	credentialPolicy string
 	disallowFreeAuth bool
+	storedOnly       bool
 }
 
 func withRequiredAuthKind(ctx context.Context, requiredKind string) context.Context {
@@ -125,12 +126,16 @@ func authSelectionEligibilityForRequest(ctx context.Context, opts cliproxyexecut
 	if ctx != nil {
 		eligibility.requiredKind, _ = ctx.Value(requiredAuthKindContextKey{}).(string)
 		eligibility.credentialPolicy, _ = ctx.Value(credentialPolicyContextKey{}).(string)
+		eligibility.storedOnly = credentialFailoverActive(ctx)
 	}
 	return eligibility
 }
 
 func (e authSelectionEligibility) allows(auth *Auth) bool {
 	if auth == nil {
+		return false
+	}
+	if e.storedOnly && !isStoredCredential(auth) {
 		return false
 	}
 	if e.requiredKind != "" && auth.AuthKind() != e.requiredKind {
@@ -998,6 +1003,7 @@ func (m *Manager) availableAuthsForSelector(ctx context.Context, selector Select
 		// scheduler predicate does, including when only a lower tier has weight.
 		auths = positiveWeightAuths(auths)
 	}
+	auths = m.credentialCandidatesForSelection(ctx, auths, routeModel, priorityHealthMetadata(ctx), now, clientHeaders...)
 
 	if m.priorityHealth != nil {
 		auths = m.priorityHealth.filter(auths, routeModel, priorityHealthMetadata(ctx), now)
@@ -1072,6 +1078,7 @@ func (m *Manager) transientlyUnavailableSessionAffinityAuthIDs(ctx context.Conte
 	if _, weighted := affinity.fallback.(*WeightedRoundRobinSelector); weighted {
 		affinityCandidates = positiveWeightAuths(affinityCandidates)
 	}
+	affinityCandidates = m.credentialCandidatesForSelection(ctx, affinityCandidates, routeModel, priorityHealthMetadata(ctx), now, clientHeaders...)
 	if m.priorityHealth != nil {
 		affinityCandidates = m.priorityHealth.filter(affinityCandidates, routeModel, priorityHealthMetadata(ctx), now)
 	}

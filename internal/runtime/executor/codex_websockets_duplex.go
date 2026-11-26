@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/MoeForge/moego/json"
 	"github.com/MoeForge/moego/ojson"
@@ -819,8 +820,29 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 		var outputFallback [][]byte
 		// A business rejection followed by EOF with nothing outstanding stays terminal.
 		terminalBusinessRejection := false
+		// A credential rejection can follow response.created. Hold only the existing
+		// bootstrap allow-list, before mutating turn state or consuming follow-ups.
+		_, credentialFile := e.streamBootstrapPolicy(auth)
+		bootstrap := credentialFile
+		var bootstrapStart time.Time
+		var bootstrapTimeout time.Duration
+		if bootstrap {
+			bootstrapStart = nowCodexBootstrap()
+			bootstrapTimeout = e.cfg.Codex.StreamBootstrapTimeoutDuration()
+		}
+		var bootstrapPayloads [][]byte
+		bootstrapFrames, bootstrapBytes := 0, 0
 		for {
-			kind, payload, errRead := readCodexWebsocketMessage(streamCtx, sess, conn, readCh)
+			var kind int
+			var payload []byte
+			var errRead error
+			if !bootstrap && len(bootstrapPayloads) > 0 {
+				kind, payload = websocket.TextMessage, bootstrapPayloads[0]
+				bootstrapPayloads[0] = nil
+				bootstrapPayloads = bootstrapPayloads[1:]
+			} else {
+				kind, payload, errRead = readCodexWebsocketMessage(streamCtx, sess, conn, readCh)
+			}
 			if errRead != nil {
 				preserveClassification := false
 				select {
@@ -905,6 +927,29 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 			}
 			payload = bytes.TrimSpace(payload)
 			eventType := helps.CodexResponseEventType(payload)
+			if bootstrap {
+				bootstrapFrames++
+				windowOpen := bootstrapFrames <= codexBootstrapMaxBufferedFrames &&
+					bootstrapBytes+len(payload) <= codexBootstrapMaxBufferedBytes &&
+					(bootstrapTimeout <= 0 || nowCodexBootstrap().Sub(bootstrapStart) < bootstrapTimeout)
+				if windowOpen && isCodexBootstrapBufferableEvent(eventType, payload) {
+					bootstrapPayloads = append(bootstrapPayloads, payload)
+					bootstrapBytes += len(payload)
+					continue
+				}
+				bootstrap = false
+				if streamErr, body, ok := codexTerminalFailureErrWithCooling(payload, e.modelLevelCooling()); windowOpen && ok &&
+					(streamErr.StatusCode() == http.StatusTooManyRequests || isCodexOverloadBootstrapFailure(body)) {
+					// Leave firstResponse true so the normal failure path emits only
+					// the original error, including status and Retry-After.
+					bootstrapPayloads = nil
+				} else {
+					// Replay the held preamble through the ordinary turn-state pipeline
+					// before the releasing event, committing the stream in wire order.
+					bootstrapPayloads = append(bootstrapPayloads, payload)
+					continue
+				}
+			}
 			if eventType == "error" && strings.TrimSpace(ojson.GetBytesNoCopy(payload, "type").String()) == "" {
 				doc := ojson.NewDoc(payload)
 				_ = doc.Set("type", eventType)
@@ -1021,7 +1066,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				}
 				metadataMu.Unlock()
 				wakeWriter()
-				if !send(cliproxyexecutor.StreamChunk{Payload: payload}) {
+				if !send(cliproxyexecutor.StreamChunk{Payload: payload, Committed: credentialFile}) {
 					return
 				}
 				continue
@@ -1161,7 +1206,8 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 					e.duplexStateObserver("terminal_pending", false)
 				}
 			}
-			if !send(cliproxyexecutor.StreamChunk{Payload: helps.EnsureResponsesUsageDetails(payload), Incomplete: eventType == "response.incomplete"}) {
+			committed := credentialFile && terminalErr == nil && !isCodexBootstrapBufferableEvent(eventType, payload)
+			if !send(cliproxyexecutor.StreamChunk{Payload: helps.EnsureResponsesUsageDetails(payload), Incomplete: eventType == "response.incomplete", Committed: committed}) {
 				return
 			}
 			if isCodexTerminalEventType(eventType) {

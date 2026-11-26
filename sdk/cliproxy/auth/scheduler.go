@@ -460,7 +460,7 @@ func (s *authScheduler) resetAuthGenerationLocked(authID string) {
 	}
 }
 
-func (s *authScheduler) highestReadyPriorityForRequestLocked(shard *modelScheduler, model string, opts cliproxyexecutor.Options, pinnedAuthID string, basePredicate, selectionPredicate func(*scheduledAuth) bool) (int, bool) {
+func (s *authScheduler) highestReadyPriorityForRequestLocked(ctx context.Context, shard *modelScheduler, model string, opts cliproxyexecutor.Options, pinnedAuthID string, basePredicate, selectionPredicate func(*scheduledAuth) bool) (int, bool) {
 	if shard == nil {
 		return 0, false
 	}
@@ -472,12 +472,19 @@ func (s *authScheduler) highestReadyPriorityForRequestLocked(shard *modelSchedul
 	scope := priorityHealthScope(opts.Metadata)
 	model = canonicalModelLookupKey(model)
 	best, found := 0, false
-	// Include cooling and already-tried entries when choosing the tier. Only
-	// health failures or configured concurrency exhaustion permit descent.
+	failed := credentialFailoverFailures(ctx)
+	// Configured providers retain strict health gating. Stored credentials in
+	// cooldown, or already attempted during a failover sweep, cannot anchor a tier.
 	for _, entry := range shard.entries {
 		if entry == nil || entry.meta == nil || !basePredicate(entry) || isAuthDisabled(entry.auth) ||
 			s.priorityHealth.unhealthyInScope(entry.auth, model, scope, now) || s.priorityHealth.concurrencyAtLimit(entry.auth) {
 			continue
+		}
+		if isStoredCredential(entry.auth) {
+			_, failedCredential := failed[entry.auth.ID]
+			if entry.state != scheduledStateReady || failedCredential {
+				continue
+			}
 		}
 		if !found || entry.meta.priority > best {
 			best, found = entry.meta.priority, true
@@ -521,7 +528,7 @@ func (s *authScheduler) pickSingleWithStrategy(ctx context.Context, provider, mo
 			return nil, ctx.Err()
 		}
 		shard.promoteExpiredLocked(time.Now())
-		priority, ready := s.highestReadyPriorityForRequestLocked(shard, model, opts, pinnedAuthID, basePredicate, predicate)
+		priority, ready := s.highestReadyPriorityForRequestLocked(ctx, shard, model, opts, pinnedAuthID, basePredicate, predicate)
 		if !ready {
 			return nil, shard.unavailableErrorLocked(provider, model, predicate)
 		}
@@ -561,7 +568,7 @@ func (s *authScheduler) pickSingleWithStrategy(ctx context.Context, provider, mo
 		route := namespace + ":" + canonicalModelLookupKey(weightedSelectorStateModel(ctx, model))
 		return s.pickWeightedPoolLocked(route, priority, transportClass, entries, accountingPredicate, pinnedAuthID, nonWebsocketOnly)
 	}
-	priority, ready := s.highestReadyPriorityForRequestLocked(shard, model, opts, pinnedAuthID, basePredicate, predicate)
+	priority, ready := s.highestReadyPriorityForRequestLocked(ctx, shard, model, opts, pinnedAuthID, basePredicate, predicate)
 	if ready {
 		pickPredicate := predicate
 		if s.priorityHealth != nil && pinnedAuthID == "" {
@@ -654,7 +661,7 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 		if shard == nil {
 			continue
 		}
-		priorityReady, okPriority := s.highestReadyPriorityForRequestLocked(shard, model, opts, pinnedAuthID, basePredicate, predicate)
+		priorityReady, okPriority := s.highestReadyPriorityForRequestLocked(ctx, shard, model, opts, pinnedAuthID, basePredicate, predicate)
 		if !okPriority {
 			continue
 		}

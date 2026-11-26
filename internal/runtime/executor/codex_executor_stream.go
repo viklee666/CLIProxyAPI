@@ -179,10 +179,10 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 
 	httpClient := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClientRoundTripOnly(httpClient)
-	buffering := e.cfg != nil && e.cfg.Codex.StreamBootstrapBuffering
+	buffering, credentialFile := e.streamBootstrapPolicy(auth)
 	var bootstrapTimeout time.Duration
 	var bootstrapStart time.Time
-	if buffering {
+	if buffering && e.cfg != nil {
 		bootstrapTimeout = e.cfg.Codex.StreamBootstrapTimeoutDuration()
 	}
 	// Start the bootstrap clock at response headers, before decoding may read body bytes.
@@ -252,6 +252,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 
 	var bufferedChunks [][]byte
 	var initialChunks [][]byte
+	initialCommitted := false
 	streamStarted := false
 	immediateTerminal := false
 	immediateIncomplete := false
@@ -298,10 +299,13 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					}
 					helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
 					reporter.PublishFailure(ctx, streamErr)
-					if isCodexOverloadBootstrapFailure(terminalBody) {
+					if isCodexOverloadBootstrapFailure(terminalBody) || credentialFile && streamErr.StatusCode() == http.StatusTooManyRequests {
 						timeSinceStart := nowCodexBootstrap().Sub(bootstrapStart)
 						timeoutReached := bootstrapTimeout > 0 && timeSinceStart >= bootstrapTimeout
 						if !timeoutReached {
+							if credentialFile {
+								return nil, streamErr
+							}
 							// Transient capacity rejection smuggled into an HTTP 200 stream. Fail the
 							// attempt before the downstream headers are committed so the conductor can
 							// transparently retry on another credential, and report the status the
@@ -395,6 +399,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			}
 
 			initialChunks = chunks
+			initialCommitted = credentialFile && !isHandshake
 			streamStarted = true
 			if terminalSuccess {
 				immediateTerminal = true
@@ -434,7 +439,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	}
 
 	chanCapacity := len(bufferedChunks) + len(initialChunks)
-	if bootstrapTerminalErr != nil || (immediateIncomplete && len(initialChunks) == 0) {
+	if bootstrapTerminalErr != nil || ((immediateIncomplete || initialCommitted) && len(initialChunks) == 0) {
 		chanCapacity++
 	}
 	out := make(chan cliproxyexecutor.StreamChunk, chanCapacity)
@@ -442,10 +447,10 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		out <- cliproxyexecutor.StreamChunk{Payload: chunk}
 	}
 	for _, chunk := range initialChunks {
-		out <- cliproxyexecutor.StreamChunk{Payload: chunk, Incomplete: immediateIncomplete}
+		out <- cliproxyexecutor.StreamChunk{Payload: chunk, Incomplete: immediateIncomplete, Committed: initialCommitted}
 	}
-	if immediateIncomplete && len(initialChunks) == 0 {
-		out <- cliproxyexecutor.StreamChunk{Incomplete: true}
+	if (immediateIncomplete || initialCommitted) && len(initialChunks) == 0 {
+		out <- cliproxyexecutor.StreamChunk{Incomplete: immediateIncomplete, Committed: initialCommitted}
 	}
 	if bootstrapTerminalErr != nil {
 		// Buffered handshake payloads are flushed first so the conductor observes a committed
@@ -461,6 +466,9 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	}
 
 	emittedCount := 0
+	if initialCommitted {
+		emittedCount++
+	}
 	for _, chunk := range bufferedChunks {
 		if len(chunk) > 0 {
 			emittedCount++
@@ -483,6 +491,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			var translatedLine []byte
 			terminalSuccess := false
 			isIncompleteEvent := false
+			committed := false
 
 			if transformed, ok := grokbuild.TransformKeepaliveSSELine(line, isGrokClient); ok {
 				translatedLine = transformed
@@ -492,6 +501,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				observeCodexTokenEvent(reporter, data)
 				translatedLine = append([]byte("data: "), data...)
 				eventType := ojson.GetBytesNoCopy(data, "type").String()
+				committed = credentialFile && !isCodexBootstrapBufferableEvent(eventType, data)
 				if streamErr, terminalBody, ok := codexTerminalFailureErrWithCooling(data, e.modelLevelCooling()); ok {
 					if errClearReplay := clearCodexReasoningReplayOnInvalidSignature(ctx, replayScope, streamErr.StatusCode(), terminalBody); errClearReplay != nil {
 						helps.RecordAPIResponseError(ctx, e.cfg, errClearReplay)
@@ -551,10 +561,18 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, originalPayload, body, translatedLine, &param, claudeInputTokens)
 			for i := range chunks {
 				select {
-				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i], Incomplete: isIncompleteEvent}:
+				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i], Incomplete: isIncompleteEvent, Committed: committed}:
 					if len(chunks[i]) > 0 {
 						emittedCount++
 					}
+				case <-ctx.Done():
+					return
+				}
+			}
+			if committed && len(chunks) == 0 {
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Committed: true}:
+					emittedCount++
 				case <-ctx.Done():
 					return
 				}

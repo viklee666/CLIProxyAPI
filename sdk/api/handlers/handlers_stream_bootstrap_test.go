@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -552,6 +553,42 @@ func TestExecuteStreamWithAuthManager_RetriesAfterDroppedBootstrapPayload(t *tes
 	}
 	if strings.Join(intercepted, ",") != "drop,ok" {
 		t.Fatalf("intercepted payloads = %v, want [drop ok] without double interception", intercepted)
+	}
+}
+
+func TestExecuteStreamWithAuthManager_DoesNotReplayCommittedEmptyTranslation(t *testing.T) {
+	for _, drop := range []bool{false, true} {
+		t.Run(fmt.Sprintf("drop=%t", drop), func(t *testing.T) {
+			executor := &bootstrapStreamExecutor{stream: func(ctx context.Context, _ int) (*coreexecutor.StreamResult, error) {
+				coreexecutor.MarkUpstreamAttempt(ctx)
+				chunks := make(chan coreexecutor.StreamChunk, 2)
+				committed := coreexecutor.StreamChunk{Committed: true}
+				if drop {
+					committed.Payload = []byte("drop")
+				}
+				chunks <- committed
+				chunks <- coreexecutor.StreamChunk{Err: &coreauth.Error{HTTPStatus: http.StatusBadGateway, Message: "server_is_overloaded"}}
+				close(chunks)
+				return &coreexecutor.StreamResult{Chunks: chunks}, nil
+			}}
+			handler, _ := registerBootstrapExecutor(t, executor)
+			if drop {
+				handler.SetPluginHost(&handlerInterceptorTestHost{interceptStreamChunk: func(_ context.Context, req pluginapi.StreamChunkInterceptRequest) pluginapi.StreamChunkInterceptResponse {
+					return pluginapi.StreamChunkInterceptResponse{DropChunk: string(req.Body) == "drop"}
+				}})
+			}
+			data, _, failures := handler.ExecuteStreamWithAuthManager(context.Background(), "openai", "bootstrap-model", []byte(`{"model":"bootstrap-model"}`), "")
+			for payload := range data {
+				t.Fatalf("unexpected translated output: %q", payload)
+			}
+			var failure *interfaces.ErrorMessage
+			for msg := range failures {
+				failure = msg
+			}
+			if failure == nil || failure.StatusCode != http.StatusBadGateway || executor.Calls() != 1 {
+				t.Fatalf("failure=%v attempts=%d, want original 502 without replay", failure, executor.Calls())
+			}
+		})
 	}
 }
 

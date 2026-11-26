@@ -88,11 +88,9 @@ func TestExecuteStream_UnbufferedOverload_StaysCommittedStream(t *testing.T) {
 	}
 }
 
-// Critical distinction: if an executor surfaces the rejection as the *first* stream chunk instead
-// of returning it synchronously, the conductor downgrades it to a committed stream carrying the
-// error (streamErrorResult), and the caller again observes no error. Returning synchronously is
-// therefore required to preserve the 503 status semantics.
-func TestExecuteStream_ErrorAsFirstChunk_IsDowngradedToCommittedStream(t *testing.T) {
+// A first-chunk rejection remains pre-output: all stored credentials are tried,
+// then exhaustion returns an HTTP error instead of committing an error-only stream.
+func TestExecuteStream_ErrorAsFirstChunk_ReturnsExhaustedPoolError(t *testing.T) {
 	previous := quotaCooldownDisabled.Load()
 	quotaCooldownDisabled.Store(false)
 	t.Cleanup(func() { quotaCooldownDisabled.Store(previous) })
@@ -117,22 +115,7 @@ func TestExecuteStream_ErrorAsFirstChunk_IsDowngradedToCommittedStream(t *testin
 	result, err := m.ExecuteStream(context.Background(), []string{"codex"},
 		cliproxyexecutor.Request{Model: "gpt-5.6-terra"}, cliproxyexecutor.Options{})
 
-	if err != nil {
-		t.Logf("first-chunk error surfaced as a hard error: %v", err)
-		t.Log("NOTE: this contradicts the streamErrorResult downgrade path; review if it changes")
-		return
+	if result != nil || statusCodeFromError(err) != http.StatusServiceUnavailable {
+		t.Fatalf("result=%v error=%v, want uncommitted 503", result, err)
 	}
-	if result == nil {
-		t.Fatal("expected either an error or a committed stream")
-	}
-	var sawErr bool
-	for chunk := range result.Chunks {
-		if chunk.Err != nil {
-			sawErr = true
-		}
-	}
-	if !sawErr {
-		t.Fatal("expected the rejection to be delivered in-stream after the downgrade")
-	}
-	t.Log("confirmed: an error delivered as the first chunk is downgraded to a committed stream")
 }

@@ -298,6 +298,9 @@ type Response struct {
 type StreamChunk struct {
 	// Payload is the raw provider chunk payload.
 	Payload []byte
+	// Committed reports upstream semantic output even when translation emits no
+	// payload. Consumers must not replay this request on another credential.
+	Committed bool
 	// Incomplete reports that the upstream stream ended in an incomplete terminal state
 	// (e.g., response.incomplete) even if protocol translation mapped it to a normal chunk.
 	Incomplete bool

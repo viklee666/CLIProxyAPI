@@ -23,6 +23,7 @@ func registerOverloadAuths(t *testing.T, m *Manager, n int) []string {
 		auth := &Auth{
 			ID:       id,
 			Provider: "codex",
+			FileName: id + ".json",
 			Status:   StatusActive,
 			// Higher priority is picked first, so descending values keep the order stable.
 			Attributes: map[string]string{"priority": fmt.Sprintf("%d", 100-i)},
@@ -180,15 +181,15 @@ func TestExecuteStream_BootstrapCapacity_SkipsConsecutiveOverloadedCredentials(t
 	}
 }
 
-// The credential budget must be honoured: when every credential is overloaded the request fails
-// after max-retry-credentials attempts rather than looping forever.
-func TestExecuteStream_BootstrapOverload_StopsAtCredentialBudget(t *testing.T) {
+// The stored-credential sweep exhausts each identity once even when the configured
+// per-round credential budget is smaller than the authorized pool.
+func TestExecuteStream_BootstrapOverload_ExhaustsStoredCredentials(t *testing.T) {
 	previous := quotaCooldownDisabled.Load()
 	quotaCooldownDisabled.Store(false)
 	t.Cleanup(func() { quotaCooldownDisabled.Store(previous) })
 
 	m := NewManager(nil, nil, nil)
-	// Six credentials exist and only four may be attempted in one round.
+	// The old four-credential cap must not hide the final two credentials.
 	m.SetRetryConfig(5, 0, 4)
 	registerOverloadAuths(t, m, 6)
 
@@ -221,10 +222,8 @@ func TestExecuteStream_BootstrapOverload_StopsAtCredentialBudget(t *testing.T) {
 	if attempts == 0 {
 		t.Fatal("expected at least one attempt")
 	}
-	// A no-wait retry round may consume the remaining two credentials after the
-	// first four-credential sweep, but it must not exceed the available set.
-	if attempts < 4 || attempts > 6 {
-		t.Fatalf("attempts = %d, want between 4 and 6", attempts)
+	if attempts != 6 {
+		t.Fatalf("attempts = %d, want all 6 credentials exactly once", attempts)
 	}
 	t.Logf("total upstream attempts across retry sweeps: %d", attempts)
 }

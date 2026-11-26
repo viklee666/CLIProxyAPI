@@ -128,7 +128,7 @@ func TestCodexDuplexInitialFailure(t *testing.T) {
 					manager.SetRetryConfig(3, 30*time.Second, 0)
 					manager.RegisterExecutor(exec)
 					good := &auth.Auth{ID: "duplex-initial-good", Provider: "codex", Status: auth.StatusActive, Attributes: map[string]string{
-						"api_key": "good-key", "base_url": upstream.URL, "websockets": "true", "priority": "3",
+						"api_key": "good-key", "base_url": upstream.URL, "websockets": "true", "priority": "4",
 					}}
 					for _, candidate := range []*auth.Auth{bad, good} {
 						registry.GetGlobalRegistry().RegisterClient(candidate.ID, "codex", []*registry.ModelInfo{{ID: model}})

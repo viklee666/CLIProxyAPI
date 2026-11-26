@@ -1268,7 +1268,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 	defer attempt.release()
 	for {
 		attempt.release()
-		if maxRetryCredentials > 0 && len(attempted) >= maxRetryCredentials {
+		if maxRetryCredentials > 0 && len(attempted) >= maxRetryCredentials && !credentialFailoverActive(ctx) {
 			if lastErr != nil {
 				return cliproxyexecutor.Response{}, preferredExecutionAttemptError(lastErr, upstreamErr)
 			}
@@ -1294,7 +1294,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		}
 		if errPick != nil {
 			if shouldReturnLastErrorOnPickFailure(homeMode, lastErr, errPick) {
-				return cliproxyexecutor.Response{}, roundPickFailureError(lastErr, upstreamErr, errPick)
+				return cliproxyexecutor.Response{}, credentialFailoverTerminalError(ctx, roundPickFailureError(lastErr, upstreamErr, errPick))
 			}
 			return cliproxyexecutor.Response{}, errPick
 		}
@@ -1360,6 +1360,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			}
 			if !okAction && isRequestInvalidError(errPrepare) {
 				return cliproxyexecutor.Response{}, errPrepare
+			}
+			if !homeMode {
+				ctx = withCredentialFailover(ctx, auth, opts, errPrepare)
 			}
 			lastErr = keepPreferredCandidateError(lastErr, errPrepare)
 			continue
@@ -1557,6 +1560,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				if isRequestScopedStop(action, okAction) {
 					return cliproxyexecutor.Response{}, wrapRequestStopError(authErr)
 				}
+				if !homeMode {
+					ctx = withCredentialFailover(ctx, auth, opts, authErr)
+				}
 				lastErr = keepPreferredCandidateError(lastErr, authErr)
 				if homeMode {
 					homeAuthCount++
@@ -1565,6 +1571,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			}
 			if isResponsesCompactRequestFaultError(opts, authErr) || isRequestInvalidError(authErr) {
 				return cliproxyexecutor.Response{}, authErr
+			}
+			if !homeMode {
+				ctx = withCredentialFailover(ctx, auth, opts, authErr)
 			}
 			lastErr = keepPreferredCandidateError(lastErr, authErr)
 			if homeMode {
@@ -1603,7 +1612,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 	defer attempt.release()
 	for {
 		attempt.release()
-		if maxRetryCredentials > 0 && len(attempted) >= maxRetryCredentials {
+		if maxRetryCredentials > 0 && len(attempted) >= maxRetryCredentials && !credentialFailoverActive(ctx) {
 			if lastErr != nil {
 				return cliproxyexecutor.Response{}, preferredExecutionAttemptError(lastErr, upstreamErr)
 			}
@@ -1629,7 +1638,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		}
 		if errPick != nil {
 			if shouldReturnLastErrorOnPickFailure(homeMode, lastErr, errPick) {
-				return cliproxyexecutor.Response{}, roundPickFailureError(lastErr, upstreamErr, errPick)
+				return cliproxyexecutor.Response{}, credentialFailoverTerminalError(ctx, roundPickFailureError(lastErr, upstreamErr, errPick))
 			}
 			return cliproxyexecutor.Response{}, errPick
 		}
@@ -1695,6 +1704,9 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			}
 			if !okAction && isRequestInvalidError(errPrepare) {
 				return cliproxyexecutor.Response{}, errPrepare
+			}
+			if !homeMode {
+				ctx = withCredentialFailover(ctx, auth, opts, errPrepare)
 			}
 			lastErr = keepPreferredCandidateError(lastErr, errPrepare)
 			continue
@@ -1897,6 +1909,9 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				if isRequestScopedStop(action, okAction) {
 					return cliproxyexecutor.Response{}, wrapRequestStopError(authErr)
 				}
+				if !homeMode {
+					ctx = withCredentialFailover(ctx, auth, opts, authErr)
+				}
 				lastErr = keepPreferredCandidateError(lastErr, authErr)
 				if homeMode {
 					homeAuthCount++
@@ -1905,6 +1920,9 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			}
 			if isRequestInvalidError(authErr) {
 				return cliproxyexecutor.Response{}, authErr
+			}
+			if !homeMode {
+				ctx = withCredentialFailover(ctx, auth, opts, authErr)
 			}
 			lastErr = keepPreferredCandidateError(lastErr, authErr)
 			if homeMode {
@@ -1955,7 +1973,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 	for {
 		attempt.release()
 		allowSameAuthRetry := homeMode && homeSameAuthRetryPending && lastHomeAuthID != "" && homeSameAuthRetries[lastHomeAuthID] == 0
-		if maxRetryCredentials > 0 && len(attempted) >= maxRetryCredentials && !allowSameAuthRetry {
+		if maxRetryCredentials > 0 && len(attempted) >= maxRetryCredentials && !allowSameAuthRetry && !credentialFailoverActive(ctx) {
 			if lastErr != nil {
 				preferredErr := preferredExecutionAttemptError(lastErr, upstreamErr)
 				if homeMode && !isCredentialTerminatedError(preferredErr) {
@@ -2018,7 +2036,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 					}
 					return nil, markHomeRetryRoundExhausted(preferredErr, roundTiming.RetryAfter(), isHomeNextRoundImmediatelyAvailable(errPick))
 				}
-				return nil, roundPickFailureError(lastErr, upstreamErr, errPick)
+				return nil, credentialFailoverTerminalError(ctx, roundPickFailureError(lastErr, upstreamErr, errPick))
 			}
 			return nil, errPick
 		}
@@ -2248,6 +2266,9 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			if cliproxyexecutor.RequestRetriesDisabled(execCtx) {
 				return nil, errPrepare
 			}
+			if !homeMode {
+				ctx = withCredentialFailover(ctx, auth, opts, errPrepare)
+			}
 			continue
 		}
 		if preparedAuth != nil {
@@ -2353,6 +2374,9 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			}
 			if cliproxyexecutor.RequestRetriesDisabled(execCtx) {
 				return nil, errStream
+			}
+			if !homeMode {
+				ctx = withCredentialFailover(ctx, auth, opts, errStream)
 			}
 			lastErr = keepPreferredCandidateError(lastErr, errStream)
 			if homeMode {

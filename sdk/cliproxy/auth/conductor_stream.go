@@ -210,7 +210,7 @@ func readStreamBootstrap(ctx context.Context, ch <-chan cliproxyexecutor.StreamC
 		if chunk.Err != nil {
 			return nil, false, chunk.Err
 		}
-		if len(chunk.Payload) == 0 {
+		if len(chunk.Payload) == 0 && !chunk.Committed {
 			if chunk.Incomplete {
 				sawIncomplete = true
 			}
@@ -261,6 +261,7 @@ func (m *Manager) wrapStreamResultWithCancel(ctx context.Context, auth *Auth, pr
 		var failed bool
 		var sawCompleted bool
 		var sawIncomplete bool
+		var committed bool
 		forward := true
 		var rewriter *StreamRewriter
 		if aliasResult.ForceMapping && strings.TrimSpace(aliasResult.OriginalAlias) != "" {
@@ -299,6 +300,7 @@ func (m *Manager) wrapStreamResultWithCancel(ctx context.Context, auth *Auth, pr
 			}()
 		}
 		emit := func(chunk cliproxyexecutor.StreamChunk) bool {
+			committed = committed || chunk.Committed
 			if chunk.Err != nil && !failed {
 				resultCtx := ctx
 				if ctx.Err() != nil {
@@ -324,6 +326,10 @@ func (m *Manager) wrapStreamResultWithCancel(ctx context.Context, auth *Auth, pr
 				return false
 			}
 			if chunk.Err != nil {
+				if committed {
+					// Record the upstream failure before preventing outer bootstrap replay.
+					chunk.Err = wrapRequestStopError(chunk.Err)
+				}
 				if session := continuitySessionFromContext(ctx); session != nil {
 					session.setLastStreamProvider(provider)
 				}
