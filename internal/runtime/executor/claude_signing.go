@@ -2,18 +2,18 @@ package executor
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"sort"
 	"strings"
 
-	"github.com/MoeForge/moego/json"
-	"github.com/MoeForge/moego/ojson"
 	xxHash64 "github.com/pierrec/xxHash/xxHash64"
-	claudeauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/claude"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 const (
@@ -67,16 +67,12 @@ func finalizeAnthropicMessagesBodyCCH(body []byte, fallbackBilling string) ([]by
 // system prompt, the fallback comes back and the request cannot go upstream with a
 // system block that native would never send unsigned.
 func claudeBodyNeedsBillingFallback(body []byte) bool {
-	return ojson.GetBytesNoCopy(body, "system").Exists()
-}
-
-func claudeBodyNeedsBillingFallbackDoc(doc *ojson.Doc) bool {
-	return doc != nil && doc.Get("system").Exists()
+	return gjson.GetBytes(body, "system").Exists()
 }
 
 func ensureClaudeBillingHeaderCCHPlaceholder(body []byte, fallbackBilling string) ([]byte, error) {
-	billing := ojson.GetBytesNoCopy(body, "system.0.text")
-	if billing.Type != ojson.String || !strings.HasPrefix(billing.String(), "x-anthropic-billing-header:") {
+	billing := gjson.GetBytes(body, "system.0.text")
+	if billing.Type != gjson.String || !strings.HasPrefix(billing.String(), "x-anthropic-billing-header:") {
 		if fallbackBilling == "" {
 			return body, nil
 		}
@@ -85,7 +81,7 @@ func ensureClaudeBillingHeaderCCHPlaceholder(body []byte, fallbackBilling string
 		if errPrepend != nil {
 			return nil, errPrepend
 		}
-		billing = ojson.GetBytesNoCopy(body, "system.0.text")
+		billing = gjson.GetBytes(body, "system.0.text")
 	}
 	if _, ok := claudeBillingCCHDigitsOffset(body); ok {
 		return body, nil
@@ -102,65 +98,19 @@ func ensureClaudeBillingHeaderCCHPlaceholder(body []byte, fallbackBilling string
 	}
 	insertAt := entrypoint + entrypointEnd + 1
 	billingText = billingText[:insertAt] + " cch=00000;" + billingText[insertAt:]
-	updated, err := ojson.SetBytes(body, "system.0.text", billingText)
+	updated, err := sjson.SetBytes(body, "system.0.text", billingText)
 	if err != nil {
 		return nil, fmt.Errorf("insert Claude CCH placeholder: %w", err)
 	}
 	return updated, nil
 }
 
-func ensureClaudeBillingHeaderCCHPlaceholderDoc(doc *ojson.Doc, fallbackBilling string) error {
-	if doc == nil {
-		return nil
-	}
-	billing := doc.Get("system.0.text")
-	if billing.Type != ojson.String || !strings.HasPrefix(billing.String(), "x-anthropic-billing-header:") {
-		if fallbackBilling == "" {
-			return nil
-		}
-		if errPrepend := prependClaudeBillingSystemBlockDoc(doc, fallbackBilling); errPrepend != nil {
-			return errPrepend
-		}
-		billing = doc.Get("system.0.text")
-	}
-	if claudeBillingRawHasCCHDigits(billing.Raw) {
-		return nil
-	}
-
-	billingText := billing.String()
-	entrypoint := strings.Index(billingText, "cc_entrypoint=")
-	if entrypoint < 0 {
-		return nil
-	}
-	entrypointEnd := strings.IndexByte(billingText[entrypoint:], ';')
-	if entrypointEnd < 0 {
-		return nil
-	}
-	insertAt := entrypoint + entrypointEnd + 1
-	billingText = billingText[:insertAt] + " cch=00000;" + billingText[insertAt:]
-	if errSet := doc.Set("system.0.text", billingText); errSet != nil {
-		return fmt.Errorf("insert Claude CCH placeholder: %w", errSet)
-	}
-	return nil
-}
-
 func prependClaudeBillingSystemBlock(body []byte, billingText string) ([]byte, error) {
-	doc := ojson.NewDoc(body)
-	if errPrepend := prependClaudeBillingSystemBlockDoc(doc, billingText); errPrepend != nil {
-		return nil, errPrepend
-	}
-	return doc.Bytes(), nil
-}
-
-func prependClaudeBillingSystemBlockDoc(doc *ojson.Doc, billingText string) error {
-	if doc == nil {
-		return nil
-	}
 	billingBlock := []byte(buildTextBlock(billingText, nil))
-	system := doc.Get("system")
+	system := gjson.GetBytes(body, "system")
 	var systemArray []byte
 	switch {
-	case system.Type == ojson.String:
+	case system.Type == gjson.String:
 		originalBlock := []byte(buildTextBlock(system.String(), nil))
 		systemArray = make([]byte, 0, len(billingBlock)+len(originalBlock)+3)
 		systemArray = append(systemArray, '[')
@@ -189,10 +139,11 @@ func prependClaudeBillingSystemBlockDoc(doc *ojson.Doc, billingText string) erro
 		systemArray = append(systemArray, ']')
 	}
 
-	if errSet := doc.SetRawBytes("system", systemArray); errSet != nil {
-		return fmt.Errorf("prepend Claude CCH billing block: %w", errSet)
+	updated, err := sjson.SetRawBytes(body, "system", systemArray)
+	if err != nil {
+		return nil, fmt.Errorf("prepend Claude CCH billing block: %w", err)
 	}
-	return nil
+	return updated, nil
 }
 
 func isKimiAPIEndpoint(endpoint string) bool {
@@ -200,16 +151,12 @@ func isKimiAPIEndpoint(endpoint string) bool {
 	if err != nil {
 		return false
 	}
-	host := parsed.Hostname()
-	return strings.EqualFold(host, "api.kimi.com") || strings.EqualFold(host, "api.kimi.ai")
+	return strings.EqualFold(parsed.Hostname(), "api.kimi.com")
 }
 
 func isKimiMessagesUpstream(auth *cliproxyauth.Auth, endpoint string) bool {
-	if auth != nil {
-		provider := strings.ToLower(strings.TrimSpace(auth.Provider))
-		if provider == "kimi" || provider == "kimi-ai" || provider == "kimi.ai" || provider == "kimi.com" {
-			return true
-		}
+	if auth != nil && strings.EqualFold(strings.TrimSpace(auth.Provider), "kimi") {
+		return true
 	}
 	return isKimiAPIEndpoint(endpoint)
 }
@@ -224,51 +171,6 @@ func stripDefaultKimiClaudeCodeAttribution(auth *cliproxyauth.Auth, endpoint str
 		return body
 	}
 	return util.StripClaudeCodeAttributionSystem(body)
-}
-
-func stripDefaultKimiClaudeCodeAttributionDoc(auth *cliproxyauth.Auth, endpoint string, cliFingerprint bool, doc *ojson.Doc) bool {
-	if cliFingerprint || !isKimiMessagesUpstream(auth, endpoint) {
-		return false
-	}
-	return stripClaudeCodeAttributionSystemDoc(doc)
-}
-
-func stripClaudeCodeAttributionSystemDoc(doc *ojson.Doc) bool {
-	if doc == nil {
-		return false
-	}
-	system := doc.Get("system")
-	if !system.Exists() {
-		return false
-	}
-	if system.Type == ojson.String {
-		if !util.IsClaudeCodeAttributionSystemText(system.String()) {
-			return false
-		}
-		return doc.Delete("system") == nil
-	}
-	if !system.IsArray() {
-		return false
-	}
-	kept := make([]string, 0, len(system.Array()))
-	removed := false
-	system.ForEach(func(_, block ojson.Result) bool {
-		if block.Get("type").String() == "text" && util.IsClaudeCodeAttributionSystemText(block.Get("text").String()) {
-			removed = true
-			return true
-		}
-		if block.Raw != "" {
-			kept = append(kept, block.Raw)
-		}
-		return true
-	})
-	if !removed {
-		return false
-	}
-	if len(kept) == 0 {
-		return doc.Delete("system") == nil
-	}
-	return doc.SetRawBytes("system", []byte("["+strings.Join(kept, ",")+"]")) == nil
 }
 
 // claudeCCHSigningEnabled applies CPA's CCH policy.
@@ -333,27 +235,9 @@ func signAnthropicMessagesBody(body []byte) ([]byte, error) {
 	return unsignedBody, nil
 }
 
-func claudeBillingRawHasCCHDigits(rawStr string) bool {
-	raw := []byte(rawStr)
-	for searchFrom := 0; searchFrom < len(raw); {
-		relative := bytes.Index(raw[searchFrom:], []byte("cch="))
-		if relative < 0 {
-			return false
-		}
-		prefix := searchFrom + relative
-		digits := prefix + len("cch=")
-		end := digits + claudeCCHLength
-		if end < len(raw) && raw[end] == ';' && isLowerHex(raw[digits:end]) {
-			return true
-		}
-		searchFrom = prefix + len("cch=")
-	}
-	return false
-}
-
 func claudeBillingCCHDigitsOffset(body []byte) (int, bool) {
-	billing := ojson.GetBytesNoCopy(body, "system.0.text")
-	if billing.Type != ojson.String || !strings.HasPrefix(billing.String(), "x-anthropic-billing-header:") {
+	billing := gjson.GetBytes(body, "system.0.text")
+	if billing.Type != gjson.String || !strings.HasPrefix(billing.String(), "x-anthropic-billing-header:") {
 		return 0, false
 	}
 
@@ -661,39 +545,6 @@ func resolveClaudeKeyCloakConfig(cfg *config.Config, auth *cliproxyauth.Auth) *c
 		}
 		if strings.TrimSpace(auth.Attributes[cliproxyauth.AttributeTenantID]) != "" {
 			return nil
-		}
-	}
-	if cfg != nil && cfg.Home.Enabled && auth != nil {
-		metadata := auth.SnapshotMetadata()
-		if mode, strictMode, words, replacements, cacheUserID, ok := claudeauth.ReadMetadataHomeCloak(&metadata); ok {
-			rawPatterns := claudeauth.ReadMetadataHomeCloakPatterns(&metadata)
-			var patterns []config.SensitivePatternRule
-			if len(rawPatterns) > 0 {
-				patterns = make([]config.SensitivePatternRule, 0, len(rawPatterns))
-				for _, pair := range rawPatterns {
-					if strings.TrimSpace(pair[0]) == "" {
-						continue
-					}
-					patterns = append(patterns, config.SensitivePatternRule{
-						Pattern:     pair[0],
-						Replacement: pair[1],
-					})
-				}
-			}
-			var normalizedWords []string
-			for _, w := range words {
-				if trimmed := strings.TrimSpace(w); trimmed != "" {
-					normalizedWords = append(normalizedWords, trimmed)
-				}
-			}
-			return &config.CloakConfig{
-				Mode:                     strings.TrimSpace(mode),
-				StrictMode:               strictMode,
-				SensitiveWords:           normalizedWords,
-				SensitiveWordsReplace:    config.NormalizeSensitiveWordsReplace(replacements),
-				SensitivePatternsReplace: patterns,
-				CacheUserID:              cacheUserID,
-			}
 		}
 	}
 	entry := resolveClaudeKeyConfig(cfg, auth)

@@ -12,12 +12,15 @@ import (
 	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/synthesizer"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	log "github.com/sirupsen/logrus"
 )
 
 type pelicanRequest struct {
@@ -107,7 +110,7 @@ func (h *Handler) pelicanConfigAuthID(kind, rawIndex, rawKeyIndex string) (strin
 		if index < count {
 			entry := &cfg.OpenAICompatibility[index]
 			if entry.Disabled {
-				return "", http.StatusConflict, "test target is disabled or requires sign-in"
+				return "", http.StatusConflict, "test target is disabled"
 			}
 			if len(entry.APIKeyEntries) > 0 {
 				keyIndex, err = strconv.Atoi(rawKeyIndex)
@@ -138,6 +141,20 @@ func (h *Handler) pelicanConfigAuthID(kind, rawIndex, rawKeyIndex string) (strin
 	return "", http.StatusNotFound, "test target not found"
 }
 
+// Derive the same identities as the watcher, including duplicate keys, proxy,
+// prefix and header differences. Never substitute a colliding auth_index.
+func synthesizeConfigIdentityAuths(cfg *config.Config) []*coreauth.Auth {
+	auths, err := synthesizer.NewConfigSynthesizer().Synthesize(&synthesizer.SynthesisContext{
+		Config:      cfg,
+		IDGenerator: synthesizer.NewStableIDGenerator(),
+	})
+	if err != nil {
+		log.WithError(err).Error("failed to derive Pelican credential identities")
+		return nil
+	}
+	return auths
+}
+
 func (h *Handler) pelicanTarget(c *gin.Context, authID, name, authIndex string) *coreauth.Auth {
 	if authID == "" && name == "" && authIndex == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "test target is required"})
@@ -165,8 +182,8 @@ func (h *Handler) pelicanTarget(c *gin.Context, authID, name, authIndex string) 
 		c.JSON(http.StatusNotFound, gin.H{"error": "test target not found"})
 		return nil
 	}
-	if target.Disabled || target.Status == coreauth.StatusDisabled || target.RequiresSignIn {
-		c.JSON(http.StatusConflict, gin.H{"error": "test target is disabled or requires sign-in"})
+	if target.Disabled || target.Status == coreauth.StatusDisabled {
+		c.JSON(http.StatusConflict, gin.H{"error": "test target is disabled"})
 		return nil
 	}
 	return target
@@ -264,7 +281,7 @@ func (h *Handler) PelicanTestV8(c *gin.Context) {
 		if status < 400 || status > 599 || status == http.StatusUnauthorized || status == http.StatusForbidden {
 			status = http.StatusBadGateway
 		}
-		c.JSON(status, gin.H{"error": coreauth.SanitizeRenewalMessage(errExecute.Error()), "upstream_status": upstreamStatus})
+		c.JSON(status, gin.H{"error": "test generation failed: " + internallogging.SafeErrorDiagnostic(errExecute), "upstream_status": upstreamStatus})
 		return
 	}
 	answer, responseModel, usage, errAnswer := pelicanAnswer(response)

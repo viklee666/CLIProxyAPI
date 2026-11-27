@@ -5,10 +5,10 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"github.com/MoeForge/moego/base64"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -18,8 +18,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
+	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 )
 

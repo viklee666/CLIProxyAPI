@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -34,7 +34,7 @@ import (
 // Auto-conversion behavior:
 //   - Budget-only model + Level config → Level converted to Budget
 //   - Level-only model + Budget config → Budget converted to Level
-//   - Hybrid model → preserve original format when the target protocol accepts it
+//   - Hybrid model → preserve original format
 func ValidateConfig(config ThinkingConfig, modelInfo *registry.ModelInfo, fromFormat, toFormat string, fromSuffix bool) (*ThinkingConfig, error) {
 	fromFormat, toFormat = strings.ToLower(strings.TrimSpace(fromFormat)), strings.ToLower(strings.TrimSpace(toFormat))
 	model := "unknown"
@@ -55,36 +55,35 @@ func ValidateConfig(config ThinkingConfig, modelInfo *registry.ModelInfo, fromFo
 
 	// allowClampUnsupported determines whether to clamp unsupported levels instead of returning an error.
 	// This applies when crossing provider families (e.g., openai→gemini, claude→gemini) and the target
-	// model supports discrete levels. Same-family explicit levels require strict validation.
+	// model supports discrete levels. Same-family conversions require strict validation.
 	//
 	// modelFamilyMismatch covers providers that reuse another protocol on the wire
 	// (e.g. Kimi serving Claude-compatible /v1/messages). In that path fromFormat and
 	// toFormat both look like "claude", but the model itself is not Claude-family, so
 	// unsupported levels such as "max" should clamp to the nearest supported level
 	// (typically "high") instead of failing validation.
-	capability := detectModelCapability(modelInfo)
-	toHasLevelSupport := capability == CapabilityLevelOnly || capability == CapabilityHybrid
+	toCapability := detectModelCapability(modelInfo)
+	toHasLevelSupport := toCapability == CapabilityLevelOnly || toCapability == CapabilityHybrid
 	modelFamilyMismatch := false
 	if modelInfo != nil {
 		modelType := strings.ToLower(strings.TrimSpace(modelInfo.Type))
-		if isKnownProviderFamily(modelType) {
+		if modelType != "" {
 			if (fromFormat != "" && !isSameProviderFamily(fromFormat, modelType)) ||
 				(toFormat != "" && !isSameProviderFamily(toFormat, modelType)) {
 				modelFamilyMismatch = true
 			}
 		}
 	}
-	userDefined := modelInfo.UserDefined
-	sameFamily := isSameProviderFamily(fromFormat, toFormat)
-	allowClampUnsupported := !sameFamily || (modelFamilyMismatch && !userDefined)
+	allowClampUnsupported := toHasLevelSupport && (!isSameProviderFamily(fromFormat, toFormat) || modelFamilyMismatch)
 
 	// strictBudget determines whether to enforce strict budget range validation.
 	// This applies when: (1) config comes from request body (not suffix), (2) source format is known,
 	// and (3) source and target are in the same provider family. Cross-family or suffix-based configs
 	// are clamped instead of rejected to improve interoperability.
-	strictBudget := !userDefined && !fromSuffix && fromFormat != "" && sameFamily && !modelFamilyMismatch
-	originalMode := config.Mode
+	strictBudget := !fromSuffix && fromFormat != "" && isSameProviderFamily(fromFormat, toFormat) && !modelFamilyMismatch
+	budgetDerivedFromLevel := false
 
+	capability := detectModelCapability(modelInfo)
 	switch capability {
 	case CapabilityBudgetOnly:
 		if config.Mode == ModeLevel {
@@ -98,33 +97,21 @@ func ValidateConfig(config ThinkingConfig, modelInfo *registry.ModelInfo, fromFo
 			config.Mode = ModeBudget
 			config.Budget = budget
 			config.Level = ""
+			budgetDerivedFromLevel = true
 		}
-	case CapabilityLevelOnly, CapabilityHybrid:
-		// Interactions sends levels on the wire. Claude hybrid models still
-		// accept native budgets, but translated budgets use adaptive effort.
-		if config.Mode == ModeBudget && (capability == CapabilityLevelOnly || toFormat == "interactions" || (toFormat == "claude" && fromFormat != "claude")) {
+	case CapabilityLevelOnly:
+		if config.Mode == ModeBudget {
 			level, ok := ConvertBudgetToLevel(config.Budget)
 			if !ok {
 				return nil, NewThinkingError(ErrUnknownLevel, fmt.Sprintf("budget %d cannot be converted to a valid level", config.Budget))
 			}
+			// When converting Budget -> Level for level-only models, clamp the derived standard level
+			// to the nearest supported level. Special values (none/auto) are preserved.
 			config.Mode = ModeLevel
-			config.Level = ThinkingLevel(level)
+			config.Level = clampLevel(ThinkingLevel(level), modelInfo, toFormat)
 			config.Budget = 0
 		}
-	}
-
-	if config.Mode == ModeLevel && toHasLevelSupport && (originalMode == ModeBudget || allowClampUnsupported) {
-		config.Level = ClampLevel(config.Level, modelInfo, toFormat)
-	}
-
-	budgetDerivedFromLevel := config.Mode == ModeBudget && originalMode == ModeLevel
-	if userDefined {
-		// Preserve custom settings outside of capability-based conversion. An
-		// OpenAI-family body can carry an effort that was translated to a budget.
-		translatedBudget := config.Mode == ModeBudget && capability == CapabilityBudgetOnly && !fromSuffix && isOpenAIFamily(fromFormat)
-		if !budgetDerivedFromLevel && !translatedBudget {
-			return &config, nil
-		}
+	case CapabilityHybrid:
 	}
 
 	if config.Mode == ModeLevel && config.Level == LevelNone {
@@ -142,10 +129,19 @@ func ValidateConfig(config ThinkingConfig, modelInfo *registry.ModelInfo, fromFo
 		config.Level = ""
 	}
 
-	if len(support.Levels) > 0 && config.Mode == ModeLevel && !isLevelSupported(string(config.Level), support.Levels) {
-		validLevels := normalizeLevels(support.Levels)
-		message := fmt.Sprintf("level %q not supported, valid levels: %s", strings.ToLower(string(config.Level)), strings.Join(validLevels, ", "))
-		return nil, NewThinkingError(ErrLevelNotSupported, message)
+	if len(support.Levels) > 0 && config.Mode == ModeLevel {
+		if !isLevelSupported(string(config.Level), support.Levels) {
+			if allowClampUnsupported {
+				config.Level = clampLevel(config.Level, modelInfo, toFormat)
+			}
+			if !isLevelSupported(string(config.Level), support.Levels) {
+				// User explicitly specified an unsupported level - return error
+				// (budget-derived levels may be clamped based on source format)
+				validLevels := normalizeLevels(support.Levels)
+				message := fmt.Sprintf("level %q not supported, valid levels: %s", strings.ToLower(string(config.Level)), strings.Join(validLevels, ", "))
+				return nil, NewThinkingError(ErrLevelNotSupported, message)
+			}
+		}
 	}
 
 	if strictBudget && config.Mode == ModeBudget && !budgetDerivedFromLevel {
@@ -166,29 +162,15 @@ func ValidateConfig(config ThinkingConfig, modelInfo *registry.ModelInfo, fromFo
 		// fallback just like a budget-derived level so providers never receive an
 		// unsupported value.
 		if config.Mode == ModeLevel && len(support.Levels) > 0 && !isLevelSupported(string(config.Level), support.Levels) {
-			config.Level = ClampLevel(config.Level, modelInfo, toFormat)
+			config.Level = clampLevel(config.Level, modelInfo, toFormat)
 		}
 	}
 
 	if config.Mode == ModeNone && toFormat == "claude" {
-		if !support.ZeroAllowed {
-			if lowest, ok := lowestSupportedLevel(support.Levels); ok {
-				// Adaptive-only Claude models (for example claude-opus-5-5, claude-fable-5,
-				// and claude-fable-5-1) reject thinking.type="disabled". Like other models
-				// that cannot be disabled, fall back to the lowest supported level.
-				config.Mode = ModeLevel
-				config.Budget = 0
-				config.Level = lowest
-			} else {
-				config.Budget = 0
-				config.Level = ""
-			}
-		} else {
-			// Claude supports explicit disable via thinking.type="disabled" (or the
-			// model's DisableType). Keep Budget=0 so applier can omit budget_tokens.
-			config.Budget = 0
-			config.Level = ""
-		}
+		// Claude supports explicit disable via thinking.type="disabled".
+		// Keep Budget=0 so applier can omit budget_tokens.
+		config.Budget = 0
+		config.Level = ""
 	} else {
 		switch config.Mode {
 		case ModeBudget, ModeAuto, ModeNone:
@@ -201,9 +183,7 @@ func ValidateConfig(config ThinkingConfig, modelInfo *registry.ModelInfo, fromFo
 		// their Min/Max range is zero.
 		cannotDisableLevelModel := !support.ZeroAllowed && !isLevelSupported(string(LevelNone), support.Levels)
 		if config.Mode == ModeNone && len(support.Levels) > 0 && (config.Budget > 0 || cannotDisableLevelModel) {
-			if lowest, ok := lowestSupportedLevel(support.Levels); ok {
-				config.Level = lowest
-			}
+			config.Level = ThinkingLevel(support.Levels[0])
 		}
 	}
 
@@ -259,26 +239,9 @@ func convertAutoToMidRange(config ThinkingConfig, support *registry.ThinkingSupp
 // standardLevelOrder defines the canonical ordering of thinking levels from lowest to highest.
 var standardLevelOrder = []ThinkingLevel{LevelMinimal, LevelLow, LevelMedium, LevelHigh, LevelXHigh, LevelMax}
 
-// lowestSupportedLevel returns the lowest canonical effort level in supported,
-// ignoring mode markers such as "none" and "auto".
-func lowestSupportedLevel(supported []string) (ThinkingLevel, bool) {
-	bestIdx := -1
-	for _, s := range supported {
-		if idx := levelIndex(strings.TrimSpace(s)); idx != -1 {
-			if bestIdx == -1 || idx < bestIdx {
-				bestIdx = idx
-			}
-		}
-	}
-	if bestIdx >= 0 {
-		return standardLevelOrder[bestIdx], true
-	}
-	return "", false
-}
-
-// ClampLevel clamps the given level to the nearest supported level.
+// clampLevel clamps the given level to the nearest supported level.
 // On tie, prefers the lower level.
-func ClampLevel(level ThinkingLevel, modelInfo *registry.ModelInfo, provider string) ThinkingLevel {
+func clampLevel(level ThinkingLevel, modelInfo *registry.ModelInfo, provider string) ThinkingLevel {
 	model := "unknown"
 	var supported []string
 	if modelInfo != nil {
@@ -421,15 +384,6 @@ func isGeminiFamily(provider string) bool {
 func isOpenAIFamily(provider string) bool {
 	switch provider {
 	case "openai", "openai-response", "codex":
-		return true
-	default:
-		return false
-	}
-}
-
-func isKnownProviderFamily(provider string) bool {
-	switch provider {
-	case "gemini", "antigravity", "claude", "openai", "openai-response", "codex", "kimi", "kimi-ai", "kimi.ai", "kimi.com", "xai", "interactions", "devin":
 		return true
 	default:
 		return false

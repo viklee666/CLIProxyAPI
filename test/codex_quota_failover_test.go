@@ -12,26 +12,26 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
-	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
+	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/translator"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 )
 
 func TestCodexTerminalQuotaCoolsAccountAcrossModels(t *testing.T) {
 	for _, transport := range []string{"sse", "websocket-error", "websocket-failed"} {
 		t.Run(transport, func(t *testing.T) {
 			const model, siblingModel = "gpt-5.4", "gpt-5.4-mini"
-			const created = `{"type":"response.created","response":{"id":"quota-test-response"}}`
 			const quota = `{"type":"usage_limit_reached","message":"You've hit your usage limit.","resets_in_seconds":3600}`
 			const completed = `{"type":"response.completed","response":{"id":"quota-test-success","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`
 			attempts := make(chan string, 8)
 			upgrader := websocket.Upgrader{}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				account := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+				created := fmt.Sprintf(`{"type":"response.created","response":{"id":%q}}`, account)
 				attempts <- account
 				terminal := completed
 				if account == "quota-high" {
@@ -87,7 +87,7 @@ func TestCodexTerminalQuotaCoolsAccountAcrossModels(t *testing.T) {
 				t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(id) })
 				if _, errRegister := manager.Register(context.Background(), &cliproxyauth.Auth{
 					ID: id, Provider: "codex", Status: cliproxyauth.StatusActive,
-					Attributes: map[string]string{"priority": fmt.Sprint(4 - i), "base_url": server.URL, "api_key": key},
+					Attributes: map[string]string{cliproxyauth.AttributeSourceBackend: cliproxyauth.AuthSourceFile, "priority": fmt.Sprint(4 - i), "base_url": server.URL, "api_key": key},
 					Metadata:   map[string]any{"disable_cooling": false},
 				}); errRegister != nil {
 					t.Fatal(errRegister)
@@ -99,7 +99,7 @@ func TestCodexTerminalQuotaCoolsAccountAcrossModels(t *testing.T) {
 					Model: requestModel, Payload: []byte(fmt.Sprintf(`{"model":%q,"input":"hello"}`, requestModel)),
 				}, cliproxyexecutor.Options{Stream: true, SourceFormat: sdktranslator.FromString("openai-response")})
 				if errStream != nil {
-					t.Fatalf("stream must start before the terminal quota error: %v", errStream)
+					t.Fatalf("credential failover did not open a successful stream: %v", errStream)
 				}
 				var payload []byte
 				var terminalErr error
@@ -113,12 +113,8 @@ func TestCodexTerminalQuotaCoolsAccountAcrossModels(t *testing.T) {
 			}
 			before := time.Now()
 			payload, quotaErr := run(model)
-			if !strings.Contains(string(payload), "response.created") || quotaErr == nil {
-				t.Fatalf("expected payload then terminal quota error: payload=%s error=%v", payload, quotaErr)
-			}
-			var scoped interface{ IsCredentialScoped() bool }
-			if !errors.As(quotaErr, &scoped) || !scoped.IsCredentialScoped() {
-				t.Errorf("real Codex error is missing credential scope: %T %v", quotaErr, quotaErr)
+			if quotaErr != nil || !strings.Contains(string(payload), "response.completed") || strings.Contains(string(payload), "quota-high") {
+				t.Fatalf("expected pre-content failover without leaking exhausted account frames: payload=%s error=%v", payload, quotaErr)
 			}
 			high, _ := manager.GetByID(highID)
 			if high.Quota.Reason != "credential_quota" || high.Quota.NextRecoverAt.Before(before.Add(time.Hour)) {
@@ -128,7 +124,7 @@ func TestCodexTerminalQuotaCoolsAccountAcrossModels(t *testing.T) {
 			if errSibling != nil || !strings.Contains(string(payload), "response.completed") {
 				t.Errorf("sibling model did not fail over to the healthy account: payload=%s error=%v", payload, errSibling)
 			}
-			for _, want := range []string{"quota-high", "quota-low"} {
+			for _, want := range []string{"quota-high", "quota-low", "quota-low"} {
 				select {
 				case got := <-attempts:
 					if got != want {

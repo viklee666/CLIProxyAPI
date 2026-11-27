@@ -11,13 +11,13 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/synthesizer"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers/openai"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/synthesizer"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers/openai"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
 const singleAttemptModel = "single-attempt-model"
@@ -112,11 +112,16 @@ func TestConfigProvidersForwardEachDownstreamRequestOnce(t *testing.T) {
 					handler := newSingleAttemptProviderHandler(t, provider, upstream.URL)
 					for request := 1; request <= 10; request++ {
 						response := singleAttemptChatRequest(t, handler, stream)
-						if response.Code != status {
-							t.Fatalf("request %d: downstream status=%d, want %d; body=%s", request, response.Code, status, response.Body.String())
+						wantStatus, wantAttempts := status, int32(request)
+						// One keyless target is isolated after six consecutive upstream failures.
+						if provider == "openai-compatible-keyless" && request > 6 && status != 400 && status != 409 && status != 422 {
+							wantStatus, wantAttempts = http.StatusServiceUnavailable, 6
 						}
-						if got := received.Load(); got != int32(request) {
-							t.Fatalf("%d downstream requests produced %d upstream requests", request, got)
+						if response.Code != wantStatus {
+							t.Fatalf("request %d: downstream status=%d, want %d; body=%s", request, response.Code, wantStatus, response.Body.String())
+						}
+						if got := received.Load(); got != wantAttempts {
+							t.Fatalf("%d downstream requests produced %d upstream requests, want %d", request, got, wantAttempts)
 						}
 					}
 				})

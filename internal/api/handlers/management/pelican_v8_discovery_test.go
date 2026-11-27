@@ -9,10 +9,10 @@ import (
 
 	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
 func getPelicanTarget(t *testing.T, router *gin.Engine, query url.Values) *httptest.ResponseRecorder {
@@ -192,7 +192,7 @@ func TestPelicanV8RejectsUnloadedConfigIdentity(t *testing.T) {
 }
 
 func TestPelicanV8DiscoveryAndExecutionRejectUnavailableAndTenantTargets(t *testing.T) {
-	for _, scenario := range []string{"disabled", "sign-in", "tenant"} {
+	for _, scenario := range []string{"disabled", "disabled-status", "tenant"} {
 		t.Run(scenario, func(t *testing.T) {
 			manager := coreauth.NewManager(nil, nil, nil)
 			executor := &pelicanTestExecutor{}
@@ -202,8 +202,8 @@ func TestPelicanV8DiscoveryAndExecutionRejectUnavailableAndTenantTargets(t *test
 			switch scenario {
 			case "disabled":
 				auth.Disabled, auth.Status = true, coreauth.StatusDisabled
-			case "sign-in":
-				auth.RequiresSignIn = true
+			case "disabled-status":
+				auth.Status = coreauth.StatusDisabled
 			case "tenant":
 				auth.Attributes[coreauth.AttributeTenantID] = "7"
 				auth.Attributes["runtime_only"] = "true"

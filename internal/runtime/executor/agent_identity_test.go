@@ -6,6 +6,8 @@ import (
 	"crypto/rand"
 	"crypto/sha512"
 	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -14,12 +16,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/MoeForge/moego/base64"
-	"github.com/MoeForge/moego/json"
-	"github.com/MoeForge/moego/ojson"
 	"github.com/gorilla/websocket"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	"github.com/tidwall/gjson"
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/nacl/box"
 )
@@ -50,17 +50,17 @@ func agentIdentityTestAuth(t *testing.T, keyName string) (*cliproxyauth.Auth, ed
 	return &cliproxyauth.Auth{Provider: "codex", Metadata: metadata}, publicKey
 }
 
-func parseAgentAssertionForTest(t *testing.T, header string) helps.AgentAssertion {
+func parseAgentAssertionForTest(t *testing.T, header string) agentAssertion {
 	t.Helper()
-	if !strings.HasPrefix(header, helps.AgentAssertionScheme+" ") {
-		t.Fatalf("Authorization = %q, want %s scheme", header, helps.AgentAssertionScheme)
+	if !strings.HasPrefix(header, agentAssertionScheme+" ") {
+		t.Fatalf("Authorization = %q, want %s scheme", header, agentAssertionScheme)
 	}
-	encoded := strings.TrimPrefix(header, helps.AgentAssertionScheme+" ")
+	encoded := strings.TrimPrefix(header, agentAssertionScheme+" ")
 	raw, err := base64.RawURLEncoding.DecodeString(encoded)
 	if err != nil {
 		t.Fatalf("decode assertion envelope: %v", err)
 	}
-	var assertion helps.AgentAssertion
+	var assertion agentAssertion
 	if err = json.Unmarshal(raw, &assertion); err != nil {
 		t.Fatalf("unmarshal assertion envelope: %v", err)
 	}
@@ -69,7 +69,7 @@ func parseAgentAssertionForTest(t *testing.T, header string) helps.AgentAssertio
 
 func encryptAgentTaskIDForTest(t *testing.T, auth *cliproxyauth.Auth, taskID string) string {
 	t.Helper()
-	privateKey, err := helps.AgentIdentityPrivateKey(auth.ReadMetadataString("agent_private_key"))
+	privateKey, err := agentIdentityPrivateKey(agentIdentityCredsFromAuth(auth).privateKeyB64)
 	if err != nil {
 		t.Fatalf("parse agent private key: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestBuildAgentAssertionSignsCanonicalPayload(t *testing.T) {
 	auth, publicKey := agentIdentityTestAuth(t, "agent_private_key")
 	now := time.Date(2026, time.July, 15, 12, 34, 56, 0, time.UTC)
 
-	header, err := helps.BuildAgentAssertion(auth, now)
+	header, err := buildAgentAssertion(agentIdentityCredsFromAuth(auth), now)
 	if err != nil {
 		t.Fatalf("buildAgentAssertion() error = %v", err)
 	}
@@ -121,7 +121,7 @@ func TestAgentIdentityAcceptsLegacyPrivateKeyAliases(t *testing.T) {
 	for _, keyName := range []string{"private_key_pkcs8_base64", "private_key"} {
 		t.Run(keyName, func(t *testing.T) {
 			auth, _ := agentIdentityTestAuth(t, keyName)
-			if _, err := helps.BuildAgentAssertion(auth, time.Unix(0, 0)); err != nil {
+			if _, err := buildAgentAssertion(agentIdentityCredsFromAuth(auth), time.Unix(0, 0)); err != nil {
 				t.Fatalf("legacy key %s rejected: %v", keyName, err)
 			}
 		})
@@ -174,9 +174,9 @@ func TestAgentIdentityPrivateKeyAcceptsWhitespaceAndRawBase64(t *testing.T) {
 	wrapped := std[:20] + "\n " + std[20:]
 
 	for _, keyB64 := range []string{wrapped, raw} {
-		got, err := helps.AgentIdentityPrivateKey(keyB64)
+		got, err := agentIdentityPrivateKey(keyB64)
 		if err != nil {
-			t.Fatalf("helps.AgentIdentityPrivateKey(%q) error = %v", keyB64[:24], err)
+			t.Fatalf("agentIdentityPrivateKey(%q) error = %v", keyB64[:24], err)
 		}
 		if len(got) != ed25519.PrivateKeySize {
 			t.Fatalf("private key size = %d", len(got))
@@ -310,6 +310,7 @@ func TestDialCodexWebsocketMintsFreshAssertionPerDial(t *testing.T) {
 	_ = conn1.Close()
 
 	// Simulate queue delay and rotated task metadata before reconnect dial.
+	time.Sleep(1100 * time.Millisecond)
 	auth.Metadata["task_id"] = "task-rotated"
 	conn2, _, _, err := executor.dialCodexWebsocket(context.Background(), auth, wsURL, baseHeaders)
 	if err != nil {
@@ -334,7 +335,7 @@ func TestDialCodexWebsocketMintsFreshAssertionPerDial(t *testing.T) {
 	if first.Timestamp == second.Timestamp && first.Signature == second.Signature {
 		t.Fatalf("expected distinct assertions across dials; first=%+v second=%+v", first, second)
 	}
-	for i, assertion := range []helps.AgentAssertion{first, second} {
+	for i, assertion := range []agentAssertion{first, second} {
 		signature, err := base64.StdEncoding.DecodeString(assertion.Signature)
 		if err != nil {
 			t.Fatalf("decode signature %d: %v", i, err)
@@ -441,10 +442,10 @@ func TestCodexPrepareRequestAuthRegistersMissingTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PrepareRequestAuth() error = %v", err)
 	}
-	if got := updated.ReadMetadataString("task_id"); got != "task-new" {
+	if got := agentIdentityMetadataString(updated, "task_id"); got != "task-new" {
 		t.Fatalf("task_id = %q, want task-new", got)
 	}
-	if got := auth.ReadMetadataString("task_id"); got != "" {
+	if got := agentIdentityMetadataString(auth, "task_id"); got != "" {
 		t.Fatalf("original task_id = %q, want unchanged empty value", got)
 	}
 }
@@ -473,7 +474,7 @@ func TestCodexPrepareRequestAuthDecryptsEncryptedTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PrepareRequestAuth() error = %v", err)
 	}
-	if got := updated.ReadMetadataString("task_id"); got != "task-encrypted" {
+	if got := agentIdentityMetadataString(updated, "task_id"); got != "task-encrypted" {
 		t.Fatalf("task_id = %q, want task-encrypted", got)
 	}
 }
@@ -501,16 +502,16 @@ func TestCodexRecoverRequestAuthRecognizesInvalidTask(t *testing.T) {
 
 func TestCodexStatusClassificationPreservesInvalidTaskCode(t *testing.T) {
 	err := newCodexStatusErr(http.StatusUnauthorized, []byte(`{"error":{"code":"invalid_task_id","message":"invalid task_id task-secret"}}`))
-	if !helps.IsAgentIdentityTaskInvalidError(err) {
+	if !isAgentIdentityTaskInvalidError(err) {
 		t.Fatalf("classified error = %v, want invalid task marker", err)
 	}
-	if got := ojson.Get(err.Error(), "error.code").String(); got != "invalid_task_id" {
+	if got := gjson.Get(err.Error(), "error.code").String(); got != "invalid_task_id" {
 		t.Fatalf("error.code = %q, want invalid_task_id", got)
 	}
 	if strings.Contains(err.Error(), "task-secret") {
 		t.Fatalf("classified error leaked task id: %v", err)
 	}
-	if got := ojson.Get(err.Error(), "error.message").String(); got != "agent identity task is invalid or expired" {
+	if got := gjson.Get(err.Error(), "error.message").String(); got != "agent identity task is invalid or expired" {
 		t.Fatalf("error.message = %q", got)
 	}
 }

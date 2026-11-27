@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"strings"
 
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
 // isTenantRuntimeAuth reports whether an auth record is a tenant-owned runtime

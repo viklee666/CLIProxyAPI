@@ -5,7 +5,8 @@ import (
 	"net/http"
 	"testing"
 
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
 func TestManagerExecuteDisabledRetriesOAuthRecovery(t *testing.T) {
@@ -112,5 +113,25 @@ func TestManagerExecuteDisabledRetriesOAuthPreparationRecovery(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestManagerLocalManagementOAuthRecoveryBypassesHome(t *testing.T) {
+	manager, executor, primary, _, model := newUnauthorizedRefreshFixture(t, false)
+	manager.SetConfig(&internalconfig.Config{Home: internalconfig.HomeConfig{Enabled: true}})
+	ctx := cliproxyexecutor.WithRequestRetryState(context.Background())
+	cliproxyexecutor.DisableRequestRetries(ctx)
+	ctx = cliproxyexecutor.WithOAuthRecoveryAllowed(ctx)
+	response, err := manager.Execute(ctx, []string{primary.Provider}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{
+		Metadata: map[string]any{
+			LocalManagementExecutionMetadataKey:    true,
+			cliproxyexecutor.PinnedAuthMetadataKey: primary.ID,
+		},
+	})
+	if err != nil || string(response.Payload) != primary.ID+":fresh-access-token" {
+		t.Fatalf("local management execution = %s, %v", response.Payload, err)
+	}
+	if len(executor.ExecuteCalls()) != 2 || executor.RefreshCalls() != 1 {
+		t.Fatalf("calls=%v refreshes=%d", executor.ExecuteCalls(), executor.RefreshCalls())
 	}
 }

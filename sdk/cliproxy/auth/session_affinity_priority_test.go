@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 )
 
 func TestManagerSessionAffinityRetainsBindingAfterHigherPriorityRecovery(t *testing.T) {
@@ -495,108 +495,6 @@ func TestSessionAffinitySelectorRebindOnQuotaDirectPickRebindsWhenAuthRemovedOrZ
 	}
 }
 
-func TestSessionAffinitySelectorRebindOnQuotaLCPCompactionPreservesMetadataOnTransientFailover(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{
-		Fallback: &RoundRobinSelector{},
-		TTL:      time.Hour,
-		RebindOn: SessionAffinityRebindOnQuota,
-	})
-	defer selector.Stop()
-
-	high := &Auth{ID: "auth-high", Status: StatusActive, Attributes: map[string]string{"priority": "1"}}
-	low := &Auth{ID: "auth-low", Status: StatusActive, Attributes: map[string]string{"priority": "0"}}
-	auths := []*Auth{high, low}
-
-	firstPayload := []byte(`{"contents":[
-		{"role":"user","parts":[{"text":"step 1"}]},
-		{"role":"model","parts":[{"text":"ack 1"}]},
-		{"role":"user","parts":[{"text":"step 2"}]},
-		{"role":"model","parts":[{"text":"ack 2"}]},
-		{"role":"user","parts":[{"text":"step 3"}]}
-	]}`)
-	firstOpts := cliproxyexecutor.Options{
-		SourceFormat:    sdktranslator.FormatGemini,
-		OriginalRequest: firstPayload,
-		Metadata: map[string]any{
-			cliproxyexecutor.CallerScopeMetadataKey: "caller-compaction-quota",
-		},
-	}
-	firstAuth, errFirst := selector.Pick(ctx, "google", "gemini-2.5-pro", firstOpts, auths)
-	if errFirst != nil || firstAuth == nil || firstAuth.ID != high.ID {
-		t.Fatalf("first Pick() = %v (err=%v), want %q", firstAuth, errFirst, high.ID)
-	}
-	selector.OnResult(Result{
-		AuthID:   firstAuth.ID,
-		Provider: "google",
-		Model:    "gemini-2.5-pro",
-		Options:  firstOpts,
-		Success:  true,
-	})
-
-	// Put high into transient cooldown (502) and send a compacted continuation.
-	highTransient := &Auth{
-		ID:             "auth-high",
-		Status:         StatusError,
-		Unavailable:    true,
-		NextRetryAfter: time.Now().Add(time.Minute),
-		LastError:      &Error{HTTPStatus: http.StatusBadGateway, Message: "502 overloaded"},
-		Attributes:     map[string]string{"priority": "1"},
-	}
-	compactedPayload := []byte(`{"contents":[
-		{"role":"user","parts":[{"text":"<summary>Steps 1 and 2 completed</summary>"}]},
-		{"role":"model","parts":[{"text":"ack 2"}]},
-		{"role":"user","parts":[{"text":"step 3"}]},
-		{"role":"user","parts":[{"text":"step 4"}]}
-	]}`)
-	compactedOpts := cliproxyexecutor.Options{
-		SourceFormat:    sdktranslator.FormatGemini,
-		OriginalRequest: compactedPayload,
-		Metadata: map[string]any{
-			cliproxyexecutor.CallerScopeMetadataKey: "caller-compaction-quota",
-		},
-	}
-	compactedAuth, errCompacted := selector.Pick(ctx, "google", "gemini-2.5-pro", compactedOpts, []*Auth{highTransient, low})
-	if errCompacted != nil || compactedAuth == nil || compactedAuth.ID != low.ID {
-		t.Fatalf("compacted transient failover Pick() = %v (err=%v), want %q", compactedAuth, errCompacted, low.ID)
-	}
-	if isCompaction, ok := compactedOpts.Metadata[cliproxyexecutor.IsCompactionMetadataKey].(bool); !ok || !isCompaction {
-		t.Fatalf("expected is_compaction=true on transient failover, got %v", compactedOpts.Metadata[cliproxyexecutor.IsCompactionMetadataKey])
-	}
-	if nodeKind, ok := compactedOpts.Metadata[cliproxyexecutor.NodeKindMetadataKey].(string); !ok || nodeKind != "compaction" {
-		t.Fatalf("expected node_kind=compaction on transient failover, got %v", compactedOpts.Metadata[cliproxyexecutor.NodeKindMetadataKey])
-	}
-	selector.OnResult(Result{
-		AuthID:   compactedAuth.ID,
-		Provider: "google",
-		Model:    "gemini-2.5-pro",
-		Options:  compactedOpts,
-		Success:  true,
-	})
-
-	// Next turn after high recovers must still route back to high.
-	nextPayload := []byte(`{"contents":[
-		{"role":"user","parts":[{"text":"<summary>Steps 1 and 2 completed</summary>"}]},
-		{"role":"model","parts":[{"text":"ack 2"}]},
-		{"role":"user","parts":[{"text":"step 3"}]},
-		{"role":"user","parts":[{"text":"step 4"}]},
-		{"role":"model","parts":[{"text":"ack 4"}]}
-	]}`)
-	nextOpts := cliproxyexecutor.Options{
-		SourceFormat:    sdktranslator.FormatGemini,
-		OriginalRequest: nextPayload,
-		Metadata: map[string]any{
-			cliproxyexecutor.CallerScopeMetadataKey: "caller-compaction-quota",
-		},
-	}
-	nextAuth, errNext := selector.Pick(ctx, "google", "gemini-2.5-pro", nextOpts, auths)
-	if errNext != nil || nextAuth == nil || nextAuth.ID != high.ID {
-		t.Fatalf("next Pick() after compaction transient recovery = %v (err=%v), want %q", nextAuth, errNext, high.ID)
-	}
-}
-
 type scriptedFailoverExecutor struct {
 	provider string
 	execute  func(ctx context.Context, auth *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error)
@@ -1053,7 +951,8 @@ func TestManagerExecuteAndStreamRebindOnNeverEndToEnd(t *testing.T) {
 	manager.SetSelector(affinity)
 	manager.RegisterExecutor(scriptedFailoverExecutor{
 		provider: provider,
-		execute: func(_ context.Context, auth *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+		execute: func(ctx context.Context, auth *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+			cliproxyexecutor.MarkUpstreamAttempt(ctx)
 			calls[auth.ID]++
 			if fn := failAuthErr[auth.ID]; fn != nil {
 				if errFail := fn(calls[auth.ID]); errFail != nil {
@@ -1062,7 +961,8 @@ func TestManagerExecuteAndStreamRebindOnNeverEndToEnd(t *testing.T) {
 			}
 			return cliproxyexecutor.Response{Payload: []byte(auth.ID)}, nil
 		},
-		stream: func(_ context.Context, auth *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+		stream: func(ctx context.Context, auth *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+			cliproxyexecutor.MarkUpstreamAttempt(ctx)
 			calls[auth.ID]++
 			if fn := failAuthErr[auth.ID]; fn != nil {
 				if errFail := fn(calls[auth.ID]); errFail != nil {
@@ -1393,7 +1293,8 @@ func TestManagerSessionAffinityRebindOnNeverSingleAuthDisabledOrModelRemovedRetu
 	unboundOpts := cliproxyexecutor.Options{
 		Headers: http.Header{"Session-Id": []string{"single-never-unbound-session"}},
 	}
-	if _, errUnbound := manager.Execute(ctx, []string{provider}, req, unboundOpts); !isAuthNotFoundError(errUnbound) {
+	var unboundError *Error
+	if _, errUnbound := manager.Execute(ctx, []string{provider}, req, unboundOpts); !errors.As(errUnbound, &unboundError) || unboundError == nil || unboundError.Code != "auth_not_found" {
 		t.Fatalf("Execute unbound session with empty candidates = %v, want auth_not_found", errUnbound)
 	}
 

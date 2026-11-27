@@ -4,20 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"math/rand/v2"
 	"net/http"
 	"reflect"
-	"slices"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
 func (m *Manager) SetPluginScheduler(scheduler PluginScheduler) {
@@ -43,47 +40,6 @@ func (m *Manager) hasPluginScheduler() bool {
 		return state.HasScheduler()
 	}
 	return true
-}
-
-func pluginSchedulerWantsAcrossPriorities(scheduler PluginScheduler) bool {
-	if scheduler == nil {
-		return false
-	}
-	if opt, ok := scheduler.(PluginSchedulerAcrossPriorities); ok && opt != nil {
-		return opt.SchedulerWantsAcrossPriorities()
-	}
-	return false
-}
-
-func pluginSchedulerNeedsAllPriorities(scheduler PluginScheduler) bool {
-	if pluginSchedulerWantsAcrossPriorities(scheduler) {
-		return true
-	}
-	if pool, ok := scheduler.(pluginSchedulerPriorityPool); ok && pool != nil {
-		return pool.SchedulerWantsAllPriorityCandidates()
-	}
-	return false
-}
-
-func (m *Manager) snapshotPluginSchedulerRef() PluginScheduler {
-	if m == nil {
-		return nil
-	}
-	m.mu.RLock()
-	scheduler := m.pluginScheduler
-	m.mu.RUnlock()
-	return scheduler
-}
-
-func (m *Manager) snapshotPluginScheduler() (PluginScheduler, bool) {
-	scheduler := m.snapshotPluginSchedulerRef()
-	return scheduler, pluginSchedulerNeedsAllPriorities(scheduler)
-}
-
-// PluginSchedulerWantsAcrossPriorities reports whether the configured plugin scheduler
-// opted into receiving candidates across all priority tiers.
-func (m *Manager) PluginSchedulerWantsAcrossPriorities() bool {
-	return pluginSchedulerWantsAcrossPriorities(m.snapshotPluginSchedulerRef())
 }
 
 func isBuiltInSelector(selector Selector) bool {
@@ -154,22 +110,11 @@ func (m *Manager) syncSchedulerFromSnapshot(auths []*Auth) {
 	m.scheduler.rebuild(auths)
 }
 
-func (m *Manager) currentVersion() uint64 {
-	if m == nil {
-		return 0
-	}
-	return m.structuralEpoch.Load() + registry.GetGlobalRegistry().RegistrationEpoch()
-}
-
 func (m *Manager) syncScheduler() {
 	if m == nil || m.scheduler == nil {
 		return
 	}
-	currentVer := m.currentVersion()
-	if currentVer == m.syncedVersion.Load() {
-		return
-	}
-	m.checkAndSyncScheduler()
+	m.syncSchedulerFromSnapshot(m.snapshotAuths())
 }
 
 func (m *Manager) snapshotAuths() []*Auth {
@@ -199,7 +144,6 @@ func (m *Manager) RefreshSchedulerEntry(authID string) {
 	}
 	snapshot := auth.Clone()
 	m.mu.RUnlock()
-	m.structuralEpoch.Add(1)
 	m.scheduler.upsertAuth(snapshot)
 }
 
@@ -216,28 +160,6 @@ func (m *Manager) RefreshSchedulerAll() {
 	m.mu.RUnlock()
 	for _, id := range ids {
 		m.RefreshSchedulerEntry(id)
-	}
-}
-
-func isAuthDisabled(auth *Auth) bool {
-	return auth == nil || auth.Disabled || auth.Status == StatusDisabled
-}
-
-func reconcileAggregatedAuthState(auth *Auth, now time.Time) {
-	if auth == nil {
-		return
-	}
-	wasDisabled := isAuthDisabled(auth)
-	wasUnavailable := auth.Unavailable
-	updateAggregatedAvailability(auth, now)
-	if wasDisabled {
-		auth.Unavailable = wasUnavailable
-		return
-	}
-	if !hasModelError(auth, now) && !hasUnauthorizedAuthFailure(auth) {
-		auth.LastError = nil
-		auth.StatusMessage = ""
-		auth.Status = StatusActive
 	}
 }
 
@@ -263,8 +185,6 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 		cooldownStateChanged bool
 	)
 
-	releaseMutation := m.lockAuthMutation(authID)
-	defer releaseMutation()
 	m.mu.Lock()
 	auth, ok := m.auths[authID]
 	if ok && auth != nil {
@@ -275,33 +195,95 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 			cooldownRecordsBefore = m.cooldownStateRecordsForAuthLocked(auth, now)
 		}
 
-		isCopilot := isCopilotAuth(auth)
 		for retry := 0; retry < 10; retry++ {
 			supportedModels, regEpoch = globalReg.GetModelsAndEpochForClient(authID)
-			// Before the first Copilot publication there is no catalog to reconcile against.
-			if isCopilot && regEpoch == 0 && len(supportedModels) == 0 {
-				if globalReg.ClientRegistrationEpoch(authID) != regEpoch {
-					continue
-				}
-				snapshot = auth.Clone()
-				break
-			}
 			candidateAuth := &Auth{
 				ID:          auth.ID,
-				Prefix:      auth.Prefix,
 				Provider:    auth.Provider,
 				Attributes:  auth.Attributes,
-				Metadata:    auth.Metadata,
 				ModelStates: cloneModelStates(auth.ModelStates),
 			}
-			candidateChanged := m.migrateAuthAliasModelStatesLocked(candidateAuth, supportedModels, now, true)
+			candidateChanged := normalizeModelStates(candidateAuth)
 
-			var supported map[string]string
-			if len(supportedModels) > 0 {
-				supported, _ = m.buildAliasMigrationMapsLocked(candidateAuth, supportedModels, true)
+			// Historical alias migration:
+			// Migrate legacy alias state strictly based on registered route keys from supportedModels.
+			// Two-phase safe migration:
+			// Phase 1: Collect authoritative target keys and route-to-target mappings.
+			if len(candidateAuth.ModelStates) > 0 && len(supportedModels) > 0 {
+				authoritativeTargets := make(map[string]bool, len(supportedModels))
+				routeToTarget := make(map[string]string, len(supportedModels))
+				for _, sm := range supportedModels {
+					if sm == nil || strings.TrimSpace(sm.ID) == "" {
+						continue
+					}
+					routeID := strings.TrimSpace(sm.ID)
+					canonicalRoute := canonicalModelKey(routeID)
+					targetKey := m.selectionModelKeyForAuth(auth, routeID)
+					if targetKey == "" {
+						targetKey = canonicalRoute
+					}
+					if targetKey != "" {
+						authoritativeTargets[targetKey] = true
+					}
+					if canonicalRoute != "" {
+						routeToTarget[canonicalRoute] = targetKey
+					}
+				}
+
+				// Phase 2: For each registered routeKey, migrate legacy state to target ONLY if
+				// routeKey != target AND routeKey is not itself an authoritative target for any route.
+				for _, sm := range supportedModels {
+					if sm == nil || strings.TrimSpace(sm.ID) == "" {
+						continue
+					}
+					routeID := strings.TrimSpace(sm.ID)
+					canonicalRoute := canonicalModelKey(routeID)
+					targetKey := routeToTarget[canonicalRoute]
+					if targetKey == "" || canonicalRoute == "" {
+						continue
+					}
+					if canonicalRoute != targetKey && !authoritativeTargets[canonicalRoute] {
+						aliasKeys := []string{canonicalRoute}
+						if routeID != canonicalRoute {
+							aliasKeys = append(aliasKeys, routeID)
+						}
+						for _, aliasKey := range aliasKeys {
+							if state, hasAliasState := candidateAuth.ModelStates[aliasKey]; hasAliasState {
+								if state != nil && (!modelStateIsClean(state) || isModelStateActiveCooldown(state, now)) {
+									if existingTarget, exists := candidateAuth.ModelStates[targetKey]; exists && existingTarget != nil {
+										candidateAuth.ModelStates[targetKey] = mergeModelState(existingTarget, state)
+									} else {
+										candidateAuth.ModelStates[targetKey] = state.Clone()
+									}
+								}
+								delete(candidateAuth.ModelStates, aliasKey)
+								candidateChanged = true
+							}
+						}
+					}
+				}
 			}
+
+			supported := make(map[string]struct{}, len(supportedModels))
+			for _, model := range supportedModels {
+				if model == nil || strings.TrimSpace(model.ID) == "" {
+					continue
+				}
+				stateKey := m.selectionModelKeyForAuth(auth, model.ID)
+				if stateKey == "" {
+					stateKey = canonicalModelKey(model.ID)
+				}
+				if stateKey != "" {
+					supported[stateKey] = struct{}{}
+				}
+			}
+
 			for modelKey, state := range candidateAuth.ModelStates {
-				if _, isSupported := supported[modelStateLookupKey(auth, modelKey)]; !isSupported {
+				baseModel := canonicalModelKey(modelKey)
+				if baseModel == "" {
+					baseModel = strings.TrimSpace(modelKey)
+				}
+				if _, isSupported := supported[baseModel]; !isSupported {
 					// Drop state for models that disappeared from the current registry
 					// snapshot and are not reachable via any alias route.
 					delete(candidateAuth.ModelStates, modelKey)
@@ -329,10 +311,15 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 			if globalReg.ClientRegistrationEpoch(authID) == regEpoch {
 				auth.ModelStates = candidateAuth.ModelStates
 				if candidateChanged {
-					reconcileAggregatedAuthState(auth, now)
+					updateAggregatedAvailability(auth, now)
+					if !hasModelError(auth, now) {
+						auth.LastError = nil
+						auth.StatusMessage = ""
+						auth.Status = StatusActive
+					}
 					auth.Generation++
 					auth.UpdatedAt = now
-					if errPersist := m.persistLocked(context.Background(), auth); errPersist != nil {
+					if errPersist := m.persist(context.Background(), auth); errPersist != nil {
 						logEntryWithRequestID(ctx).WithField("auth_id", auth.ID).Warnf("failed to persist auth changes during model state reconciliation: %v", errPersist)
 					}
 				}
@@ -346,7 +333,6 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 		}
 	}
 	m.mu.Unlock()
-	releaseMutation()
 
 	if snapshot == nil {
 		return
@@ -363,395 +349,6 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 
 	if m.scheduler != nil {
 		m.scheduler.upsertAuth(snapshot)
-	}
-	if cooldownStateChanged {
-		m.persistCooldownStates(context.Background())
-	}
-}
-
-func compactModelSpellingKey(model string) string {
-	key := canonicalModelLookupKey(model)
-	if key == "" {
-		return ""
-	}
-	var b strings.Builder
-	b.Grow(len(key))
-	for i := 0; i < len(key); i++ {
-		ch := key[i]
-		if (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') {
-			b.WriteByte(ch)
-		}
-	}
-	return b.String()
-}
-
-func isSameUnderlyingModelSpelling(a, b string) bool {
-	ca := compactModelSpellingKey(a)
-	cb := compactModelSpellingKey(b)
-	if ca == "" || cb == "" {
-		return false
-	}
-	return ca == cb || strings.HasPrefix(ca, cb) || strings.HasPrefix(cb, ca)
-}
-
-func isCopilotAuth(auth *Auth) bool {
-	return auth != nil && strings.EqualFold(strings.TrimSpace(auth.Provider), "copilot")
-}
-
-func (m *Manager) buildPublishedModelMigrationMaps(auth *Auth, supportedModels []*registry.ModelInfo) (authoritativeTargets, routeToTarget map[string]string) {
-	authoritativeTargets = make(map[string]string, len(supportedModels))
-	routeToTarget = make(map[string]string, len(supportedModels))
-	providerPrefix := strings.ToLower(strings.TrimSpace(auth.Provider)) + "/"
-	isCopilot := isCopilotAuth(auth)
-	// Unsuffixed provider-qualified state keys are source IDs, even when a new alias
-	// reuses one. Other legacy keys can still follow exact published routes.
-	isLegacyKey := func(key string) bool {
-		return !strings.HasPrefix(key, providerPrefix) || thinking.ParseSuffix(key).HasSuffix
-	}
-	for _, model := range supportedModels {
-		if model == nil || strings.TrimSpace(model.ID) == "" {
-			continue
-		}
-		routeID := strings.TrimSpace(model.ID)
-		targetKey := publishedSourceModelID(model.SourceModelID, model.MetadataModelID, isCopilot)
-		if targetKey == "" && !isCopilot {
-			targetKey = m.selectionModelKeyForAuth(auth, routeID)
-		}
-		if targetKey == "" {
-			targetKey = routeID
-		}
-		if nativeID, qualified := strings.CutPrefix(targetKey, providerPrefix); qualified {
-			legacyLookup := strings.ToLower(nativeID)
-			if _, exists := routeToTarget[legacyLookup]; !exists {
-				routeToTarget[legacyLookup] = targetKey
-			}
-		}
-		authoritativeTargets[strings.ToLower(targetKey)] = targetKey
-		if routeLookup := strings.ToLower(routeID); isLegacyKey(routeLookup) {
-			routeToTarget[routeLookup] = targetKey
-		}
-	}
-	return authoritativeTargets, routeToTarget
-}
-
-func (m *Manager) buildAliasMigrationMapsLocked(auth *Auth, supportedModels []*registry.ModelInfo, fromExplicitReconcile bool) (map[string]string, map[string]string) {
-	if m == nil || auth == nil {
-		return nil, nil
-	}
-	if isCopilotAuth(auth) || (m.usesPublishedModelRoutes(auth) && slices.ContainsFunc(supportedModels, func(model *registry.ModelInfo) bool {
-		return model != nil && model.SourceModelID != ""
-	})) {
-		return m.buildPublishedModelMigrationMaps(auth, supportedModels)
-	}
-
-	allRegistered := make(map[string]struct{}, len(supportedModels))
-	nativeRegistered := make(map[string]struct{}, len(supportedModels))
-	for _, sm := range supportedModels {
-		if sm == nil || strings.TrimSpace(sm.ID) == "" {
-			continue
-		}
-		key := canonicalModelLookupKey(sm.ID)
-		if key == "" {
-			continue
-		}
-		allRegistered[key] = struct{}{}
-		if strings.TrimSpace(sm.MetadataModelID) != "" && !sameCanonicalModelKey(sm.ID, sm.MetadataModelID) {
-			continue
-		}
-		nativeRegistered[key] = struct{}{}
-	}
-
-	authoritativeTargets := make(map[string]string, len(supportedModels))
-	routeToTarget := make(map[string]string, len(supportedModels))
-	for _, sm := range supportedModels {
-		if sm == nil || strings.TrimSpace(sm.ID) == "" {
-			continue
-		}
-		routeID := strings.TrimSpace(sm.ID)
-		canonicalRoute := canonicalModelKey(routeID)
-		routeLookup := canonicalModelLookupKey(canonicalRoute)
-		targetKey := m.selectionModelKeyForAuth(auth, routeID)
-		if targetKey == "" {
-			targetKey = canonicalRoute
-		}
-		targetLookup := canonicalModelLookupKey(targetKey)
-		if !fromExplicitReconcile && routeLookup != "" && targetLookup != "" && routeLookup != targetLookup {
-			_, routeIsNative := nativeRegistered[routeLookup]
-			_, targetIsNative := nativeRegistered[targetLookup]
-			if routeIsNative && targetIsNative && !isSameUnderlyingModelSpelling(canonicalRoute, targetKey) {
-				targetKey, targetLookup = canonicalRoute, routeLookup
-			}
-		}
-		if targetLookup != "" {
-			authoritativeTargets[targetLookup] = targetKey
-		}
-		if routeLookup != "" && targetKey != "" {
-			routeToTarget[routeLookup] = targetKey
-		}
-	}
-	for _, route := range m.configuredOAuthAliasRoutes(auth) {
-		aliasLookup := canonicalModelLookupKey(route.aliasKey)
-		targetLookup := canonicalModelLookupKey(route.targetKey)
-		if aliasLookup == "" || targetLookup == "" || aliasLookup == targetLookup {
-			continue
-		}
-		if !fromExplicitReconcile {
-			_, routeIsNative := nativeRegistered[aliasLookup]
-			_, targetIsNative := nativeRegistered[targetLookup]
-			if routeIsNative && targetIsNative && !isSameUnderlyingModelSpelling(route.aliasKey, route.targetKey) {
-				continue
-			}
-		}
-		reachable := len(supportedModels) == 0
-		if !reachable {
-			_, aliasRegistered := allRegistered[aliasLookup]
-			_, targetRegistered := allRegistered[targetLookup]
-			reachable = aliasRegistered || targetRegistered
-		}
-		if !reachable {
-			continue
-		}
-		if _, exists := authoritativeTargets[targetLookup]; !exists {
-			authoritativeTargets[targetLookup] = route.targetKey
-		}
-		if _, exists := routeToTarget[aliasLookup]; !exists {
-			routeToTarget[aliasLookup] = route.targetKey
-		}
-	}
-	return authoritativeTargets, routeToTarget
-}
-
-func (m *Manager) resolveMarkResultModelKeyLocked(auth *Auth, modelKey, routeModel string) string {
-	canonicalModel := canonicalModelKey(modelKey)
-	if canonicalModel == "" || m == nil || auth == nil {
-		return canonicalModel
-	}
-	canonicalRoute := canonicalModelKey(routeModel)
-	if canonicalRoute != "" && !sameCanonicalModelKey(canonicalModel, canonicalRoute) {
-		if routeTarget := m.selectionModelKeyForAuth(auth, canonicalRoute); sameCanonicalModelKey(canonicalModel, routeTarget) {
-			return canonicalModel
-		}
-	}
-	lookupKey := modelStateLookupKey(auth, canonicalModel)
-	supportedModels := registry.GetGlobalRegistry().GetModelsForClient(auth.ID)
-	authoritativeTargets, routeToTarget := m.buildAliasMigrationMapsLocked(auth, supportedModels, false)
-	if authTarget := authoritativeTargets[lookupKey]; authTarget != "" {
-		return authTarget
-	}
-	targetKey := routeToTarget[lookupKey]
-	if targetKey == "" && !isCopilotAuth(auth) && !m.usesPublishedModelRoutes(auth) {
-		targetKey = m.selectionModelKeyForAuth(auth, canonicalModel)
-	}
-	if targetLookup := modelStateLookupKey(auth, targetKey); targetKey != "" && lookupKey != targetLookup {
-		if authTarget := authoritativeTargets[targetLookup]; authTarget != "" {
-			targetKey = authTarget
-		}
-		return targetKey
-	}
-	return canonicalModel
-}
-
-func (m *Manager) migrateAuthAliasModelStatesLocked(auth *Auth, supportedModels []*registry.ModelInfo, now time.Time, fromExplicitReconcile bool) bool {
-	if auth == nil || len(auth.ModelStates) == 0 {
-		return false
-	}
-	if m != nil && !fromExplicitReconcile && len(supportedModels) == 0 && auth.ID != "" {
-		supportedModels = registry.GetGlobalRegistry().GetModelsForClient(auth.ID)
-	}
-	isCopilot := isCopilotAuth(auth)
-	useConfigFallback := !isCopilot && !m.usesPublishedModelRoutes(auth)
-	if isCopilot && len(supportedModels) == 0 {
-		return false
-	}
-	changed := normalizeModelStates(auth)
-	if m == nil || len(auth.ModelStates) == 0 {
-		return changed
-	}
-	authoritativeTargets, routeToTarget := m.buildAliasMigrationMapsLocked(auth, supportedModels, fromExplicitReconcile)
-
-	existingKeys := make([]string, 0, len(auth.ModelStates))
-	for stateKey := range auth.ModelStates {
-		existingKeys = append(existingKeys, stateKey)
-	}
-	if len(existingKeys) > 1 {
-		sort.Strings(existingKeys)
-	}
-
-	var working *Auth
-	for _, stateKey := range existingKeys {
-		sourceStates := auth.ModelStates
-		if working != nil {
-			sourceStates = working.ModelStates
-		}
-		state, exists := sourceStates[stateKey]
-		if !exists {
-			continue
-		}
-		routeLookup := modelStateLookupKey(auth, modelStateKey(auth, stateKey))
-		if routeLookup == "" {
-			continue
-		}
-		if _, isAuthTarget := authoritativeTargets[routeLookup]; isAuthTarget {
-			continue
-		}
-		targetKey := routeToTarget[routeLookup]
-		if targetKey == "" && useConfigFallback {
-			targetKey = m.selectionModelKeyForAuth(auth, stateKey)
-		}
-		targetLookup := modelStateLookupKey(auth, targetKey)
-		if targetKey == "" || routeLookup == targetLookup {
-			continue
-		}
-		if authTarget := authoritativeTargets[targetLookup]; authTarget != "" {
-			targetKey = authTarget
-		}
-		if working == nil {
-			working = &Auth{Provider: auth.Provider, ModelStates: cloneModelStates(auth.ModelStates)}
-		}
-		if state != nil && (!modelStateIsClean(state) || isModelStateActiveCooldown(state, now)) {
-			mergeOrSetModelState(working, targetKey, state)
-		}
-		delete(working.ModelStates, stateKey)
-		changed = true
-	}
-	if working != nil {
-		if len(working.ModelStates) == 0 {
-			auth.ModelStates = nil
-		} else {
-			auth.ModelStates = working.ModelStates
-		}
-	}
-	return changed
-}
-
-func mergeOrSetModelState(auth *Auth, targetKey string, state *ModelState) {
-	if auth == nil || targetKey == "" || state == nil {
-		return
-	}
-	if auth.ModelStates == nil {
-		auth.ModelStates = make(map[string]*ModelState)
-	}
-	if existingTarget, exists := auth.ModelStates[targetKey]; exists && existingTarget != nil {
-		auth.ModelStates[targetKey] = mergeModelState(existingTarget, state)
-		return
-	}
-	targetLookup := modelStateLookupKey(auth, targetKey)
-	for existingKey, existingState := range auth.ModelStates {
-		if modelStateLookupKey(auth, existingKey) != targetLookup {
-			continue
-		}
-		if existingState != nil {
-			auth.ModelStates[existingKey] = mergeModelState(existingState, state)
-		} else {
-			auth.ModelStates[existingKey] = state.Clone()
-		}
-		return
-	}
-	auth.ModelStates[targetKey] = state.Clone()
-}
-
-func (m *Manager) publishOAuthModelAliasAndReconcileStates(ctx context.Context, table *oauthModelAliasTable) {
-	if m == nil {
-		return
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if table == nil {
-		table = &oauthModelAliasTable{}
-	}
-
-	globalReg := registry.GetGlobalRegistry()
-	type reconciledAuthItem struct {
-		authID          string
-		snapshot        *Auth
-		supportedModels []*registry.ModelInfo
-		regEpoch        uint64
-		changed         bool
-	}
-
-	loadGateAcquired := m.authLoadGate.Acquire(ctx, 1) == nil
-	now := time.Now()
-	cooldownStateChanged := false
-
-	m.mu.Lock()
-	m.oauthModelAlias.Store(table)
-	trackCooldownState := m.cooldownStore != nil
-	items := make([]reconciledAuthItem, 0, len(m.auths))
-	for authID, auth := range m.auths {
-		if auth == nil || authID == "" {
-			continue
-		}
-		var cooldownRecordsBefore []CooldownStateRecord
-		if trackCooldownState {
-			cooldownRecordsBefore = m.cooldownStateRecordsForAuthLocked(auth, now)
-		}
-		supportedModels, regEpoch := globalReg.GetModelsAndEpochForClient(authID)
-		candidateChanged := m.migrateAuthAliasModelStatesLocked(auth, supportedModels, now, false)
-		if candidateChanged {
-			reconcileAggregatedAuthState(auth, now)
-			auth.Generation++
-			auth.UpdatedAt = now
-		}
-		if trackCooldownState {
-			cooldownRecordsAfter := m.cooldownStateRecordsForAuthLocked(auth, now)
-			if candidateChanged || !cooldownStateRecordsEqual(cooldownRecordsBefore, cooldownRecordsAfter) {
-				cooldownStateChanged = true
-			}
-		}
-		snapshot := auth.Clone()
-		if m.scheduler != nil {
-			m.scheduler.upsertAuth(snapshot.Clone())
-		}
-		items = append(items, reconciledAuthItem{
-			authID:          authID,
-			snapshot:        snapshot,
-			supportedModels: supportedModels,
-			regEpoch:        regEpoch,
-			changed:         candidateChanged,
-		})
-	}
-	if len(items) > 0 {
-		m.structuralEpoch.Add(1)
-	}
-	m.mu.Unlock()
-	if loadGateAcquired {
-		m.authLoadGate.Release(1)
-	}
-
-	for _, item := range items {
-		if len(item.supportedModels) > 0 && item.snapshot != nil {
-			projections := make([]registry.ClientModelProjection, 0, len(item.supportedModels))
-			for _, sm := range item.supportedModels {
-				if sm == nil || strings.TrimSpace(sm.ID) == "" {
-					continue
-				}
-				projections = append(projections, m.clientModelProjectionForAuth(item.snapshot, sm.ID, now))
-			}
-			globalReg.ApplyClientModelProjections(item.authID, item.regEpoch, item.snapshot.Generation, projections)
-		}
-		if item.changed {
-			releaseMutation := m.lockAuthMutation(item.authID)
-			m.mu.Lock()
-			if current, ok := m.auths[item.authID]; ok && current != nil {
-				if errPersist := m.persistLocked(context.Background(), current); errPersist != nil {
-					logEntryWithRequestID(ctx).WithField("auth_id", current.ID).Warnf("failed to persist auth changes during alias state reconciliation: %v", errPersist)
-				}
-				postNow := time.Now()
-				if m.migrateAuthAliasModelStatesLocked(current, nil, postNow, false) {
-					reconcileAggregatedAuthState(current, postNow)
-					current.Generation++
-					current.UpdatedAt = postNow
-					if m.scheduler != nil {
-						m.scheduler.upsertAuth(current.Clone())
-					}
-					m.structuralEpoch.Add(1)
-					cooldownStateChanged = true
-				}
-			}
-			m.mu.Unlock()
-			releaseMutation()
-		}
 	}
 	if cooldownStateChanged {
 		m.persistCooldownStates(context.Background())
@@ -833,10 +430,11 @@ func (m *Manager) LookupSessionAffinity(provider, model, sessionID string) (*Aut
 	if m == nil {
 		return nil, "unsupported"
 	}
-	if m.hasPluginScheduler() {
+	m.mu.RLock()
+	if m.pluginScheduler != nil {
+		m.mu.RUnlock()
 		return nil, "unsupported"
 	}
-	m.mu.RLock()
 	sel := m.selector
 	authProviderMap := make(map[string]string, len(m.auths))
 	for id, a := range m.auths {
@@ -918,18 +516,14 @@ func (m *Manager) SetRoundTripperProvider(p RoundTripperProvider) {
 }
 
 func (m *Manager) availableAuthsForRouteModel(auths []*Auth, provider, routeModel string, now time.Time) ([]*Auth, error) {
-	return m.availableAuthsForRouteModelForRequest(nil, auths, provider, routeModel, now, false)
+	return m.availableAuthsForRouteModelWithPriorityMode(auths, provider, routeModel, now, false)
 }
 
 func (m *Manager) availableAuthsForRouteModelAcrossPriorities(auths []*Auth, provider, routeModel string, now time.Time) ([]*Auth, error) {
-	return m.availableAuthsForRouteModelForRequest(nil, auths, provider, routeModel, now, true)
+	return m.availableAuthsForRouteModelWithPriorityMode(auths, provider, routeModel, now, true)
 }
 
 func (m *Manager) availableAuthsForRouteModelWithPriorityMode(auths []*Auth, provider, routeModel string, now time.Time, allPriorities bool) ([]*Auth, error) {
-	return m.availableAuthsForRouteModelForRequest(nil, auths, provider, routeModel, now, allPriorities)
-}
-
-func (m *Manager) availableAuthsForRouteModelForRequest(ctx context.Context, auths []*Auth, provider, routeModel string, now time.Time, allPriorities bool, clientHeaders ...http.Header) ([]*Auth, error) {
 	if len(auths) == 0 {
 		return nil, &Error{Code: "auth_not_found", Message: "no auth candidates"}
 	}
@@ -940,7 +534,7 @@ func (m *Manager) availableAuthsForRouteModelForRequest(ctx context.Context, aut
 	var earliest time.Time
 	for _, candidate := range auths {
 		checkModel := m.selectionModelForAuth(candidate, routeModel)
-		blocked, reason, next := isAuthBlockedForModelForRequest(ctx, candidate, checkModel, now, clientHeaders...)
+		blocked, reason, next := isAuthBlockedForModel(candidate, checkModel, now)
 		if !blocked {
 			priority := authPriority(candidate)
 			availableByPriority[priority] = append(availableByPriority[priority], candidate)
@@ -948,9 +542,10 @@ func (m *Manager) availableAuthsForRouteModelForRequest(ctx context.Context, aut
 		}
 		if reason == blockReasonCooldown {
 			cooldownCount++
-		}
-		if reason != blockReasonDisabled && next.After(now) && (earliest.IsZero() || next.Before(earliest)) {
-			earliest = next
+			if !next.IsZero() && (earliest.IsZero() || next.Before(earliest)) {
+				earliest = next
+			}
+			continue
 		}
 		if hasUnauthorizedAuthFailure(candidate) {
 			unauthorizedCount++
@@ -971,10 +566,7 @@ func (m *Manager) availableAuthsForRouteModelForRequest(ctx context.Context, aut
 			if resetIn < 0 {
 				resetIn = 0
 			}
-			claudeCooldown, claudeSignals := claudeCooldownMetadataForAuths(ctx, auths, func(candidate *Auth) string {
-				return m.selectionModelForAuth(candidate, routeModel)
-			}, now, clientHeaders...)
-			return nil, newModelCooldownErrorForCandidates(routeModel, providerForError, resetIn, lastCandidateErr, claudeCooldown, claudeSignals)
+			return nil, newModelCooldownErrorWithCause(routeModel, providerForError, resetIn, lastCandidateErr)
 		}
 		if unauthorizedCount == len(auths) && len(auths) > 0 {
 			terminalCause := latestUnauthorizedCandidateError(auths)
@@ -988,7 +580,7 @@ func (m *Manager) availableAuthsForRouteModelForRequest(ctx context.Context, aut
 				HTTPStatus: http.StatusServiceUnavailable,
 			}, terminalCause)
 		}
-		return nil, newAuthUnavailableErrorWithCause(earliest, now, lastCandidateErr)
+		return nil, WithCause(&Error{Code: "auth_unavailable", Message: "no auth available"}, lastCandidateErr)
 	}
 
 	return availableAuthsFromPriorityBuckets(availableByPriority, allPriorities), nil
@@ -996,14 +588,14 @@ func (m *Manager) availableAuthsForRouteModelForRequest(ctx context.Context, aut
 
 // availableAuthsForSelector gates new selections before cooldown and tried-ID
 // filtering, while retaining healthy, eligible session bindings across tiers.
-func (m *Manager) availableAuthsForSelector(ctx context.Context, selector Selector, auths []*Auth, provider, routeModel string, now time.Time, schedulerAcross bool, clientHeaders ...http.Header) (priorityAuths, selectorAuths []*Auth, err error) {
+func (m *Manager) availableAuthsForSelector(ctx context.Context, selector Selector, auths []*Auth, provider, routeModel string, now time.Time) (priorityAuths, selectorAuths []*Auth, err error) {
 	_, sessionAffinity := selector.(*SessionAffinitySelector)
-	if UnwrapWeightedRoundRobinSelector(selector) != nil {
+	if isWeightedSelector(selector) {
 		// Exclude zero-weight credentials before priority selection, just as the
 		// scheduler predicate does, including when only a lower tier has weight.
 		auths = positiveWeightAuths(auths)
 	}
-	auths = m.credentialCandidatesForSelection(ctx, auths, routeModel, priorityHealthMetadata(ctx), now, clientHeaders...)
+	auths = m.credentialCandidatesForSelection(ctx, auths, routeModel, priorityHealthMetadata(ctx), now)
 	if sessionAffinity {
 		strictTier := m.priorityHealth != nil && pinnedAuthIDFromMetadata(priorityHealthMetadata(ctx)) == ""
 		if strictTier {
@@ -1011,17 +603,14 @@ func (m *Manager) availableAuthsForSelector(ctx context.Context, selector Select
 		}
 		tier := highestPriorityAuths(auths)
 		tried := priorityHealthTried(ctx)
-		retained, errRetained := m.availableAuthsForRouteModelForRequest(ctx, filterAuthsExcluding(auths, tried), provider, routeModel, now, true, clientHeaders...)
+		retained, errRetained := m.availableAuthsForRouteModelWithPriorityMode(filterAuthsExcluding(auths, tried), provider, routeModel, now, true)
 		selectorAuths = cloneAuthSlice(retained)
 		priorityAuths = highestPriorityAuths(selectorAuths)
 		if strictTier && len(tier) > 0 && (len(priorityAuths) == 0 || authPriority(priorityAuths[0]) != authPriority(tier[0])) {
 			// A ready lower-tier binding can survive a cooling/tried higher tier,
 			// but a new binding must receive the higher tier's original error.
-			_, err = m.availableAuthsForRouteModelForRequest(ctx, filterAuthsExcluding(tier, tried), provider, routeModel, now, true, clientHeaders...)
+			_, err = m.availableAuthsForRouteModelWithPriorityMode(filterAuthsExcluding(tier, tried), provider, routeModel, now, true)
 			return nil, selectorAuths, err
-		}
-		if schedulerAcross && !strictTier {
-			priorityAuths = selectorAuths
 		}
 		return priorityAuths, selectorAuths, errRetained
 	}
@@ -1035,8 +624,8 @@ func (m *Manager) availableAuthsForSelector(ctx context.Context, selector Select
 	if len(auths) == 0 {
 		return nil, nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
-	if m.priorityHealth == nil && !schedulerAcross && !usesAdaptiveSelection(selector) {
-		priorityAuths, err = m.availableAuthsForRouteModelForRequest(ctx, auths, provider, routeModel, now, false, clientHeaders...)
+	if m.priorityHealth == nil && !usesAdaptiveSelection(selector) {
+		priorityAuths, err = m.availableAuthsForRouteModelWithPriorityMode(auths, provider, routeModel, now, false)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1046,24 +635,12 @@ func (m *Manager) availableAuthsForSelector(ctx context.Context, selector Select
 
 	// One availability pass and one clone pass serve both lists: the highest priority tier is a
 	// subset of the across-priority candidates, so it is narrowed from the same cloned auths.
-	allAuths, errAcross := m.availableAuthsForRouteModelForRequest(ctx, auths, provider, routeModel, now, true, clientHeaders...)
-	if errAcross != nil {
-		return nil, nil, errAcross
+	selectorAuths, err = m.availableAuthsForRouteModelAcrossPriorities(auths, provider, routeModel, now)
+	if err != nil {
+		return nil, nil, err
 	}
-	allAuths = cloneAuthSlice(allAuths)
-
-	if schedulerAcross {
-		priorityAuths = allAuths
-	} else {
-		priorityAuths = highestPriorityAuths(allAuths)
-	}
-
-	if usesAdaptiveSelection(selector) {
-		selectorAuths = allAuths
-	} else {
-		selectorAuths = highestPriorityAuths(allAuths)
-	}
-	return priorityAuths, selectorAuths, nil
+	selectorAuths = cloneAuthSlice(selectorAuths)
+	return highestPriorityAuths(selectorAuths), selectorAuths, nil
 }
 
 func selectionArgForSelector(selector Selector, routeModel string) string {
@@ -1091,7 +668,7 @@ func selectorContextForAvailableAuths(ctx context.Context, selector Selector, ro
 	return context.WithValue(ctx, prevalidatedAuthCandidatesKey{}, true)
 }
 
-func (m *Manager) transientlyUnavailableSessionAffinityAuthIDs(ctx context.Context, selector Selector, affinityCandidates []*Auth, routeModel string, now time.Time, clientHeaders ...http.Header) map[string]struct{} {
+func (m *Manager) transientlyUnavailableSessionAffinityAuthIDs(ctx context.Context, selector Selector, affinityCandidates []*Auth, routeModel string, now time.Time) map[string]struct{} {
 	affinity, ok := selector.(*SessionAffinitySelector)
 	if !ok || affinity == nil || (!affinity.rebindOnQuotaOnly && !affinity.rebindOnNever) || len(affinityCandidates) == 0 {
 		return nil
@@ -1107,7 +684,7 @@ func (m *Manager) transientlyUnavailableSessionAffinityAuthIDs(ctx context.Conte
 			continue
 		}
 		checkModel := m.selectionModelForAuth(candidate, routeModel)
-		if !isAuthBlockedByQuotaOrAuthForModelForRequest(ctx, candidate, checkModel, now, clientHeaders...) {
+		if !isAuthBlockedByQuotaOrAuthForModel(candidate, checkModel, now) {
 			if authIDs == nil {
 				authIDs = make(map[string]struct{}, len(affinityCandidates))
 			}
@@ -1125,14 +702,7 @@ func restoreModelCooldownErrorModel(err error, requestedModel string) error {
 	if !errors.As(err, &cooldownErr) || cooldownErr == nil || cooldownErr.model != "" {
 		return err
 	}
-	return newModelCooldownErrorForCandidates(
-		requestedModel,
-		cooldownErr.provider,
-		cooldownErr.resetIn,
-		cooldownErr.cause,
-		cooldownErr.claudeCooldown,
-		cooldownErr.claudeSignals,
-	)
+	return newModelCooldownErrorWithCause(requestedModel, cooldownErr.provider, cooldownErr.resetIn, cooldownErr.cause)
 }
 
 func latestUnauthorizedCandidateError(auths []*Auth) error {
@@ -1176,7 +746,15 @@ func latestCandidateErrorForModel(auths []*Auth, selectionModelFunc func(*Auth) 
 		var modelErr error
 		var modelTime time.Time
 		if len(candidate.ModelStates) > 0 {
-			if state := existingModelState(candidate, checkModel); state != nil {
+			if state, ok := candidate.ModelStates[checkModel]; ok && state != nil {
+				if state.LastError != nil {
+					modelErr = state.LastError
+					modelTime = state.UpdatedAt
+				} else if strings.TrimSpace(state.StatusMessage) != "" {
+					modelErr = errors.New(state.StatusMessage)
+					modelTime = state.UpdatedAt
+				}
+			} else if state, ok := candidate.ModelStates[canonicalModelKey(checkModel)]; ok && state != nil {
 				if state.LastError != nil {
 					modelErr = state.LastError
 					modelTime = state.UpdatedAt
@@ -1370,15 +948,16 @@ func (m *Manager) pickViaBuiltinScheduler(ctx context.Context, strategy schedule
 	providerKey := strings.ToLower(strings.TrimSpace(provider))
 	var selected *Auth
 	var errPick error
-	beforeVer := m.syncedVersion.Load()
 	if providerKey == "mixed" {
 		selected, _, errPick = m.scheduler.pickMixedWithStrategy(ctx, providers, model, opts, tried, strategy)
-		if errPick != nil && model != "" && m.shouldRetrySchedulerPick(errPick, beforeVer) {
+		if errPick != nil && model != "" && shouldRetrySchedulerPick(errPick) {
+			m.syncScheduler()
 			selected, _, errPick = m.scheduler.pickMixedWithStrategy(ctx, providers, model, opts, tried, strategy)
 		}
 	} else {
 		selected, errPick = m.scheduler.pickSingleWithStrategy(ctx, providerKey, model, opts, tried, strategy)
-		if errPick != nil && model != "" && m.shouldRetrySchedulerPick(errPick, beforeVer) {
+		if errPick != nil && model != "" && shouldRetrySchedulerPick(errPick) {
+			m.syncScheduler()
 			selected, errPick = m.scheduler.pickSingleWithStrategy(ctx, providerKey, model, opts, tried, strategy)
 		}
 	}
@@ -1391,80 +970,10 @@ func (m *Manager) pickViaBuiltinScheduler(ctx context.Context, strategy schedule
 	return selected, true, nil
 }
 
-func clearSchedulerSelectionID(meta map[string]any) {
-	if len(meta) == 0 {
-		return
-	}
-	delete(meta, cliproxyexecutor.SelectionIDMetadataKey)
-}
-
-func excludedCandidateIDSet(excluded []string) map[string]struct{} {
-	if len(excluded) == 0 {
-		return nil
-	}
-	set := make(map[string]struct{}, len(excluded))
-	for _, id := range excluded {
-		trimmed := strings.TrimSpace(id)
-		if trimmed == "" {
-			continue
-		}
-		set[trimmed] = struct{}{}
-	}
-	if len(set) == 0 {
-		return nil
-	}
-	return set
-}
-
-func mergeTriedAuthIDs(tried map[string]struct{}, excluded map[string]struct{}) map[string]struct{} {
-	if len(excluded) == 0 {
-		return tried
-	}
-	merged := make(map[string]struct{}, len(tried)+len(excluded))
-	for id := range tried {
-		merged[id] = struct{}{}
-	}
-	for id := range excluded {
-		merged[id] = struct{}{}
-	}
-	return merged
-}
-
-func filterAuthsExcluding(auths []*Auth, excluded map[string]struct{}) []*Auth {
-	if len(auths) == 0 || len(excluded) == 0 {
-		return auths
-	}
-	filtered := make([]*Auth, 0, len(auths))
-	for _, candidate := range auths {
-		if candidate == nil {
-			continue
-		}
-		if _, skip := excluded[candidate.ID]; skip {
-			continue
-		}
-		filtered = append(filtered, candidate)
-	}
-	return filtered
-}
-
-func (m *Manager) pickViaPluginScheduler(ctx context.Context, scheduler PluginScheduler, provider string, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}, candidates []*Auth) (*Auth, bool, map[string]struct{}, error) {
+func (m *Manager) pickViaPluginScheduler(ctx context.Context, scheduler PluginScheduler, provider string, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}, candidates []*Auth) (*Auth, bool, error) {
 	if scheduler == nil || len(candidates) == 0 {
-		clearSchedulerSelectionID(opts.Metadata)
-		return nil, false, nil, nil
+		return nil, false, nil
 	}
-	if state, ok := scheduler.(pluginSchedulerState); ok && !state.HasScheduler() {
-		clearSchedulerSelectionID(opts.Metadata)
-		return nil, false, nil, nil
-	}
-	opts.EnsureMetadata()
-	selectionID := uuid.NewString()
-	opts.Metadata[cliproxyexecutor.SelectionIDMetadataKey] = selectionID
-	keepSelectionID := false
-	defer func() {
-		if !keepSelectionID {
-			clearSchedulerSelectionID(opts.Metadata)
-		}
-	}()
 	providerKey := strings.ToLower(strings.TrimSpace(provider))
 	requestProvider := providerKey
 	if providerKey == "mixed" {
@@ -1480,47 +989,25 @@ func (m *Manager) pickViaPluginScheduler(ctx context.Context, scheduler PluginSc
 	}
 	resp, handled, errPick := scheduler.PickAuth(ctx, req)
 	if errPick != nil {
-		return nil, true, nil, errPick
+		return nil, true, errPick
 	}
-	excluded := excludedCandidateIDSet(resp.ExcludeCandidates)
 	if !handled || !resp.Handled {
-		return nil, false, excluded, nil
-	}
-	if resp.Reject {
-		rejectCode := strings.TrimSpace(resp.RejectCode)
-		if rejectCode == "" {
-			rejectCode = "auth_unavailable"
-		}
-		rejectMessage := strings.TrimSpace(resp.RejectReason)
-		if rejectMessage == "" {
-			rejectMessage = "scheduler rejected candidate selection"
-		}
-		return nil, true, nil, wrapSchedulerRejectError(&Error{Code: rejectCode, Message: rejectMessage})
+		return nil, false, nil
 	}
 	if selected := pickSchedulerAuthByID(candidates, resp.AuthID); selected != nil {
-		keepSelectionID = true
-		return selected, true, nil, nil
+		return selected, true, nil
 	}
 
 	strategy, okStrategy := builtinSchedulerStrategy(resp.DelegateBuiltin)
 	if !okStrategy {
-		return nil, false, nil, nil
+		return nil, false, nil
 	}
-	effectiveTried := mergeTriedAuthIDs(tried, excluded)
-	selected, handledBuiltin, errBuiltin := m.pickViaBuiltinScheduler(ctx, strategy, providerKey, providers, model, opts, effectiveTried)
-	if errBuiltin == nil && handledBuiltin && selected != nil {
-		keepSelectionID = true
-	}
-	return selected, handledBuiltin, excluded, errBuiltin
+	return m.pickViaBuiltinScheduler(ctx, strategy, providerKey, providers, model, opts, tried)
 }
 
 func (m *Manager) authSupportsRouteModel(registryRef *registry.ModelRegistry, auth *Auth, routeModel string) bool {
 	if registryRef == nil || auth == nil {
 		return true
-	}
-	if m.usesPublishedModelRoutes(auth) {
-		route := publishedModelRouteForAuth(registryRef, auth, routeModel)
-		return strings.TrimSpace(routeModel) == "" || route.ID != ""
 	}
 	routeKey := canonicalModelKey(routeModel)
 	if routeKey == "" {
@@ -1530,7 +1017,7 @@ func (m *Manager) authSupportsRouteModel(registryRef *registry.ModelRegistry, au
 		return true
 	}
 	selectionKey := m.selectionModelKeyForAuth(auth, routeModel)
-	return selectionKey != "" && !sameCanonicalModelKey(selectionKey, routeKey) && registryRef.ClientSupportsModel(auth.ID, selectionKey)
+	return selectionKey != "" && selectionKey != routeKey && registryRef.ClientSupportsModel(auth.ID, selectionKey)
 }
 
 func (m *Manager) normalizeProviders(providers []string) []string {
@@ -1571,14 +1058,15 @@ func (m *Manager) AvailableProviders() []string {
 		if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
 			continue
 		}
-		provider := canonicalSchedulingProvider(auth.Provider)
+		provider := strings.ToLower(strings.TrimSpace(auth.Provider))
 		if provider == "" {
 			continue
 		}
-		if _, ok := seen[provider]; !ok {
-			seen[provider] = struct{}{}
-			out = append(out, provider)
+		if _, ok := seen[provider]; ok {
+			continue
 		}
+		seen[provider] = struct{}{}
+		out = append(out, provider)
 	}
 	sort.Strings(out)
 	return out
@@ -1591,8 +1079,8 @@ func (m *Manager) HasProviderAuth(provider string) bool {
 	if m == nil {
 		return false
 	}
-	targetKey := canonicalSchedulingProvider(provider)
-	if targetKey == "" {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "" {
 		return false
 	}
 	m.mu.RLock()
@@ -1601,7 +1089,7 @@ func (m *Manager) HasProviderAuth(provider string) bool {
 		if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
 			continue
 		}
-		if canonicalSchedulingProvider(auth.Provider) == targetKey {
+		if strings.ToLower(strings.TrimSpace(auth.Provider)) == provider {
 			return true
 		}
 	}
@@ -1647,11 +1135,7 @@ func (m *Manager) requestRetryRoundExclusions(retryRound int, defaultRequestRetr
 }
 
 func retryRoundAvailabilityForAuth(auth *Auth, model string, now time.Time) (bool, time.Time) {
-	return retryRoundAvailabilityForAuthForRequest(nil, auth, model, now)
-}
-
-func retryRoundAvailabilityForAuthForRequest(ctx context.Context, auth *Auth, model string, now time.Time, clientHeaders ...http.Header) (bool, time.Time) {
-	blocked, reason, next := isAuthBlockedForModelForRequest(ctx, auth, model, now, clientHeaders...)
+	blocked, reason, next := isAuthBlockedForModel(auth, model, now)
 	if !blocked {
 		return true, time.Time{}
 	}
@@ -1662,11 +1146,11 @@ func retryRoundAvailabilityForAuthForRequest(ctx context.Context, auth *Auth, mo
 		return credentialRetryRoundStateEligible(auth.LastError, true), next
 	}
 
-	modelKey := canonicalModelLookupKey(model)
+	modelKey := canonicalModelKey(model)
 	if modelKey != "" && len(auth.ModelStates) > 0 {
 		matchedBlocked := false
 		for stateModel, state := range auth.ModelStates {
-			if state == nil || modelStateLookupKey(auth, stateModel) != modelKey {
+			if state == nil || canonicalModelKey(stateModel) != modelKey {
 				continue
 			}
 			if state.Status == StatusDisabled {
@@ -1691,49 +1175,6 @@ func retryRoundAvailabilityForAuthForRequest(ctx context.Context, auth *Auth, mo
 	return true, next
 }
 
-// hasLiveQuotaCooldown reports whether a quota deadline still gates the
-// requested model: a credential-wide quota whose deadline is in the future
-// (or unknown) always does, and so does the model's own live quota state.
-// A sibling model's quota and an expired quota marker are history, not a
-// live gate: the just-attempted failure's own deadline governs instead.
-func hasLiveQuotaCooldown(auth *Auth, model string, now time.Time) bool {
-	if auth == nil {
-		return false
-	}
-	quotaLive := func(quota QuotaState) bool {
-		return quota.Exceeded && (quota.NextRecoverAt.IsZero() || quota.NextRecoverAt.After(now))
-	}
-	if auth.Quota.Reason == "credential_quota" && quotaLive(auth.Quota) {
-		return true
-	}
-	modelKey := canonicalModelLookupKey(model)
-	if modelKey == "" {
-		return quotaLive(auth.Quota)
-	}
-	for stateModel, state := range auth.ModelStates {
-		if state == nil {
-			continue
-		}
-		if modelStateLookupKey(auth, stateModel) == modelKey && quotaLive(state.Quota) {
-			return true
-		}
-	}
-	return false
-}
-
-// hasTransientZeroWaitEligibility reports whether the auth's last failure
-// for the model was a transient capacity rejection, which carries no quota
-// wait floor.
-func hasTransientZeroWaitEligibility(auth *Auth, model string) bool {
-	if auth == nil {
-		return false
-	}
-	if state := existingModelState(auth, model); state != nil {
-		return isTransientRateLimitResultError(state.LastError)
-	}
-	return isTransientRateLimitResultError(auth.LastError)
-}
-
 func credentialRetryRoundStateEligible(lastErr *Error, quotaExceeded bool) bool {
 	if lastErr == nil {
 		return quotaExceeded
@@ -1746,10 +1187,6 @@ func (m *Manager) closestCooldownWait(providers []string, model string, attempt 
 }
 
 func (m *Manager) closestCooldownWaitWithAttempted(providers []string, model string, attempt int, eligibility authSelectionEligibility, pinnedAuthID string, defaultRequestRetry int, status int, attempted map[string]struct{}) (time.Duration, bool) {
-	return m.closestCooldownWaitWithAttemptedForRequest(nil, providers, model, attempt, eligibility, pinnedAuthID, defaultRequestRetry, status, attempted)
-}
-
-func (m *Manager) closestCooldownWaitWithAttemptedForRequest(ctx context.Context, providers []string, model string, attempt int, eligibility authSelectionEligibility, pinnedAuthID string, defaultRequestRetry int, status int, attempted map[string]struct{}, clientHeaders ...http.Header) (time.Duration, bool) {
 	if m == nil || len(providers) == 0 {
 		return 0, false
 	}
@@ -1797,7 +1234,7 @@ func (m *Manager) closestCooldownWaitWithAttemptedForRequest(ctx context.Context
 		if strings.TrimSpace(model) != "" {
 			checkModel = m.selectionModelForAuth(auth, model)
 		}
-		retryEligible, next := retryRoundAvailabilityForAuthForRequest(ctx, auth, checkModel, now, clientHeaders...)
+		retryEligible, next := retryRoundAvailabilityForAuth(auth, checkModel, now)
 		if !retryEligible {
 			continue
 		}
@@ -1807,13 +1244,7 @@ func (m *Manager) closestCooldownWaitWithAttemptedForRequest(ctx context.Context
 			_, wasAttempted = attempted[auth.ID]
 		}
 		coolingDisabled := m.cooldownDisabledForAuth(auth)
-		// A transient capacity rejection cools only until its provider hint,
-		// so an attempted credential whose last failure was transient and
-		// which carries no live quota deadline for this model must schedule
-		// by its actual remaining cooldown (including an explicit zero
-		// hint) instead of gaining the quota wait floor.
-		transientZeroWait := !hasLiveQuotaCooldown(auth, checkModel, now) && hasTransientZeroWaitEligibility(auth, checkModel)
-		if !wasAttempted || coolingDisabled || status != http.StatusTooManyRequests || transientZeroWait {
+		if !wasAttempted || coolingDisabled || status != http.StatusTooManyRequests {
 			if next.IsZero() {
 				return 0, true
 			}
@@ -1848,10 +1279,6 @@ func (m *Manager) closestCooldownWaitWithAttemptedForRequest(ctx context.Context
 }
 
 func (m *Manager) retryAllowed(attempt int, providers []string, model string, eligibility authSelectionEligibility, pinnedAuthID string, defaultRequestRetry int) bool {
-	return m.retryAllowedForRequest(nil, attempt, providers, model, eligibility, pinnedAuthID, defaultRequestRetry)
-}
-
-func (m *Manager) retryAllowedForRequest(ctx context.Context, attempt int, providers []string, model string, eligibility authSelectionEligibility, pinnedAuthID string, defaultRequestRetry int, clientHeaders ...http.Header) bool {
 	if m == nil || attempt < 0 || len(providers) == 0 {
 		return false
 	}
@@ -1899,7 +1326,7 @@ func (m *Manager) retryAllowedForRequest(ctx context.Context, attempt int, provi
 		if strings.TrimSpace(model) != "" {
 			checkModel = m.selectionModelForAuth(auth, model)
 		}
-		if retryEligible, _ := retryRoundAvailabilityForAuthForRequest(ctx, auth, checkModel, now, clientHeaders...); retryEligible {
+		if retryEligible, _ := retryRoundAvailabilityForAuth(auth, checkModel, now); retryEligible {
 			return true
 		}
 	}
@@ -1936,7 +1363,7 @@ func (m *Manager) shouldRetryAfterErrorWithAttempted(ctx context.Context, opts c
 	if status == http.StatusOK {
 		return 0, false
 	}
-	if isRequestInvalidError(err) || isRequestStopError(err) || isSchedulerRejectError(err) || isCredentialTerminatedError(err) {
+	if isRequestInvalidError(err) || isRequestStopError(err) {
 		return 0, false
 	}
 	if m.HomeEnabledForMetadata(opts.Metadata) {
@@ -1975,25 +1402,10 @@ func (m *Manager) shouldRetryAfterErrorWithAttempted(ctx context.Context, opts c
 	}
 	eligibility := authSelectionEligibilityForRequest(ctx, opts)
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
-	if affinity, ok := m.Selector().(*SessionAffinitySelector); ok && affinity != nil && affinity.rebindOnNever {
-		var authErr *Error
-		if errors.As(err, &authErr) && authErr != nil && authErr.Code == "session_auth_unavailable" {
-			return 0, false
-		}
-		if boundAuthID, okBound := affinity.boundAuthForRequest(providers, model, opts); okBound {
-			if pinnedAuthID != "" && pinnedAuthID != boundAuthID {
-				return 0, false
-			}
-			if shouldRebindSessionAffinityOnError(resultErrorFromError(err)) {
-				return 0, false
-			}
-			pinnedAuthID = boundAuthID
-		}
-	}
-	if !isRequestRetryRoundError(err) || !m.retryAllowedForRequest(ctx, attempt, providers, model, eligibility, pinnedAuthID, defaultRequestRetry, opts.Headers) {
+	if !isRequestRetryRoundError(err) || !m.retryAllowed(attempt, providers, model, eligibility, pinnedAuthID, defaultRequestRetry) {
 		return 0, false
 	}
-	wait, found := m.closestCooldownWaitWithAttemptedForRequest(ctx, providers, model, attempt, eligibility, pinnedAuthID, defaultRequestRetry, status, attempted, opts.Headers)
+	wait, found := m.closestCooldownWaitWithAttempted(providers, model, attempt, eligibility, pinnedAuthID, defaultRequestRetry, status, attempted)
 	if found {
 		if wait > 0 && (maxWait <= 0 || wait > maxWait) {
 			return 0, false
@@ -2073,9 +1485,6 @@ func isRequestRetryRoundError(err error) bool {
 	if err == nil {
 		return false
 	}
-	if !isCredentialScopedError(err) && strings.EqualFold(strings.TrimSpace(errorCodeFromError(err)), transientTransportErrorCode) {
-		return true
-	}
 	return isCredentialRetryRoundStatus(statusCodeFromError(err)) || isTransientTransportError(err)
 }
 
@@ -2130,19 +1539,6 @@ func (m *Manager) List() []*Auth {
 	return list
 }
 
-// IDsByProvider returns matching credential IDs without cloning unrelated auth state.
-func (m *Manager) IDsByProvider(provider string) []string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	var ids []string
-	for id, auth := range m.auths {
-		if auth.Provider == provider {
-			ids = append(ids, id)
-		}
-	}
-	return ids
-}
-
 // GetByID retrieves an auth entry by its ID.
 func (m *Manager) GetByID(id string) (*Auth, bool) {
 	if id == "" {
@@ -2155,106 +1551,6 @@ func (m *Manager) GetByID(id string) (*Auth, bool) {
 		return nil, false
 	}
 	return auth.Clone(), true
-}
-
-// PublishIfRegistrationCurrent serializes the final model-registration
-// publication against identity mutations for this auth, then calls publish
-// only if the manager still holds auth with the same model-registration
-// inputs. It does not persist or clone auth state. publish must be fast and
-// must not re-enter the manager.
-func (m *Manager) PublishIfRegistrationCurrent(id string, registrationEpoch uint64, prefix, provider string, disabled bool, authKind string, attributes map[string]string, publish func() bool) bool {
-	if m == nil || id == "" || publish == nil {
-		return false
-	}
-	releaseMutation := m.lockAuthMutation(id)
-	defer releaseMutation()
-	m.mu.RLock()
-	current, ok := m.auths[id]
-	matches := ok && current != nil && modelRegistrationInputsMatch(current, registrationEpoch, prefix, provider, disabled, authKind, attributes)
-	m.mu.RUnlock()
-	if !matches {
-		return false
-	}
-	return publish()
-}
-
-// PublishIfRegistrationCurrentContext serializes the final model-registration
-// publication against identity mutations for this auth while honoring ctx
-// cancellation during lock acquisition, then calls publish with a cloned
-// snapshot of the manager's current auth only if the manager still holds auth
-// with the same model-registration inputs. publish must be fast and must not
-// re-enter the manager.
-func (m *Manager) PublishIfRegistrationCurrentContext(ctx context.Context, id string, registrationEpoch uint64, prefix, provider string, disabled bool, authKind string, attributes map[string]string, publish func(current *Auth) bool) bool {
-	if m == nil || id == "" || publish == nil {
-		return false
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if ctx.Err() != nil {
-		return false
-	}
-	releaseMutation, errMutation := m.lockAuthMutationContext(ctx, id)
-	if errMutation != nil {
-		return false
-	}
-	defer releaseMutation()
-	if ctx.Err() != nil {
-		return false
-	}
-	m.mu.RLock()
-	current, ok := m.auths[id]
-	var snapshot *Auth
-	if ok && current != nil && modelRegistrationInputsMatch(current, registrationEpoch, prefix, provider, disabled, authKind, attributes) {
-		snapshot = current.Clone()
-	}
-	m.mu.RUnlock()
-	if snapshot == nil {
-		return false
-	}
-	return publish(snapshot)
-}
-
-// UpdateIfRegistrationCurrent applies a plugin-returned auth update only
-// while the manager still holds the exact registration inputs the plugin
-// computation started from. It prevents an old plugin result from adopting
-// a removed or re-registered identity merely because its zero registration
-// epoch would otherwise inherit the current epoch during Update.
-func (m *Manager) UpdateIfRegistrationCurrent(ctx context.Context, base *Auth, updated *Auth) (*Auth, bool, error) {
-	if m == nil || base == nil || updated == nil || base.ID == "" || updated.ID != base.ID {
-		return nil, false, nil
-	}
-	releaseMutation, errMutation := m.lockAuthMutationContext(ctx, base.ID)
-	if errMutation != nil {
-		return nil, false, errMutation
-	}
-	defer releaseMutation()
-	m.mu.RLock()
-	current, ok := m.auths[base.ID]
-	matches := ok && current != nil && modelRegistrationInputsMatch(current, base.RegistrationEpoch, base.Prefix, base.Provider, base.Disabled || base.Status == StatusDisabled, base.AuthKind(), base.Attributes)
-	m.mu.RUnlock()
-	if !matches {
-		return nil, false, nil
-	}
-	committedAuth, didCommit, persistCooldown, errUpdate := m.updateInternalLocked(ctx, nil, updated, updateModeReplace)
-	releaseMutation()
-	if errUpdate == nil && didCommit && committedAuth != nil {
-		m.finishAuthUpdate(ctx, committedAuth, persistCooldown)
-	}
-	return committedAuth, errUpdate == nil && didCommit && committedAuth != nil, errUpdate
-}
-
-func modelRegistrationInputsMatch(current *Auth, registrationEpoch uint64, prefix, provider string, disabled bool, authKind string, attributes map[string]string) bool {
-	if current == nil {
-		return false
-	}
-	currentDisabled := current.Disabled || current.Status == StatusDisabled
-	return current.RegistrationEpoch == registrationEpoch &&
-		current.Prefix == prefix &&
-		current.Provider == provider &&
-		currentDisabled == disabled &&
-		current.AuthKind() == authKind &&
-		maps.Equal(current.Attributes, attributes)
 }
 
 // GetExecutionSessionAuthByID retrieves a Home runtime auth scoped to an execution session.
@@ -2274,24 +1570,17 @@ func (m *Manager) GetExecutionSessionAuthByID(sessionID string, authID string) (
 	return auth.Clone(), true
 }
 
-func canonicalSchedulingProvider(key string) string {
-	lower := strings.ToLower(strings.TrimSpace(key))
-	switch lower {
-	case "kimi.com":
-		return "kimi"
-	case "kimi.ai":
-		return "kimi-ai"
-	default:
-		return lower
+// Executor returns the registered provider executor for a provider key.
+func (m *Manager) Executor(provider string) (ProviderExecutor, bool) {
+	if m == nil {
+		return nil, false
 	}
-}
-
-func (m *Manager) executorLocked(provider string) (ProviderExecutor, bool) {
 	provider = strings.TrimSpace(provider)
 	if provider == "" {
 		return nil, false
 	}
 
+	m.mu.RLock()
 	executor, okExecutor := m.executors[provider]
 	if !okExecutor {
 		lowerProvider := strings.ToLower(provider)
@@ -2299,26 +1588,12 @@ func (m *Manager) executorLocked(provider string) (ProviderExecutor, bool) {
 			executor, okExecutor = m.executors[lowerProvider]
 		}
 	}
-	if !okExecutor {
-		switch strings.ToLower(provider) {
-		case "kimi-ai", "kimi.ai", "kimi.com":
-			executor, okExecutor = m.executors["kimi"]
-		}
-	}
+	m.mu.RUnlock()
+
 	if !okExecutor || executor == nil {
 		return nil, false
 	}
 	return executor, true
-}
-
-// Executor returns the registered provider executor for a provider key.
-func (m *Manager) Executor(provider string) (ProviderExecutor, bool) {
-	if m == nil {
-		return nil, false
-	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.executorLocked(provider)
 }
 
 // CloseExecutionSession asks all registered executors to release the supplied execution session.
@@ -2366,6 +1641,10 @@ func shouldRetrySchedulerPick(err error) bool {
 	if err == nil {
 		return false
 	}
+	var cooldownErr *modelCooldownError
+	if errors.As(err, &cooldownErr) {
+		return true
+	}
 	var authErr *Error
 	if !errors.As(err, &authErr) || authErr == nil {
 		return false
@@ -2373,119 +1652,32 @@ func shouldRetrySchedulerPick(err error) bool {
 	return authErr.Code == "auth_not_found" || authErr.Code == "auth_unavailable"
 }
 
-func (m *Manager) shouldRetrySchedulerPick(err error, beforeVersion uint64) bool {
-	if m == nil || m.scheduler == nil || err == nil {
-		return false
-	}
-	syncedVer := m.syncedVersion.Load()
-	if syncedVer > beforeVersion {
-		// A concurrent sync completed while this pick was in-flight; allow one bounded retry.
-		return true
-	}
-	currentVer := m.currentVersion()
-	if currentVer == syncedVer {
-		return false
-	}
-	var cooldownErr *modelCooldownError
-	if errors.As(err, &cooldownErr) {
-		return m.checkAndSyncScheduler()
-	}
-	if !shouldRetrySchedulerPick(err) {
-		return false
-	}
-	return m.checkAndSyncScheduler()
-}
-
-func (m *Manager) checkAndSyncScheduler() bool {
-	m.syncSchedulerMu.Lock()
-	defer m.syncSchedulerMu.Unlock()
-	currentVer := m.currentVersion()
-	if currentVer == m.syncedVersion.Load() {
-		// Another goroutine already completed sync for this version; allow retry.
-		return true
-	}
-	if !m.schedulerNeedsSync() {
-		m.advanceSyncedVersion(currentVer)
-		return true
-	}
-	m.syncSchedulerFromSnapshot(m.snapshotAuths())
-	if !m.schedulerNeedsSync() {
-		m.advanceSyncedVersion(currentVer)
-	}
-	return true
-}
-
-func (m *Manager) schedulerNeedsSync() bool {
-	if m == nil || m.scheduler == nil {
-		return false
-	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.scheduler.needsSyncFromMap(m.auths)
-}
-
-func (m *Manager) advanceSyncedVersion(version uint64) {
-	for {
-		cur := m.syncedVersion.Load()
-		if cur >= version || m.syncedVersion.CompareAndSwap(cur, version) {
-			break
-		}
-	}
-}
-
 func (m *Manager) routeAwareSelectionRequired(auth *Auth, routeModel string) bool {
 	if auth == nil || strings.TrimSpace(routeModel) == "" {
 		return false
 	}
-	if m.usesPublishedModelRoutes(auth) {
-		if isCopilotAuth(auth) {
-			// Copilot's suffix validation and exact plugin routes require per-credential selection.
-			return true
-		}
-		registryRef := registry.GetGlobalRegistry()
-		route := publishedModelRouteForAuth(registryRef, auth, routeModel)
-		if route.ID == "" {
-			// An exact route with a suffix can still put this credential in the base-model shard.
-			return slices.ContainsFunc(registryRef.GetModelsForClient(auth.ID), func(model *registry.ModelInfo) bool {
-				return model != nil && sameCanonicalModelKey(model.ID, routeModel)
-			})
-		}
-		if route.SourceModelID != "" {
-			// The base-model shard can handle routes whose public and state keys agree.
-			return thinking.ParseSuffix(route.ID).HasSuffix || !sameCanonicalModelKey(route.SourceModelID, routeModel)
-		}
-	}
-	return !sameCanonicalModelKey(m.selectionModelForAuth(auth, routeModel), routeModel)
-}
-
-func requestAwareCredSelectionRequired(ctx context.Context, auth *Auth, clientHeaders ...http.Header) bool {
-	if auth == nil || !IsCodexUseSIWC(auth) {
-		return false
-	}
-	return !IsCodexUseSIWCForRequest(ctx, auth, clientHeaders...)
+	return m.selectionModelKeyForAuth(auth, routeModel) != canonicalModelKey(routeModel)
 }
 
 func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
 	if m.HomeEnabledForMetadata(opts.Metadata) {
-		clearSchedulerSelectionID(opts.Metadata)
 		auth, exec, _, err := m.pickNextViaHome(ctx, model, opts, tried)
 		return auth, exec, err
 	}
 
 	opts.EnsureMetadata()
-	clearSchedulerSelectionID(opts.Metadata)
 	opts.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey] = provider
 	ctx = withPriorityHealthMetadata(ctx, opts.Metadata)
 	ctx = withPriorityHealthTried(ctx, tried)
 
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
 	eligibility := authSelectionEligibilityForRequest(ctx, opts)
-	pluginScheduler, schedulerAcross := m.snapshotPluginScheduler()
 
 	m.mu.RLock()
 	selector := m.selector
 	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = selectionArgForSelector(selector, model)
-	executor, okExecutor := m.executorLocked(provider)
+	pluginScheduler := m.pluginScheduler
+	executor, okExecutor := m.executors[provider]
 	if !okExecutor {
 		m.mu.RUnlock()
 		return nil, nil, &Error{Code: "executor_not_found", Message: "executor not registered"}
@@ -2500,27 +1692,17 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		}
 	}
 	registryRef := registry.GetGlobalRegistry()
-	targetKey := canonicalSchedulingProvider(provider)
 	affinitySelector, hasAffinity := selector.(*SessionAffinitySelector)
-	trackTransientAffinity := hasAffinity && affinitySelector != nil && (affinitySelector.rebindOnQuotaOnly || affinitySelector.rebindOnNever)
-	_, weighted := selector.(*WeightedRoundRobinSelector)
-	if hasAffinity && affinitySelector != nil {
-		_, weighted = affinitySelector.fallback.(*WeightedRoundRobinSelector)
-	}
-	trackPinnedAccounting := pinnedAuthID != "" && weighted
-	var accountingCandidates, affinityCandidates []*Auth
-	if trackTransientAffinity {
-		affinityCandidates = make([]*Auth, 0, len(m.auths))
-	}
+	var affinityCandidates []*Auth
 	for _, candidate := range m.auths {
-		if isAuthDisabled(candidate) || canonicalSchedulingProvider(executorKeyFromAuth(candidate)) != targetKey {
+		if candidate == nil || executorKeyFromAuth(candidate) != provider || candidate.Disabled {
 			continue
 		}
 		candidate, allowedByGroup := m.credentialGroupCandidate(candidate, opts.Metadata)
 		if !allowedByGroup {
 			continue
 		}
-		if !trackPinnedAccounting && !trackTransientAffinity && pinnedAuthID != "" && candidate.ID != pinnedAuthID {
+		if !hasAffinity && pinnedAuthID != "" && candidate.ID != pinnedAuthID {
 			continue
 		}
 		if !eligibility.allows(candidate) {
@@ -2529,12 +1711,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		if modelKey != "" && !m.authSupportsRouteModel(registryRef, candidate, model) {
 			continue
 		}
-		_, used := tried[candidate.ID]
-		// Pinning restricts selection, not the eligible pool used for accounting.
-		if trackPinnedAccounting && !used {
-			accountingCandidates = append(accountingCandidates, candidate)
-		}
-		if trackTransientAffinity {
+		if hasAffinity {
 			affinityCandidates = append(affinityCandidates, candidate)
 		}
 		if pinnedAuthID != "" && candidate.ID != pinnedAuthID {
@@ -2542,89 +1719,35 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		}
 		candidates = append(candidates, candidate)
 	}
-	canInspectUnavailableAffinity := hasAffinity && affinitySelector != nil && affinitySelector.rebindOnNever && pluginScheduler == nil
-	if len(candidates) == 0 && !canInspectUnavailableAffinity {
+	if len(candidates) == 0 && !(hasAffinity && affinitySelector.rebindOnNever && pluginScheduler == nil) {
 		m.mu.RUnlock()
 		return nil, nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
 	now := time.Now()
-	var (
-		available     []*Auth
-		selectorAuths []*Auth
-		errAvailable  error
-	)
-	if len(candidates) > 0 {
-		available, selectorAuths, errAvailable = m.availableAuthsForSelector(ctx, selector, candidates, provider, model, now, schedulerAcross, opts.Headers)
-		if errAvailable != nil && !canInspectUnavailableAffinity && !(hasAffinity && pluginScheduler == nil && len(selectorAuths) > 0) {
-			m.mu.RUnlock()
-			m.warnLogAuthUnavailable(ctx, []string{provider}, model, opts, tried, errAvailable)
-			return nil, nil, errAvailable
-		}
+	available, selectorAuths, errAvailable := m.availableAuthsForSelector(ctx, selector, candidates, provider, model, now)
+	if errAvailable != nil && !(hasAffinity && pluginScheduler == nil && (affinitySelector.rebindOnNever || len(selectorAuths) > 0)) {
+		m.mu.RUnlock()
+		m.warnLogAuthUnavailable(ctx, []string{provider}, model, opts, tried, errAvailable)
+		return nil, nil, errAvailable
 	}
-	var accountingAuths []*Auth
-	if trackPinnedAccounting && len(candidates) > 0 && errAvailable == nil {
-		fullAvailable, _, errAccounting := m.availableAuthsForSelector(ctx, selector, accountingCandidates, provider, model, now, true, opts.Headers)
-		if errAccounting != nil {
-			m.mu.RUnlock()
-			return nil, nil, errAccounting
-		}
-		accountingAuths = fullAvailable
-	}
-	transientAuthIDs := m.transientlyUnavailableSessionAffinityAuthIDs(ctx, selector, affinityCandidates, model, now, opts.Headers)
+	transientAuthIDs := m.transientlyUnavailableSessionAffinityAuthIDs(ctx, selector, affinityCandidates, model, now)
 	m.mu.RUnlock()
 
-	selected, handled, excluded, errPick := m.pickViaPluginScheduler(ctx, pluginScheduler, provider, []string{provider}, model, opts, tried, available)
-	effectiveTried := mergeTriedAuthIDs(tried, excluded)
+	selected, handled, errPick := m.pickViaPluginScheduler(ctx, pluginScheduler, provider, []string{provider}, model, opts, tried, available)
 	if errPick != nil {
-		m.warnLogAuthUnavailable(ctx, []string{provider}, model, opts, effectiveTried, errPick)
+		m.warnLogAuthUnavailable(ctx, []string{provider}, model, opts, tried, errPick)
 		return nil, nil, errPick
 	}
 	if !handled {
-		if len(excluded) > 0 {
-			ctx = withPriorityHealthTried(ctx, effectiveTried)
-			if len(candidates) == 0 {
-				return nil, nil, &Error{Code: "auth_not_found", Message: "no auth available"}
-			}
-			now = time.Now()
-			m.mu.RLock()
-			available, selectorAuths, errAvailable = m.availableAuthsForSelector(ctx, selector, candidates, provider, model, now, schedulerAcross, opts.Headers)
-			if errAvailable != nil && !(hasAffinity && len(selectorAuths) > 0) {
-				m.mu.RUnlock()
-				m.warnLogAuthUnavailable(ctx, []string{provider}, model, opts, effectiveTried, errAvailable)
-				return nil, nil, errAvailable
-			}
-			if trackPinnedAccounting {
-				fullAvailable, _, errAccounting := m.availableAuthsForSelector(ctx, selector, accountingCandidates, provider, model, now, true, opts.Headers)
-				if errAccounting != nil {
-					m.mu.RUnlock()
-					return nil, nil, errAccounting
-				}
-				accountingAuths = fullAvailable
-			} else {
-				accountingAuths = nil
-			}
-			transientAuthIDs = m.transientlyUnavailableSessionAffinityAuthIDs(ctx, selector, affinityCandidates, model, now, opts.Headers)
-			m.mu.RUnlock()
-		}
 		selectorCtx := selectorContextForAvailableAuths(ctx, selector, model)
 		selectorCtx = withSessionAffinityTransientAuthIDs(selectorCtx, transientAuthIDs)
 		selectorCtx = withSessionAffinityFallbackPool(selectorCtx, selector, highestPriorityAuths(available), affinityCandidates, errAvailable)
-		if accountingAuths != nil {
-			selectorCtx = context.WithValue(selectorCtx, weightedAccountingPoolKey{}, accountingAuths)
-		}
 		selected, errPick = selector.Pick(selectorCtx, provider, selectionArgForSelector(selector, model), opts, selectorAuths)
 		if errPick != nil {
-			if isAuthNotFoundError(errPick) {
-				if errAvailable != nil {
-					errPick = errAvailable
-				} else if len(candidates) == 0 {
-					errPick = &Error{Code: "auth_not_found", Message: "no auth available"}
-				}
-			}
 			if isBuiltInSelector(selector) {
 				errPick = restoreModelCooldownErrorModel(errPick, model)
 			}
-			m.warnLogAuthUnavailable(ctx, []string{provider}, model, opts, effectiveTried, errPick)
+			m.warnLogAuthUnavailable(ctx, []string{provider}, model, opts, tried, errPick)
 			return nil, nil, errPick
 		}
 	}
@@ -2646,31 +1769,17 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 // SelectAuth selects one credential through the configured scheduling strategy.
 // It does not execute or alter the selected credential's result state.
 func (m *Manager) SelectAuth(ctx context.Context, provider, model string, opts cliproxyexecutor.Options) (*Auth, error) {
-	return m.SelectAuthExcluding(ctx, provider, model, opts, nil)
-}
-
-// SelectAuthExcluding selects one credential through the configured scheduling strategy
-// while excluding any credential IDs present in tried.
-func (m *Manager) SelectAuthExcluding(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, error) {
-	if m != nil && m.HomeEnabled() {
+	if m != nil && m.HomeEnabledForMetadata(opts.Metadata) {
 		return nil, &Error{Code: "home_unavailable", Message: "legacy auth selection is unavailable while Home is enabled", HTTPStatus: http.StatusServiceUnavailable}
 	}
-	selected, _, errPick := m.pickNextLegacy(ctx, provider, model, opts, tried)
+	selected, _, errPick := m.pickNextLegacy(ctx, provider, model, opts, nil)
 	if errPick != nil {
-		return nil, unwrapExecutionBoundaryError(errPick)
+		return nil, errPick
 	}
-	if m.HomeEnabled() {
+	if m.HomeEnabledForMetadata(opts.Metadata) {
 		return nil, &Error{Code: "home_unavailable", Message: "legacy auth selection is unavailable while Home is enabled", HTTPStatus: http.StatusServiceUnavailable}
 	}
 	return selected, nil
-}
-
-// MaxRetryCredentials returns the configured per-request credential retry cap (0 means unlimited).
-func (m *Manager) MaxRetryCredentials() int {
-	if m == nil {
-		return 0
-	}
-	return int(m.maxRetryCredentials.Load())
 }
 
 // SelectAuthByKind selects one credential of the required kind through the
@@ -2687,12 +1796,12 @@ func (m *Manager) SelectAuthByKind(ctx context.Context, provider, model, require
 	selectionCtx := withRequiredAuthKind(ctx, requiredKind)
 	selected, _, errPick := m.pickNextLegacy(selectionCtx, provider, model, opts, nil)
 	if errPick != nil {
-		return nil, unwrapExecutionBoundaryError(errPick)
+		return nil, errPick
 	}
 	if selected == nil {
 		return nil, &Error{Code: "auth_not_found", Message: "selector returned no auth"}
 	}
-	if m.HomeEnabled() {
+	if m.HomeEnabledForMetadata(opts.Metadata) {
 		return nil, &Error{Code: "home_unavailable", Message: "legacy auth selection is unavailable while Home is enabled", HTTPStatus: http.StatusServiceUnavailable}
 	}
 	return selected, nil
@@ -2700,7 +1809,7 @@ func (m *Manager) SelectAuthByKind(ctx context.Context, provider, model, require
 
 // SelectAuthWithCredentialPolicy selects one local credential allowed by a fixed policy.
 func (m *Manager) SelectAuthWithCredentialPolicy(ctx context.Context, provider, model, policy string, opts cliproxyexecutor.Options) (*Auth, error) {
-	if m != nil && m.HomeEnabled() {
+	if m != nil && m.HomeEnabledForMetadata(opts.Metadata) {
 		return nil, &Error{Code: "home_unavailable", Message: "legacy auth selection is unavailable while Home is enabled", HTTPStatus: http.StatusServiceUnavailable}
 	}
 	policy = normalizeCredentialPolicy(policy)
@@ -2713,12 +1822,12 @@ func (m *Manager) SelectAuthWithCredentialPolicy(ctx context.Context, provider, 
 	selectionCtx := withCredentialPolicy(ctx, policy)
 	selected, _, errPick := m.pickNextLegacy(selectionCtx, provider, model, opts, nil)
 	if errPick != nil {
-		return nil, unwrapExecutionBoundaryError(errPick)
+		return nil, errPick
 	}
 	if selected == nil || !credentialPolicyAllows(policy, selected) {
 		return nil, &Error{Code: "auth_not_found", Message: "selector returned no eligible auth"}
 	}
-	if m.HomeEnabled() {
+	if m.HomeEnabledForMetadata(opts.Metadata) {
 		return nil, &Error{Code: "home_unavailable", Message: "legacy auth selection is unavailable while Home is enabled", HTTPStatus: http.StatusServiceUnavailable}
 	}
 	return selected, nil
@@ -2824,7 +1933,6 @@ func (m *Manager) SelectHomeAuthByKind(ctx context.Context, provider string, mod
 
 func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
 	opts.EnsureMetadata()
-	clearSchedulerSelectionID(opts.Metadata)
 	if m.HomeEnabledForMetadata(opts.Metadata) {
 		auth, exec, _, err := m.pickNextViaHome(ctx, model, opts, tried)
 		return auth, exec, err
@@ -2841,11 +1949,10 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 		return m.pickNextLegacy(ctx, provider, model, opts, tried)
 	}
 	eligibility := authSelectionEligibilityForRequest(ctx, opts)
-	targetKey := canonicalSchedulingProvider(provider)
-	if strings.TrimSpace(model) != "" || targetKey == "codex" {
+	if strings.TrimSpace(model) != "" {
 		m.mu.RLock()
 		for _, candidate := range m.auths {
-			if isAuthDisabled(candidate) || canonicalSchedulingProvider(executorKeyFromAuth(candidate)) != targetKey {
+			if candidate == nil || executorKeyFromAuth(candidate) != provider || candidate.Disabled {
 				continue
 			}
 			if !eligibility.allows(candidate) {
@@ -2854,7 +1961,7 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 			if _, used := tried[candidate.ID]; used {
 				continue
 			}
-			if m.routeAwareSelectionRequired(candidate, model) || requestAwareCredSelectionRequired(ctx, candidate, opts.Headers) {
+			if m.routeAwareSelectionRequired(candidate, model) {
 				m.mu.RUnlock()
 				return m.pickNextLegacy(ctx, provider, model, opts, tried)
 			}
@@ -2865,9 +1972,9 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 	if !okExecutor {
 		return nil, nil, &Error{Code: "executor_not_found", Message: "executor not registered"}
 	}
-	beforeVer := m.syncedVersion.Load()
 	selected, errPick := m.scheduler.pickSingle(ctx, provider, model, opts, tried)
-	if errPick != nil && model != "" && m.shouldRetrySchedulerPick(errPick, beforeVer) {
+	if errPick != nil && model != "" && shouldRetrySchedulerPick(errPick) {
+		m.syncScheduler()
 		selected, errPick = m.scheduler.pickSingle(ctx, provider, model, opts, tried)
 	}
 	if errPick != nil {
@@ -2897,7 +2004,7 @@ func (m *Manager) mixedAuthCandidatesLocked(ctx context.Context, providerSet map
 	candidates := make([]*Auth, 0, len(m.auths))
 	registryRef := registry.GetGlobalRegistry()
 	for _, candidate := range m.auths {
-		if isAuthDisabled(candidate) {
+		if candidate == nil || candidate.Disabled {
 			continue
 		}
 		candidate, allowedByGroup := m.credentialGroupCandidate(candidate, opts.Metadata)
@@ -2910,14 +2017,14 @@ func (m *Manager) mixedAuthCandidatesLocked(ctx context.Context, providerSet map
 		if !eligibility.allows(candidate) {
 			continue
 		}
-		providerKey := canonicalSchedulingProvider(executorKeyFromAuth(candidate))
+		providerKey := executorKeyFromAuth(candidate)
 		if _, ok := providerSet[providerKey]; !ok {
 			continue
 		}
 		if _, used := tried[candidate.ID]; used {
 			continue
 		}
-		if _, ok := m.executorLocked(providerKey); !ok {
+		if _, ok := m.executors[providerKey]; !ok {
 			continue
 		}
 		if !m.authSupportsRouteModel(registryRef, candidate, model) {
@@ -2957,100 +2064,42 @@ func (m *Manager) CanReuseSessionAuth(ctx context.Context, authID string, provid
 	if m.priorityHealth != nil && !m.priorityHealth.viable(candidate, model, opts.Metadata, now) {
 		return false
 	}
-	blocked, _, _ := isAuthBlockedForModelForRequest(ctx, candidate, m.selectionModelForAuth(candidate, model), now, opts.Headers)
+	blocked, _, _ := isAuthBlockedForModel(candidate, m.selectionModelForAuth(candidate, model), now)
 	return !blocked
 }
 
-// HasAlternativeTargetForModel reports whether at least one eligible credential
-// other than excludedAuthID can serve model across providers.
+// HasAlternativeTargetForModel reports whether an eligible target can replace the
+// excluded credential without bypassing authorization or the priority health gate.
 func (m *Manager) HasAlternativeTargetForModel(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, excludedAuthID string) bool {
-	if m == nil {
+	if m == nil || m.HomeEnabledForMetadata(opts.Metadata) {
 		return false
 	}
-	excludedAuthID = strings.TrimSpace(excludedAuthID)
-	opts = ensureRequestedModelMetadata(opts, model)
-	if m.HomeEnabledForMetadata(opts.Metadata) {
-		return m.hasAlternativeHomeTargetForModel(ctx, model, opts, excludedAuthID)
+	providerSet := make(map[string]struct{}, len(providers))
+	for _, provider := range normalizeProviderKeys(providers) {
+		providerSet[provider] = struct{}{}
 	}
-	normalized := m.normalizeProviders(providers)
-	providerSet := make(map[string]struct{}, len(normalized))
-	for _, provider := range normalized {
-		p := canonicalSchedulingProvider(provider)
-		if p == "" {
-			continue
-		}
-		if _, ok := m.Executor(p); !ok {
-			continue
-		}
-		providerSet[p] = struct{}{}
-	}
-	if len(providerSet) == 0 {
-		return false
-	}
-	eligibility := authSelectionEligibilityForRequest(ctx, opts)
-	modelKey := canonicalModelKey(model)
-	registryRef := registry.GetGlobalRegistry()
-
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	candidates := make([]*Auth, 0, len(m.auths))
-	for _, candidate := range m.auths {
-		if isAuthDisabled(candidate) {
-			continue
-		}
-		candidate, allowedByGroup := m.credentialGroupCandidate(candidate, opts.Metadata)
-		if !allowedByGroup {
-			continue
-		}
-		candidateID := strings.TrimSpace(candidate.ID)
-		if candidateID == "" {
-			continue
-		}
-		if !eligibility.allows(candidate) {
-			continue
-		}
-		providerKey := canonicalSchedulingProvider(executorKeyFromAuth(candidate))
-		if providerKey == "" {
-			continue
-		}
-		if _, ok := providerSet[providerKey]; !ok {
-			continue
-		}
-		if _, ok := m.executorLocked(providerKey); !ok {
-			continue
-		}
-		if modelKey != "" && !m.authSupportsRouteModel(registryRef, candidate, model) {
-			continue
-		}
-		candidates = append(candidates, candidate)
-	}
-	if len(candidates) == 0 {
-		return false
-	}
+	candidates := m.mixedAuthCandidatesLocked(ctx, providerSet, model, opts, nil)
 	ctx = withPriorityHealthMetadata(ctx, opts.Metadata)
 	ctx = withPriorityHealthTried(ctx, map[string]struct{}{excludedAuthID: {}})
-	available, _, errAvailable := m.availableAuthsForSelector(ctx, m.selector, candidates, "mixed", model, time.Now(), false, opts.Headers)
-	return errAvailable == nil && len(available) > 0
+	available, _, err := m.availableAuthsForSelector(ctx, m.selector, candidates, "mixed", model, time.Now())
+	return err == nil && len(available) > 0
 }
 
 func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, string, error) {
 	if m.HomeEnabledForMetadata(opts.Metadata) {
-		clearSchedulerSelectionID(opts.Metadata)
 		return m.pickNextViaHome(ctx, model, opts, tried)
 	}
 
 	opts.EnsureMetadata()
-	clearSchedulerSelectionID(opts.Metadata)
 	opts.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey] = "mixed"
 	ctx = withPriorityHealthMetadata(ctx, opts.Metadata)
 	ctx = withPriorityHealthTried(ctx, tried)
 
-	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
-	eligibility := authSelectionEligibilityForRequest(ctx, opts)
-
 	providerSet := make(map[string]struct{}, len(providers))
 	for _, provider := range providers {
-		p := canonicalSchedulingProvider(provider)
+		p := strings.TrimSpace(strings.ToLower(provider))
 		if p == "" {
 			continue
 		}
@@ -3059,180 +2108,59 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	if len(providerSet) == 0 {
 		return nil, nil, "", &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
-	pluginScheduler, schedulerAcross := m.snapshotPluginScheduler()
 
 	m.mu.RLock()
 	selector := m.selector
 	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = selectionArgForSelector(selector, model)
-	candidates := make([]*Auth, 0, len(m.auths))
-	modelKey := strings.TrimSpace(model)
-	// Always use base model name (without thinking suffix) for auth matching.
-	if modelKey != "" {
-		parsed := thinking.ParseSuffix(modelKey)
-		if parsed.ModelName != "" {
-			modelKey = strings.TrimSpace(parsed.ModelName)
-		}
-	}
-	registryRef := registry.GetGlobalRegistry()
+	pluginScheduler := m.pluginScheduler
 	affinitySelector, hasAffinity := selector.(*SessionAffinitySelector)
-	trackTransientAffinity := hasAffinity && affinitySelector != nil && (affinitySelector.rebindOnQuotaOnly || affinitySelector.rebindOnNever)
-	_, weighted := selector.(*WeightedRoundRobinSelector)
-	if hasAffinity && affinitySelector != nil {
-		_, weighted = affinitySelector.fallback.(*WeightedRoundRobinSelector)
+	candidates := m.mixedAuthCandidatesLocked(ctx, providerSet, model, opts, nil)
+	affinityCandidates := candidates
+	if hasAffinity && pinnedAuthIDFromMetadata(opts.Metadata) != "" {
+		affinityOpts := opts
+		affinityOpts.Metadata = make(map[string]any, len(opts.Metadata))
+		for key, value := range opts.Metadata {
+			affinityOpts.Metadata[key] = value
+		}
+		delete(affinityOpts.Metadata, cliproxyexecutor.PinnedAuthMetadataKey)
+		affinityCandidates = m.mixedAuthCandidatesLocked(ctx, providerSet, model, affinityOpts, nil)
 	}
-	trackPinnedAccounting := pinnedAuthID != "" && weighted
-	var accountingCandidates, affinityCandidates []*Auth
-	if trackTransientAffinity {
-		affinityCandidates = make([]*Auth, 0, len(m.auths))
-	}
-	for _, candidate := range m.auths {
-		if isAuthDisabled(candidate) {
-			continue
-		}
-		candidate, allowedByGroup := m.credentialGroupCandidate(candidate, opts.Metadata)
-		if !allowedByGroup {
-			continue
-		}
-		if !trackPinnedAccounting && !trackTransientAffinity && pinnedAuthID != "" && candidate.ID != pinnedAuthID {
-			continue
-		}
-		if !eligibility.allows(candidate) {
-			continue
-		}
-		providerKey := canonicalSchedulingProvider(executorKeyFromAuth(candidate))
-		if providerKey == "" {
-			continue
-		}
-		if _, ok := providerSet[providerKey]; !ok {
-			continue
-		}
-		if _, ok := m.executorLocked(providerKey); !ok {
-			continue
-		}
-		if modelKey != "" && !m.authSupportsRouteModel(registryRef, candidate, model) {
-			continue
-		}
-		_, used := tried[candidate.ID]
-		// Pinning restricts selection, not the eligible pool used for accounting.
-		if trackPinnedAccounting && !used {
-			accountingCandidates = append(accountingCandidates, candidate)
-		}
-		if trackTransientAffinity {
-			affinityCandidates = append(affinityCandidates, candidate)
-		}
-		if pinnedAuthID != "" && candidate.ID != pinnedAuthID {
-			continue
-		}
-		candidates = append(candidates, candidate)
-	}
-	canInspectUnavailableAffinity := hasAffinity && affinitySelector != nil && affinitySelector.rebindOnNever && pluginScheduler == nil
-	if len(candidates) == 0 && !canInspectUnavailableAffinity {
+	if len(candidates) == 0 && !(hasAffinity && affinitySelector.rebindOnNever && pluginScheduler == nil) {
 		m.mu.RUnlock()
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
 	now := time.Now()
-	var (
-		available     []*Auth
-		selectorAuths []*Auth
-		errAvailable  error
-	)
-	if len(candidates) > 0 {
-		available, selectorAuths, errAvailable = m.availableAuthsForSelector(ctx, selector, candidates, "mixed", model, now, schedulerAcross, opts.Headers)
-		if errAvailable != nil && !canInspectUnavailableAffinity && !(hasAffinity && pluginScheduler == nil && len(selectorAuths) > 0) {
-			m.mu.RUnlock()
-			m.warnLogAuthUnavailable(ctx, providers, model, opts, tried, errAvailable)
-			return nil, nil, "", errAvailable
-		}
+	available, selectorAuths, errAvailable := m.availableAuthsForSelector(ctx, selector, candidates, "mixed", model, now)
+	transientAuthIDs := m.transientlyUnavailableSessionAffinityAuthIDs(ctx, selector, affinityCandidates, model, now)
+	if errAvailable != nil && !(hasAffinity && pluginScheduler == nil && (affinitySelector.rebindOnNever || len(selectorAuths) > 0)) {
+		m.mu.RUnlock()
+		m.warnLogAuthUnavailable(ctx, providers, model, opts, tried, errAvailable)
+		return nil, nil, "", errAvailable
 	}
-	var accountingAuths []*Auth
-	if trackPinnedAccounting && len(candidates) > 0 && errAvailable == nil {
-		fullAvailable, _, errAccounting := m.availableAuthsForSelector(ctx, selector, accountingCandidates, "mixed", model, now, true, opts.Headers)
-		if errAccounting != nil {
-			m.mu.RUnlock()
-			return nil, nil, "", errAccounting
-		}
-		accountingAuths = fullAvailable
-	}
-	transientAuthIDs := m.transientlyUnavailableSessionAffinityAuthIDs(ctx, selector, affinityCandidates, model, now, opts.Headers)
 	m.mu.RUnlock()
 
-	selected, handled, excluded, errPick := m.pickViaPluginScheduler(ctx, pluginScheduler, "mixed", providers, model, opts, tried, available)
-	effectiveTried := mergeTriedAuthIDs(tried, excluded)
+	selected, handled, errPick := m.pickViaPluginScheduler(ctx, pluginScheduler, "mixed", providers, model, opts, tried, available)
 	if errPick != nil {
-		m.warnLogAuthUnavailable(ctx, providers, model, opts, effectiveTried, errPick)
+		m.warnLogAuthUnavailable(ctx, providers, model, opts, tried, errPick)
 		return nil, nil, "", errPick
 	}
 	if !handled {
-		if len(excluded) > 0 {
-			ctx = withPriorityHealthTried(ctx, effectiveTried)
-			if len(candidates) == 0 {
-				return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
-			}
-			now = time.Now()
-			m.mu.RLock()
-			available, selectorAuths, errAvailable = m.availableAuthsForSelector(ctx, selector, candidates, "mixed", model, now, schedulerAcross, opts.Headers)
-			if errAvailable != nil && !(hasAffinity && len(selectorAuths) > 0) {
-				m.mu.RUnlock()
-				m.warnLogAuthUnavailable(ctx, providers, model, opts, effectiveTried, errAvailable)
-				return nil, nil, "", errAvailable
-			}
-			if trackPinnedAccounting {
-				fullAvailable, _, errAccounting := m.availableAuthsForSelector(ctx, selector, accountingCandidates, "mixed", model, now, true, opts.Headers)
-				if errAccounting != nil {
-					m.mu.RUnlock()
-					return nil, nil, "", errAccounting
-				}
-				accountingAuths = fullAvailable
-			} else {
-				accountingAuths = nil
-			}
-			transientAuthIDs = m.transientlyUnavailableSessionAffinityAuthIDs(ctx, selector, affinityCandidates, model, now, opts.Headers)
-			m.mu.RUnlock()
-		}
 		selectorCtx := selectorContextForAvailableAuths(ctx, selector, model)
 		selectorCtx = withSessionAffinityTransientAuthIDs(selectorCtx, transientAuthIDs)
 		selectorCtx = withSessionAffinityFallbackPool(selectorCtx, selector, highestPriorityAuths(available), affinityCandidates, errAvailable)
-		if accountingAuths != nil {
-			selectorCtx = context.WithValue(selectorCtx, weightedAccountingPoolKey{}, accountingAuths)
-		}
-		if _, bareWeighted := selector.(*WeightedRoundRobinSelector); bareWeighted {
-			// Match the scheduler's single-provider transport preference after
-			// excluding providers without an executor.
-			singleProvider := ""
-			for providerKey := range providerSet {
-				if _, okExecutor := m.Executor(providerKey); !okExecutor {
-					continue
-				}
-				if singleProvider != "" {
-					singleProvider = ""
-					break
-				}
-				singleProvider = providerKey
-			}
-			if singleProvider != "" {
-				selectorCtx = context.WithValue(selectorCtx, weightedTransportProviderKey{}, singleProvider)
-			}
-		}
 		selected, errPick = selector.Pick(selectorCtx, "mixed", selectionArgForSelector(selector, model), opts, selectorAuths)
 		if errPick != nil {
-			if isAuthNotFoundError(errPick) {
-				if errAvailable != nil {
-					errPick = errAvailable
-				} else if len(candidates) == 0 {
-					errPick = &Error{Code: "auth_not_found", Message: "no auth available"}
-				}
-			}
 			if isBuiltInSelector(selector) {
 				errPick = restoreModelCooldownErrorModel(errPick, model)
 			}
-			m.warnLogAuthUnavailable(ctx, providers, model, opts, effectiveTried, errPick)
+			m.warnLogAuthUnavailable(ctx, providers, model, opts, tried, errPick)
 			return nil, nil, "", errPick
 		}
 	}
 	if selected == nil {
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "selector returned no auth"}
 	}
-	providerKey := canonicalSchedulingProvider(executorKeyFromAuth(selected))
+	providerKey := executorKeyFromAuth(selected)
 	executor, okExecutor := m.Executor(providerKey)
 	if !okExecutor {
 		return nil, nil, "", &Error{Code: "executor_not_found", Message: "executor not registered"}
@@ -3251,7 +2179,6 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 
 func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, string, error) {
 	opts.EnsureMetadata()
-	clearSchedulerSelectionID(opts.Metadata)
 	if m.HomeEnabledForMetadata(opts.Metadata) {
 		return m.pickNextViaHome(ctx, model, opts, tried)
 	}
@@ -3270,7 +2197,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 	eligibleProviders := make([]string, 0, len(providers))
 	seenProviders := make(map[string]struct{}, len(providers))
 	for _, provider := range providers {
-		providerKey := canonicalSchedulingProvider(provider)
+		providerKey := strings.TrimSpace(strings.ToLower(provider))
 		if providerKey == "" {
 			continue
 		}
@@ -3287,18 +2214,17 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
 	eligibility := authSelectionEligibilityForRequest(ctx, opts)
-	providerSet := make(map[string]struct{}, len(eligibleProviders))
-	for _, providerKey := range eligibleProviders {
-		providerSet[providerKey] = struct{}{}
-	}
-	_, hasCodex := providerSet["codex"]
-	if strings.TrimSpace(model) != "" || hasCodex {
+	if strings.TrimSpace(model) != "" {
+		providerSet := make(map[string]struct{}, len(eligibleProviders))
+		for _, providerKey := range eligibleProviders {
+			providerSet[providerKey] = struct{}{}
+		}
 		m.mu.RLock()
 		for _, candidate := range m.auths {
-			if isAuthDisabled(candidate) {
+			if candidate == nil || candidate.Disabled {
 				continue
 			}
-			if _, ok := providerSet[canonicalSchedulingProvider(executorKeyFromAuth(candidate))]; !ok {
+			if _, ok := providerSet[executorKeyFromAuth(candidate)]; !ok {
 				continue
 			}
 			if !eligibility.allows(candidate) {
@@ -3307,7 +2233,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 			if _, used := tried[candidate.ID]; used {
 				continue
 			}
-			if m.routeAwareSelectionRequired(candidate, model) || requestAwareCredSelectionRequired(ctx, candidate, opts.Headers) {
+			if m.routeAwareSelectionRequired(candidate, model) {
 				m.mu.RUnlock()
 				return m.pickNextMixedLegacy(ctx, providers, model, opts, tried)
 			}
@@ -3315,9 +2241,9 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 		m.mu.RUnlock()
 	}
 
-	beforeVer := m.syncedVersion.Load()
 	selected, providerKey, errPick := m.scheduler.pickMixed(ctx, eligibleProviders, model, opts, tried)
-	if errPick != nil && model != "" && m.shouldRetrySchedulerPick(errPick, beforeVer) {
+	if errPick != nil && model != "" && shouldRetrySchedulerPick(errPick) {
+		m.syncScheduler()
 		selected, providerKey, errPick = m.scheduler.pickMixed(ctx, eligibleProviders, model, opts, tried)
 	}
 	if errPick != nil {
@@ -3343,14 +2269,6 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 	return authCopy, executor, providerKey, nil
 }
 
-func isAuthNotFoundError(err error) bool {
-	if err == nil {
-		return false
-	}
-	var authErr *Error
-	return errors.As(err, &authErr) && authErr != nil && authErr.Code == "auth_not_found"
-}
-
 func isAuthUnavailableError(err error) bool {
 	if err == nil {
 		return false
@@ -3373,7 +2291,9 @@ func authCoolingSummary(auth *Auth, model string, next time.Time, now time.Time)
 	ident := formatAuthIdentity(auth, auth.Provider)
 	reason := ""
 	if model != "" && len(auth.ModelStates) > 0 {
-		if state := existingModelState(auth, model); state != nil {
+		if state, ok := auth.ModelStates[model]; ok && state != nil {
+			reason = cooldownReason(state.StatusMessage, state.Quota, state.LastError)
+		} else if state, ok := auth.ModelStates[canonicalModelKey(model)]; ok && state != nil {
 			reason = cooldownReason(state.StatusMessage, state.Quota, state.LastError)
 		}
 	}
@@ -3390,144 +2310,6 @@ func authCoolingSummary(auth *Auth, model string, next time.Time, now time.Time)
 	return fmt.Sprintf("[%s, reason=%s, remaining=%s]", ident, reason, remaining)
 }
 
-func selectorExcludesZeroWeight(selector Selector) bool {
-	if _, weighted := selector.(*WeightedRoundRobinSelector); weighted {
-		return true
-	}
-	if affinity, ok := selector.(*SessionAffinitySelector); ok && affinity != nil {
-		_, weighted := affinity.fallback.(*WeightedRoundRobinSelector)
-		return weighted
-	}
-	return false
-}
-
-// earliestPoolCooldownForModelAt scans the model's candidate credentials with
-// the same filters selection uses. It reports:
-//   - earliest: the earliest active timed cooldown recovery instant
-//   - hasUnblocked: true when at least one eligible candidate is still available
-//   - ok: true when no candidate is available and at least one is in a timed cooldown
-func (m *Manager) earliestPoolCooldownForModelAt(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, now time.Time) (earliest time.Time, hasUnblocked bool, ok bool) {
-	if m == nil {
-		return time.Time{}, false, false
-	}
-	excludeZeroWeight := selectorExcludesZeroWeight(m.Selector())
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	eligibility := authSelectionEligibilityForRequest(ctx, opts)
-	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
-	providerSet := make(map[string]struct{}, len(providers))
-	for _, p := range providers {
-		if norm := canonicalSchedulingProvider(p); norm != "" && norm != "mixed" {
-			providerSet[norm] = struct{}{}
-		}
-	}
-	registryRef := registry.GetGlobalRegistry()
-	trimmedModel := strings.TrimSpace(model)
-
-	totalCandidates := 0
-	cooling := 0
-	for _, candidate := range m.auths {
-		if isAuthDisabled(candidate) {
-			continue
-		}
-		if excludeZeroWeight && authWeight(candidate) <= 0 {
-			continue
-		}
-		rawProvider := executorKeyFromAuth(candidate)
-		providerKey := canonicalSchedulingProvider(rawProvider)
-		if providerKey == "" {
-			continue
-		}
-		if len(providerSet) > 0 {
-			if _, match := providerSet[providerKey]; !match {
-				continue
-			}
-		}
-		if _, hasExec := m.executorLocked(rawProvider); !hasExec {
-			if _, hasNormExec := m.executorLocked(providerKey); !hasNormExec {
-				continue
-			}
-		}
-		if pinnedAuthID != "" && candidate.ID != pinnedAuthID {
-			continue
-		}
-		if !eligibility.allows(candidate) {
-			continue
-		}
-		if trimmedModel != "" && !m.authSupportsRouteModel(registryRef, candidate, model) {
-			continue
-		}
-		totalCandidates++
-		checkModel := m.selectionModelForAuth(candidate, model)
-		blocked, reason, next := isAuthBlockedForModelForRequest(ctx, candidate, checkModel, now, opts.Headers)
-		if !blocked {
-			return time.Time{}, true, false
-		}
-		if reason == blockReasonCooldown {
-			cooling++
-		}
-		// Count every timed auto-recovery toward the pool's earliest reset,
-		// including transient non-cooldown blocks (e.g. a short capacity 429),
-		// matching how selection computes the earliest availability.
-		if reason != blockReasonDisabled && !next.IsZero() && next.After(now) {
-			if earliest.IsZero() || next.Before(earliest) {
-				earliest = next
-			}
-		}
-	}
-	if totalCandidates > 0 && cooling > 0 && !earliest.IsZero() {
-		return earliest, false, true
-	}
-	return time.Time{}, false, false
-}
-
-func observeSelectionCooldownDeadline(dst *time.Time, err error, now time.Time) {
-	if dst == nil || err == nil {
-		return
-	}
-	var cooldown *modelCooldownError
-	if !errors.As(err, &cooldown) || cooldown == nil || cooldown.resetIn <= 0 {
-		return
-	}
-	candidate := now.Add(cooldown.resetIn)
-	if dst.IsZero() || candidate.Before(*dst) {
-		*dst = candidate
-	}
-}
-
-func (m *Manager) annotatePoolCooldownTerminalError(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, lastErr error, selectionCooldownDeadline time.Time) error {
-	return m.annotatePoolCooldownTerminalErrorAt(ctx, providers, model, opts, lastErr, selectionCooldownDeadline, time.Now())
-}
-
-func (m *Manager) annotatePoolCooldownTerminalErrorAt(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, lastErr error, selectionCooldownDeadline time.Time, now time.Time) error {
-	if m == nil || lastErr == nil {
-		return lastErr
-	}
-	if statusCodeFromError(lastErr) != http.StatusTooManyRequests {
-		return lastErr
-	}
-	var marker interface{ IsModelCooldown() bool }
-	if errors.As(lastErr, &marker) && marker != nil && marker.IsModelCooldown() {
-		return lastErr
-	}
-	var existing *poolCooldownTerminalError
-	if errors.As(lastErr, &existing) && existing != nil {
-		return lastErr
-	}
-	deadline, hasUnblocked, ok := m.earliestPoolCooldownForModelAt(ctx, providers, model, opts, now)
-	if hasUnblocked {
-		return lastErr
-	}
-	if !ok && !selectionCooldownDeadline.IsZero() && selectionCooldownDeadline.After(now) {
-		deadline = selectionCooldownDeadline
-		ok = true
-	}
-	if !ok {
-		return lastErr
-	}
-	return &poolCooldownTerminalError{cause: lastErr, deadline: deadline}
-}
-
 func (m *Manager) warnLogAuthUnavailable(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}, err error) {
 	if m == nil || err == nil || !isAuthUnavailableError(err) {
 		return
@@ -3539,7 +2321,7 @@ func (m *Manager) warnLogAuthUnavailable(ctx context.Context, providers []string
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
 	providerSet := make(map[string]struct{}, len(providers))
 	for _, p := range providers {
-		if norm := canonicalSchedulingProvider(p); norm != "" && norm != "mixed" {
+		if norm := strings.TrimSpace(strings.ToLower(p)); norm != "" && norm != "mixed" {
 			providerSet[norm] = struct{}{}
 		}
 	}
@@ -3548,19 +2330,16 @@ func (m *Manager) warnLogAuthUnavailable(ctx context.Context, providers []string
 	coolingSummaries := make([]string, 0)
 	totalCandidates := 0
 	for _, candidate := range m.auths {
-		if isAuthDisabled(candidate) {
+		if candidate == nil || candidate.Disabled {
 			continue
 		}
-		providerKey := canonicalSchedulingProvider(executorKeyFromAuth(candidate))
-		if providerKey == "" {
-			continue
-		}
+		providerKey := executorKeyFromAuth(candidate)
 		if len(providerSet) > 0 {
 			if _, ok := providerSet[providerKey]; !ok {
 				continue
 			}
 		}
-		if _, ok := m.executorLocked(providerKey); !ok {
+		if _, ok := m.executors[providerKey]; !ok {
 			continue
 		}
 		if pinnedAuthID != "" && candidate.ID != pinnedAuthID {
@@ -3579,7 +2358,7 @@ func (m *Manager) warnLogAuthUnavailable(ctx context.Context, providers []string
 		}
 		totalCandidates++
 		checkModel := m.selectionModelForAuth(candidate, model)
-		blocked, reason, next := isAuthBlockedForModelForRequest(ctx, candidate, checkModel, now, opts.Headers)
+		blocked, reason, next := isAuthBlockedForModel(candidate, checkModel, now)
 		if blocked && reason == blockReasonCooldown {
 			coolingSummaries = append(coolingSummaries, authCoolingSummary(candidate, checkModel, next, now))
 		}

@@ -3,12 +3,11 @@ package logging
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"strings"
 	"time"
 
-	"github.com/MoeForge/moego/json"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/home"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 )
 
 type homeRequestLogClient interface {
@@ -92,17 +91,16 @@ type homeStreamingLogWriter struct {
 	chunkChan chan []byte
 	doneChan  chan struct{}
 
-	responseStatus    int
-	statusWritten     bool
-	responseHeaders   map[string][]string
-	responseBody      bytes.Buffer
-	apiRequest        []byte
-	apiResponse       []byte
-	apiWebsocketTime  []byte
-	apiResponseErrors []*interfaces.ErrorMessage
-	requestID         string
-	apiResponseTS     time.Time
-	firstChunkTS      time.Time
+	responseStatus   int
+	statusWritten    bool
+	responseHeaders  map[string][]string
+	responseBody     bytes.Buffer
+	apiRequest       []byte
+	apiResponse      []byte
+	apiWebsocketTime []byte
+	requestID        string
+	apiResponseTS    time.Time
+	firstChunkTS     time.Time
 }
 
 func newHomeStreamingLogWriter(url, method string, headers map[string][]string, body []byte, requestID string) *homeStreamingLogWriter {
@@ -189,14 +187,6 @@ func (w *homeStreamingLogWriter) WriteAPIWebsocketTimeline(apiWebsocketTimeline 
 	return nil
 }
 
-func (w *homeStreamingLogWriter) WriteAPIResponseErrors(errors []*interfaces.ErrorMessage) error {
-	if w == nil || len(errors) == 0 {
-		return nil
-	}
-	w.apiResponseErrors = append([]*interfaces.ErrorMessage(nil), errors...)
-	return nil
-}
-
 func (w *homeStreamingLogWriter) SetFirstChunkTimestamp(timestamp time.Time) {
 	if w == nil {
 		return
@@ -224,7 +214,6 @@ func (w *homeStreamingLogWriter) Close() error {
 	}
 
 	responsePayload := w.responseBody.Bytes()
-	apiErrors, diagnostics := splitResponseDiagnostics(w.apiResponseErrors)
 
 	var buf bytes.Buffer
 	upstreamTransport := inferUpstreamTransport(w.apiRequest, nil, w.apiResponse, nil, w.apiWebsocketTime, nil, nil)
@@ -237,13 +226,10 @@ func (w *homeStreamingLogWriter) Close() error {
 	if errWrite := writeAPISection(&buf, "=== API REQUEST ===\n", "=== API REQUEST", w.apiRequest, time.Time{}); errWrite != nil {
 		return errWrite
 	}
-	if errWrite := writeAPIErrorResponses(&buf, apiErrors); errWrite != nil {
-		return errWrite
-	}
 	if errWrite := writeAPISection(&buf, "=== API RESPONSE ===\n", "=== API RESPONSE", w.apiResponse, w.apiResponseTS); errWrite != nil {
 		return errWrite
 	}
-	if errWrite := writeResponseSection(&buf, w.responseStatus, w.statusWritten, w.responseHeaders, bytes.NewReader(responsePayload), nil, false, diagnostics); errWrite != nil {
+	if errWrite := writeResponseSection(&buf, w.responseStatus, w.statusWritten, w.responseHeaders, bytes.NewReader(responsePayload), nil, false); errWrite != nil {
 		return errWrite
 	}
 
@@ -257,16 +243,4 @@ func (w *homeStreamingLogWriter) Close() error {
 		return errMarshal
 	}
 	return client.RPushRequestLog(context.Background(), raw)
-}
-
-func (w *homeStreamingLogWriter) Discard() error {
-	if w == nil {
-		return nil
-	}
-	if w.chunkChan != nil {
-		close(w.chunkChan)
-		<-w.doneChan
-		w.chunkChan = nil
-	}
-	return nil
 }

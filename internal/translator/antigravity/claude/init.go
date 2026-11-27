@@ -1,34 +1,20 @@
 package claude
 
 import (
-	"context"
-
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/cache"
-	. "github.com/router-for-me/CLIProxyAPI/v8/internal/constant"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/translator/translator"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/translator/translator"
 )
 
 func init() {
 	translator.Register(
 		Claude,
 		Antigravity,
-		nil,
+		ConvertClaudeRequestToAntigravity,
 		interfaces.TranslateResponse{
 			Stream:     ConvertAntigravityResponseToClaude,
 			NonStream:  ConvertAntigravityResponseToClaudeNonStream,
 			TokenCount: ClaudeTokenCount,
 		},
 	)
-	sdktranslator.RegisterRequestEnvelope(sdktranslator.FormatClaude, sdktranslator.FormatAntigravity, convertClaudeRequestEnvelopeToAntigravity)
-}
-
-func convertClaudeRequestEnvelopeToAntigravity(ctx context.Context, req sdktranslator.RequestEnvelope) sdktranslator.RequestEnvelope {
-	var webSearch *bool
-	if req.ModelInfo != nil && req.ModelInfo.NativeCapabilities != nil {
-		webSearch = req.ModelInfo.NativeCapabilities.WebSearch
-	}
-	req.Body, req.Err = convertClaudeRequestToAntigravityWithWebSearchContext(cache.RequireSignatureCacheScope(ctx), req.Model, req.Body, req.Stream, webSearch)
-	return req
 }

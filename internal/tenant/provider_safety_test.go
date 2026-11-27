@@ -2,7 +2,7 @@ package tenant
 
 import (
 	"context"
-	"github.com/MoeForge/moego/json"
+	"encoding/json"
 	"path/filepath"
 	"sync"
 	"testing"

@@ -14,15 +14,11 @@ type clientRequestMetadataKey struct{}
 
 // ClientRequestMetadata stores immutable downstream request metadata for asynchronous consumers.
 type ClientRequestMetadata struct {
-	ClientIP         string
-	ResolvedClientIP string
-	XForwardedFor    string
-	UserAgent        string
-	SessionID        string
-	ParentSessionID  string
-	NodeKind         string
-	IsFork           bool
-	IsCompaction     bool
+	ClientIP        string
+	XForwardedFor   string
+	UserAgent       string
+	SessionID       string
+	ParentSessionID string
 }
 
 type responseStatusHolder struct {

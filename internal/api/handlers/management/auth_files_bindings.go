@@ -3,7 +3,7 @@ package management
 import (
 	"strings"
 
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
 // authIndicesForPath resolves every auth index backed by an auth file so client-access

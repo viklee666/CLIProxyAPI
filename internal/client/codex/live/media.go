@@ -1,5 +1,3 @@
-//go:build !solaris
-
 package live
 
 import (
@@ -15,8 +13,8 @@ import (
 	"github.com/pion/interceptor"
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/proxyutil"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/net/proxy"
 )
@@ -35,12 +33,36 @@ var opusCodec = webrtc.RTPCodecCapability{
 	SDPFmtpLine: "minptime=10;useinbandfec=1",
 }
 
+type mediaRelaySession interface {
+	AcceptUpstreamAnswer(context.Context, string) (string, error)
+	SetCallID(string)
+	SetCloseHandler(func(string))
+	Close() error
+	CloseWithReason(string) error
+}
+
+type mediaRelayFactory interface {
+	NewSession(context.Context, string, mediaSessionRoute) (mediaRelaySession, string, error)
+}
+
+type mediaSessionRoute struct {
+	proxyURL   string
+	credential string
+	authIndex  string
+}
+
 type pionMediaRelay struct {
 	downstreamAPI    *webrtc.API
 	upstreamAPI      *webrtc.API
 	proxyUpstreamAPI *webrtc.API
 	configuration    webrtc.Configuration
 	limiter          *mediaSessionLimiter
+}
+
+type mediaSessionLimiter struct {
+	mu     sync.Mutex
+	limit  int
+	active int
 }
 
 type pionMediaSession struct {
@@ -98,7 +120,11 @@ type dataChannelBridge struct {
 	upstream     *webrtc.DataChannel
 }
 
-func newMediaRelay(relayConfig config.CodexLiveMediaRelayConfig, limiter *mediaSessionLimiter) (mediaRelayFactory, error) {
+func newPionMediaRelay(relayConfig config.CodexLiveMediaRelayConfig) (*pionMediaRelay, error) {
+	return newPionMediaRelayWithLimiter(relayConfig, &mediaSessionLimiter{})
+}
+
+func newPionMediaRelayWithLimiter(relayConfig config.CodexLiveMediaRelayConfig, limiter *mediaSessionLimiter) (*pionMediaRelay, error) {
 	if errValidate := relayConfig.Validate(); errValidate != nil {
 		return nil, errValidate
 	}

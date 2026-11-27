@@ -4,10 +4,7 @@
 // thinking configurations across various AI providers (Claude, Gemini, OpenAI, Codex, Antigravity, Kimi, xAI).
 package thinking
 
-import (
-	"github.com/MoeForge/moego/ojson"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-)
+import "github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 
 // ThinkingMode represents the type of thinking configuration mode.
 type ThinkingMode int
@@ -57,7 +54,8 @@ const (
 	LevelHigh ThinkingLevel = "high"
 	// LevelXHigh sets extra-high thinking effort
 	LevelXHigh ThinkingLevel = "xhigh"
-	// LevelMax sets maximum thinking effort on models that support it.
+	// LevelMax sets maximum thinking effort.
+	// This is currently used by Claude 4.6 adaptive thinking (opus supports "max").
 	LevelMax ThinkingLevel = "max"
 )
 
@@ -118,11 +116,4 @@ type ProviderApplier interface {
 	//   - Modified request body JSON
 	//   - ThinkingError if the configuration is invalid or unsupported
 	Apply(body []byte, config ThinkingConfig, modelInfo *registry.ModelInfo) ([]byte, error)
-}
-
-// ProviderDocApplier extends ProviderApplier to mutate an *ojson.Doc in place
-// without intermediate byte-slice serialization.
-type ProviderDocApplier interface {
-	ProviderApplier
-	ApplyDoc(doc *ojson.Doc, config ThinkingConfig, modelInfo *registry.ModelInfo) error
 }

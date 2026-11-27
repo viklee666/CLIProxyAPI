@@ -10,11 +10,11 @@ import (
 	"github.com/MoeForge/moego/json"
 	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 )
 
 type pelicanTestExecutor struct {
@@ -197,9 +197,11 @@ func TestPelicanAnswerRejectsIncompleteAndExtractsOnlyOutputText(t *testing.T) {
 		answer   string
 		wantErr  bool
 	}{
-		{"incomplete", coreexecutor.Response{Incomplete: true}, "", true},
+		{"incomplete", coreexecutor.Response{Incomplete: true, Payload: []byte(`{"choices":[{"finish_reason":"stop","message":{"content":"partial answer"}}]}`)}, "", true},
 		{"malformed", coreexecutor.Response{Payload: []byte(`{"choices":[`)}, "", true},
 		{"truncated", coreexecutor.Response{Payload: []byte(`{"choices":[{"finish_reason":"length","message":{"content":"partial"}}]}`)}, "", true},
+		{"content filtered", coreexecutor.Response{Payload: []byte(`{"choices":[{"finish_reason":"content_filter","message":{"content":"partial"}}]}`)}, "", true},
+		{"tool only", coreexecutor.Response{Payload: []byte(`{"choices":[{"finish_reason":"tool_calls","message":{"content":"not a final answer"}}]}`)}, "", true},
 		{"empty", coreexecutor.Response{Payload: []byte(`{"choices":[{"message":{"content":""}}]}`)}, "", true},
 		{"reasoning only", coreexecutor.Response{Payload: []byte(`{"choices":[{"message":{"reasoning_content":"not final"}}]}`)}, "", true},
 		{"text parts", coreexecutor.Response{Payload: []byte(`{"choices":[{"message":{"content":[{"type":"text","text":"<svg>"},{"type":"thinking","text":"private"},{"type":"text","text":"</svg>"}]}}]}`)}, "<svg></svg>", false},
@@ -213,12 +215,37 @@ func TestPelicanAnswerRejectsIncompleteAndExtractsOnlyOutputText(t *testing.T) {
 	}
 }
 
+func TestPelicanV8RejectsIncompleteArtifact(t *testing.T) {
+	router, executor, auths := setupPelicanTest(t)
+	// Translation can produce finish_reason=stop for an unknown native incomplete
+	// reason, so the executor's pretranslation completeness marker is authoritative.
+	executor.response.Incomplete = true
+	response := callPelican(t, router, pelicanRequest{AuthID: auths[0].ID, Model: "pelican-model", Prompt: "draw"})
+	if response.Code != http.StatusBadGateway || ojson.Get(response.Body.String(), "answer").Exists() || ojson.Get(response.Body.String(), "error").String() != "test generation was incomplete" {
+		t.Fatalf("incomplete artifact was exposed: status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestPelicanV8UpstreamUnauthorizedDoesNotInvalidateManagementSession(t *testing.T) {
 	router, executor, auths := setupPelicanTest(t)
 	executor.err = &coreauth.Error{HTTPStatus: http.StatusUnauthorized, Message: "upstream credential rejected"}
 	response := callPelican(t, router, pelicanRequest{AuthIndex: auths[0].Index, Model: "pelican-model", Prompt: "Draw a pelican.", Effort: "medium"})
 	if response.Code != http.StatusBadGateway || ojson.Get(response.Body.String(), "upstream_status").Int() != http.StatusUnauthorized {
 		t.Fatalf("target error confused with management authentication: status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestPelicanV8FailureDoesNotExposeCredentialDiagnostics(t *testing.T) {
+	router, executor, auths := setupPelicanTest(t)
+	executor.err = &coreauth.Error{HTTPStatus: http.StatusBadGateway, Message: `request failed https://oauth.example/callback?code=secret-code&state=secret-state access_token=secret-token Bearer secret-bearer`}
+	response := callPelican(t, router, pelicanRequest{AuthID: auths[0].ID, Model: "pelican-model", Prompt: "draw"})
+	if response.Code != http.StatusBadGateway || ojson.Get(response.Body.String(), "error").String() == "" {
+		t.Fatalf("unexpected failure response: status=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, secret := range []string{"oauth.example", "secret-code", "secret-state", "secret-token", "secret-bearer"} {
+		if strings.Contains(response.Body.String(), secret) {
+			t.Fatalf("credential diagnostic exposed %q: %s", secret, response.Body.String())
+		}
 	}
 }
 

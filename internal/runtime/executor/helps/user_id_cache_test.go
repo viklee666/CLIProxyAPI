@@ -2,11 +2,10 @@ package helps
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
-
-	"github.com/MoeForge/moego/json"
 )
 
 func resetUserIDCache() {

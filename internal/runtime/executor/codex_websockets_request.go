@@ -6,30 +6,18 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	"github.com/tidwall/gjson"
 )
-
-func (e *CodexWebsocketsExecutor) prepareSessionInstructions(ctx context.Context, doc *ojson.Doc, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, sess *codexWebsocketSession, wsURL string, useSIWC bool) (helps.CodexInstructionTurn, error) {
-	if sess == nil || opts.SourceFormat != sdktranslator.FormatOpenAIResponse {
-		return helps.PrepareCodexSessionInstructions(ctx, doc, req, opts, nil, nil, false)
-	}
-	authID := ""
-	if auth != nil {
-		authID = auth.ID
-	}
-	conn, _ := existingWebsocketSessionConn(sess, authID, wsURL, executionProxyURL(ctx, sess.effectiveConfig(authID, e.cfg), auth), useSIWC)
-	return helps.PrepareCodexSessionInstructions(ctx, doc, req, opts, &sess.sessionInstructions, conn, false)
-}
 
 func applyCodexPromptCacheHeaders(from sdktranslator.Format, req cliproxyexecutor.Request, rawJSON []byte) ([]byte, http.Header) {
 	body, headers, _ := applyCodexPromptCacheHeadersWithContext(context.Background(), from, req, rawJSON)
@@ -41,19 +29,6 @@ func applyCodexPromptCacheHeadersWithContext(ctx context.Context, from sdktransl
 	if len(rawJSON) == 0 {
 		return rawJSON, headers, nil
 	}
-	doc := ojson.NewDoc(rawJSON)
-	headers, changed, err := applyCodexPromptCacheHeadersWithContextDoc(ctx, from, req, doc, headerSets...)
-	if err != nil || !changed {
-		return rawJSON, headers, err
-	}
-	return doc.Bytes(), headers, nil
-}
-
-func applyCodexPromptCacheHeadersWithContextDoc(ctx context.Context, from sdktranslator.Format, req cliproxyexecutor.Request, doc *ojson.Doc, headerSets ...http.Header) (http.Header, bool, error) {
-	headers := http.Header{}
-	if doc == nil || doc.Len() == 0 {
-		return headers, false, nil
-	}
 
 	var requestHeaders http.Header
 	if len(headerSets) > 0 {
@@ -61,34 +36,33 @@ func applyCodexPromptCacheHeadersWithContextDoc(ctx context.Context, from sdktra
 	}
 	var cache helps.CodexCache
 	if sourceFormatEqual(from, sdktranslator.FormatClaude) {
-		modelName := strings.TrimSpace(doc.Get("model").String())
+		modelName := strings.TrimSpace(gjson.GetBytes(rawJSON, "model").String())
 		if modelName == "" {
 			modelName = thinking.ParseSuffix(req.Model).ModelName
 		}
 		cached, ok, errCache := helps.ClaudeCodePromptCache(ctx, modelName, req.Payload, requestHeaders)
 		if errCache != nil {
-			return nil, false, errCache
+			return nil, nil, errCache
 		}
 		if ok {
 			cache = cached
 		}
 	} else if sourceFormatEqual(from, sdktranslator.FormatOpenAIResponse) {
-		if promptCacheKey := ojson.GetBytesNoCopy(req.Payload, "prompt_cache_key"); promptCacheKey.Exists() {
-			cache.ID = strings.Clone(promptCacheKey.String())
+		if promptCacheKey := gjson.GetBytes(req.Payload, "prompt_cache_key"); promptCacheKey.Exists() {
+			cache.ID = promptCacheKey.String()
 		}
 	}
 	if cache.ID == "" {
 		cache.ID = helps.ProviderSessionUUID("codex", req.Metadata)
 	}
 
-	changed := false
 	if cache.ID != "" {
-		changed = helps.SetStringIfDifferentDoc(doc, "prompt_cache_key", cache.ID)
+		rawJSON = helps.SetStringIfDifferent(rawJSON, "prompt_cache_key", cache.ID)
 		setHeaderCasePreserved(headers, "session_id", cache.ID)
 		headers.Set("Conversation_id", cache.ID)
 	}
 
-	return headers, changed, nil
+	return rawJSON, headers, nil
 }
 
 // applyCodexWebsocketHeaders fails closed for Agent Identity credentials. The assertion
@@ -98,8 +72,8 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 	if headers == nil {
 		headers = http.Header{}
 	}
-	if cliproxyauth.IsAgentIdentityAuth(auth) {
-		if _, errAssertion := helps.GenerateAgentAssertion(auth); errAssertion != nil {
+	if isAgentIdentityAuth(auth) {
+		if _, errAssertion := generateAgentAssertion(auth); errAssertion != nil {
 			return nil, fmt.Errorf("codex websocket executor: generate agent assertion: %w", errAssertion)
 		}
 		headers.Del("Authorization")
@@ -114,32 +88,6 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 		ginHeaders = clientHeaders[0].Clone()
 	} else if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
 		ginHeaders = ginCtx.Request.Header.Clone()
-	}
-
-	if codexUseSIWCForRequest(ctx, auth, clientHeaders...) {
-		deleteHeaderCaseInsensitive(headers, "conversation_id")
-		ensureCodexWebsocketSessionHeader(headers, ginHeaders, "")
-		if sessionID := codexSessionHeaderValue(headers); sessionID != "" {
-			headers.Set("X-Client-Request-Id", sessionID)
-		} else {
-			misc.EnsureHeader(headers, ginHeaders, "X-Client-Request-Id", "")
-		}
-		headers.Set("User-Agent", codexSIWCUserAgent(cfg))
-		betaHeader := strings.TrimSpace(headers.Get("OpenAI-Beta"))
-		if betaHeader == "" && ginHeaders != nil {
-			betaHeader = strings.TrimSpace(ginHeaders.Get("OpenAI-Beta"))
-		}
-		if betaHeader == "" || !strings.Contains(betaHeader, "responses_websockets=") {
-			betaHeader = codexResponsesWebsocketBetaHeaderValue
-		}
-		headers.Set("OpenAI-Beta", betaHeader)
-		var attrs map[string]string
-		if auth != nil {
-			attrs = auth.Attributes
-		}
-		req := (&http.Request{Header: headers}).WithContext(ctx)
-		util.ApplyCustomHeadersFromAttrs(req, attrs, ginHeaders)
-		return headers, nil
 	}
 
 	isAPIKey := codexAuthUsesAPIKey(auth)
@@ -172,7 +120,7 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 		sessionFallback = uuid.NewString()
 	}
 	ensureCodexWebsocketSessionHeader(headers, ginHeaders, sessionFallback)
-	if nativeRequest && isCodexCloakingDisabled(cfg, auth) {
+	if nativeRequest && cfg != nil && cfg.Codex.DisableCodexCloaking {
 		deleteHeaderCaseInsensitive(headers, "session_id")
 		deleteHeaderCaseInsensitive(headers, "conversation_id")
 		for key, values := range ginHeaders {
@@ -194,7 +142,7 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 			accountID = strings.TrimSpace(auth.ReadMetadataString("account_id"))
 		}
 		if accountID == "" {
-			accountID = helps.AgentIdentityAccountID(auth)
+			accountID = agentIdentityAccountID(auth)
 		}
 		if accountID != "" {
 			setHeaderCasePreserved(headers, "ChatGPT-Account-ID", accountID)
@@ -207,7 +155,7 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 	}
 	req := (&http.Request{Header: headers}).WithContext(ctx)
 	util.ApplyCustomHeadersFromAttrs(req, attrs, ginHeaders)
-	applyCodexCloakingHeaders(headers, cfg, auth)
+	applyCodexCloakingHeaders(headers, cfg)
 
 	return headers, nil
 }

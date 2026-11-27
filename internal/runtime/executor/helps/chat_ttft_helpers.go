@@ -3,7 +3,7 @@ package helps
 import (
 	"bytes"
 
-	"github.com/MoeForge/moego/ojson"
+	"github.com/tidwall/gjson"
 )
 
 // IsChatTokenEvent reports whether the given OpenAI-compatible Chat Completions SSE or JSON chunk
@@ -36,11 +36,11 @@ func IsChatTokenEvent(payload []byte) bool {
 	}
 
 	// Terminal error envelope fallback
-	if ojson.GetBytesNoCopy(payload, "error.message").Exists() || ojson.GetBytesNoCopy(payload, "error").Exists() {
+	if gjson.GetBytes(payload, "error.message").Exists() || gjson.GetBytes(payload, "error").Exists() {
 		return true
 	}
 
-	choices := ojson.GetBytesNoCopy(payload, "choices").Array()
+	choices := gjson.GetBytes(payload, "choices").Array()
 	if len(choices) == 0 {
 		return false
 	}
@@ -101,14 +101,12 @@ func IsChatTokenEvent(payload []byte) bool {
 
 // ObserveChatTokenEvent inspects an OpenAI Chat Completions chunk and records TTFT if the frame
 // represents the first meaningful token event. It records first-packet arrival time as fallback
-// and returns immediately with zero allocations once effective token TTFT is set.
+// and skips further timing work once TTFT is set; model observation continues until completion.
 func ObserveChatTokenEvent(reporter *UsageReporter, payload []byte) {
-	if reporter != nil && len(payload) > 0 {
-		reporter.ObserveResponseModel(payload)
-	}
 	if reporter == nil || len(payload) == 0 {
 		return
 	}
+	reporter.ObserveResponseModel(payload)
 	if reporter.IsTTFTSet() {
 		return
 	}

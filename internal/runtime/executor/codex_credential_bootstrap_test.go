@@ -12,16 +12,17 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 )
 
 const (
 	codexCredentialRateLimitEvent = `{"type":"error","status":429,"error":{"type":"rate_limit_error","code":"INVALID_AUTH_RATE_LIMITED","message":"Credential is rate limited","headers":{"retry-after":"23"}}}`
 	codexCredentialOverloadEvent  = `{"type":"error","status":502,"error":{"type":"service_unavailable_error","code":"server_is_overloaded","message":"Our servers are currently overloaded.","headers":{"retry-after":"326","retry-after-ms":"326000"}}}`
+	codexModerationMetadataEvent  = `{"type":"response.metadata","response_id":"resp_1","sequence_number":2,"metadata":{"openai_chatgpt_moderation_metadata":{"prompt":{"omnimod":{"protection_type":"omnimod"}}}}}`
 )
 
 func codexCredentialBootstrapAuth(baseURL string) *cliproxyauth.Auth {
@@ -47,8 +48,8 @@ func codexCredentialBootstrapContext(t *testing.T, transport string) (context.Co
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	t.Cleanup(cancel)
-	if transport == "duplex" {
-		ctx = cliproxyexecutor.WithWebsocketInput(cliproxyexecutor.WithDownstreamWebsocket(ctx), make(chan cliproxyexecutor.WebsocketInput))
+	if transport == "downstream_websocket" {
+		ctx = cliproxyexecutor.WithDownstreamWebsocket(ctx)
 	}
 	return ctx, cancel
 }
@@ -85,7 +86,7 @@ func TestCodexCredentialBootstrapSourcePolicy(t *testing.T) {
 }
 
 func TestCodexCredentialBootstrapInitialFailure(t *testing.T) {
-	for _, transport := range []string{"http", "websocket", "duplex"} {
+	for _, transport := range []string{"http", "websocket", "downstream_websocket"} {
 		for _, tc := range []struct {
 			name, event string
 			status      int
@@ -107,34 +108,12 @@ func TestCodexCredentialBootstrapInitialFailure(t *testing.T) {
 					server = codexWebsocketServerHoldingConnection(t, frames...)
 				}
 				defer server.Close()
-				// Nil config must still protect credential files on the ordinary transports.
-				var cfg *config.Config
-				if transport == "duplex" {
-					cfg = &config.Config{Codex: config.CodexConfig{ResponseSteering: true}}
-				}
+				// Nil config must still protect credential files on every transport.
 				ctx, cancel := codexCredentialBootstrapContext(t, transport)
 				defer cancel()
-				var input chan cliproxyexecutor.WebsocketInput
-				if transport == "duplex" {
-					input = make(chan cliproxyexecutor.WebsocketInput, 1)
-					input <- cliproxyexecutor.WebsocketInput{Payload: []byte(`{"type":"response.create","input":[]}`)}
-					ctx = cliproxyexecutor.WithWebsocketInput(ctx, input)
-				}
 				req, opts := codexWebsocketRequest()
-				result, err := codexCredentialBootstrapExecutor(t, transport, cfg).ExecuteStream(ctx, codexCredentialBootstrapAuth(server.URL), req, opts)
-				if transport == "duplex" {
-					if err != nil || result == nil {
-						t.Fatalf("duplex start = %v, %v", result, err)
-					}
-					payload, streamErr := drainChunks(result)
-					if payload != "" {
-						t.Fatalf("rejected handshake escaped: %s", payload)
-					}
-					err = streamErr
-					if len(input) != 1 {
-						t.Fatal("rejected bootstrap consumed a follow-up request")
-					}
-				} else if result != nil {
+				result, err := codexCredentialBootstrapExecutor(t, transport, nil).ExecuteStream(ctx, codexCredentialBootstrapAuth(server.URL), req, opts)
+				if result != nil {
 					drainChunks(result)
 					t.Fatal("rejected handshake returned a stream")
 				}
@@ -142,7 +121,7 @@ func TestCodexCredentialBootstrapInitialFailure(t *testing.T) {
 					t.Fatalf("bootstrap error = %v, want status %d", err, tc.status)
 				}
 				if tc.delay > 0 {
-					assertIssue7600RetryAfter(t, err, tc.delay)
+					assertCodexCredentialRetryAfter(t, err, tc.delay)
 				}
 			})
 		}
@@ -187,7 +166,7 @@ func TestCodexCredentialBootstrapConfigProvidersUnchanged(t *testing.T) {
 }
 
 func TestCodexCredentialBootstrapManagerFailoverAndCommit(t *testing.T) {
-	for _, transport := range []string{"http", "websocket", "duplex"} {
+	for _, transport := range []string{"http", "websocket", "downstream_websocket"} {
 		for _, tc := range []struct {
 			name, before, failure string
 			chat                  bool
@@ -198,7 +177,7 @@ func TestCodexCredentialBootstrapManagerFailoverAndCommit(t *testing.T) {
 			{"after_tool", codexReleasingFrameCases()[1].frame, codexCredentialOverloadEvent, false},
 			{"untranslated_tool", codexReleasingFrameCases()[1].frame, codexCredentialOverloadEvent, true},
 		} {
-			if transport == "duplex" && tc.chat {
+			if transport == "downstream_websocket" && tc.chat {
 				continue
 			}
 			t.Run(transport+"/"+tc.name, func(t *testing.T) {
@@ -239,7 +218,7 @@ func TestCodexCredentialBootstrapManagerFailoverAndCommit(t *testing.T) {
 					_, _, _ = conn.ReadMessage()
 				}))
 				defer server.Close()
-				cfg := &config.Config{Codex: config.CodexConfig{ResponseSteering: transport == "duplex"}}
+				cfg := &config.Config{}
 				ctx, cancel := codexCredentialBootstrapContext(t, transport)
 				defer cancel()
 				manager := cliproxyauth.NewManager(nil, &cliproxyauth.FillFirstSelector{}, nil)
@@ -269,18 +248,10 @@ func TestCodexCredentialBootstrapManagerFailoverAndCommit(t *testing.T) {
 				}
 				var text strings.Builder
 				var streamErr error
-				wireFailure := false
 				for chunk := range result.Chunks {
 					text.Write(chunk.Payload)
 					if chunk.Err != nil {
 						streamErr = chunk.Err
-					}
-					if transport == "duplex" && strings.Contains(string(chunk.Payload), `"type":"error"`) {
-						wireFailure = true
-						cancel()
-					}
-					if transport == "duplex" && strings.Contains(string(chunk.Payload), `"type":"response.completed"`) {
-						cancel()
 					}
 				}
 				if rejected.Load() != 1 {
@@ -290,7 +261,7 @@ func TestCodexCredentialBootstrapManagerFailoverAndCommit(t *testing.T) {
 					if healthy.Load() != 1 || streamErr != nil || !strings.Contains(text.String(), "healthy-response") || strings.Contains(text.String(), "resp_1") {
 						t.Fatalf("failover: healthy=%d err=%v payload=%s", healthy.Load(), streamErr, text.String())
 					}
-				} else if healthy.Load() != 0 || streamErr == nil && !wireFailure {
+				} else if healthy.Load() != 0 || streamErr == nil {
 					t.Fatalf("semantic output replayed: healthy=%d err=%v payload=%s", healthy.Load(), streamErr, text.String())
 				}
 			})
@@ -299,7 +270,7 @@ func TestCodexCredentialBootstrapManagerFailoverAndCommit(t *testing.T) {
 }
 
 func TestCodexCredentialBootstrapCancellation(t *testing.T) {
-	for _, transport := range []string{"http", "websocket", "duplex"} {
+	for _, transport := range []string{"http", "websocket", "downstream_websocket"} {
 		t.Run(transport, func(t *testing.T) {
 			started := make(chan struct{})
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -334,7 +305,7 @@ func TestCodexCredentialBootstrapCancellation(t *testing.T) {
 				case <-ctx.Done():
 				}
 			}()
-			cfg := &config.Config{Codex: config.CodexConfig{ResponseSteering: transport == "duplex"}}
+			cfg := &config.Config{}
 			req, opts := codexWebsocketRequest()
 			result, err := codexCredentialBootstrapExecutor(t, transport, cfg).ExecuteStream(ctx, codexCredentialBootstrapAuth(server.URL), req, opts)
 			if result != nil {
@@ -350,7 +321,7 @@ func TestCodexCredentialBootstrapCancellation(t *testing.T) {
 }
 
 func TestCodexCredentialBootstrapBudgets(t *testing.T) {
-	for _, transport := range []string{"http", "websocket", "duplex"} {
+	for _, transport := range []string{"http", "websocket", "downstream_websocket"} {
 		for _, budget := range []string{"frames", "bytes"} {
 			t.Run(transport+"/"+budget, func(t *testing.T) {
 				frames := []string{codexCreatedEvent}
@@ -369,7 +340,7 @@ func TestCodexCredentialBootstrapBudgets(t *testing.T) {
 					server = codexWebsocketServerHoldingConnection(t, frames...)
 				}
 				defer server.Close()
-				cfg := &config.Config{Codex: config.CodexConfig{ResponseSteering: transport == "duplex"}}
+				cfg := &config.Config{}
 				ctx, cancel := codexCredentialBootstrapContext(t, transport)
 				defer cancel()
 				req, opts := codexWebsocketRequest()
@@ -431,5 +402,16 @@ func TestCodexCredentialBootstrapUntranslatedToolCommits(t *testing.T) {
 				t.Fatalf("commit/error lost: committed=%t failed=%t", committed, failed)
 			}
 		})
+	}
+}
+
+func assertCodexCredentialRetryAfter(t *testing.T, err error, want time.Duration) {
+	t.Helper()
+	var retryable interface{ RetryAfter() *time.Duration }
+	if !errors.As(err, &retryable) {
+		t.Fatalf("error %T does not expose RetryAfter", err)
+	}
+	if delay := retryable.RetryAfter(); delay == nil || *delay != want {
+		t.Fatalf("RetryAfter = %v, want %v", delay, want)
 	}
 }

@@ -14,16 +14,15 @@ const (
 	AuthSourceObjectStore = "objectstore"
 	AuthSourcePostgres    = "postgres"
 
-	AttributeAPIKey               = "api_key"
-	AttributeAuthKind             = "auth_kind"
-	AttributeCodexAlphaSearch     = "codex_alpha_search"
-	AttributeCodexDisableCloaking = "codex_disable_cloaking"
-	AttributeConfigIndex          = "config_index"
-	AttributePath                 = "path"
-	AttributeRuntimeOnly          = "runtime_only"
-	AttributeSource               = "source"
-	AttributeSourceBackend        = "source_backend"
-	AttributeWeight               = "weight"
+	AttributeAPIKey           = "api_key"
+	AttributeAuthKind         = "auth_kind"
+	AttributeCodexAlphaSearch = "codex_alpha_search"
+	AttributeConfigIndex      = "config_index"
+	AttributePath             = "path"
+	AttributeRuntimeOnly      = "runtime_only"
+	AttributeSource           = "source"
+	AttributeSourceBackend    = "source_backend"
+	AttributeWeight           = "weight"
 )
 
 // AuthKind returns the credential kind using explicit metadata first and legacy
@@ -31,9 +30,6 @@ const (
 func (a *Auth) AuthKind() string {
 	if a == nil {
 		return ""
-	}
-	if IsCodexUseSIWC(a) {
-		return AuthKindOAuth
 	}
 	if kind := normalizeAuthKind(authAttribute(a, AttributeAuthKind)); kind != "" {
 		return kind
@@ -162,12 +158,6 @@ func authHasOAuthMetadata(auth *Auth) bool {
 		}
 	}
 	if token, ok := meta["token"].(map[string]any); ok && len(token) > 0 {
-		return true
-	}
-	if siwc, ok := meta["siwc"].(map[string]any); ok && len(siwc) > 0 {
-		return true
-	}
-	if sa, ok := auth.Metadata["service_account"].(map[string]any); ok && len(sa) > 0 {
 		return true
 	}
 	return false

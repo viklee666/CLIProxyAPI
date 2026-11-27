@@ -2,15 +2,14 @@ package management
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 
-	"github.com/MoeForge/moego/json"
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/vertex"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/vertex"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
 const (
@@ -36,7 +35,7 @@ func (h *Handler) ImportVertexCredential(c *gin.Context) {
 			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request_too_large", "message": fmt.Sprintf("multipart request must not exceed %d bytes", maxVertexImportRequestBytes)})
 			return
 		}
-		c.JSON(clienterror.HTTPStatusFromErrorOr(err, http.StatusBadRequest), gin.H{"error": "file required"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file required"})
 		return
 	}
 	if fileHeader.Size > maxVertexImportFileBytes {

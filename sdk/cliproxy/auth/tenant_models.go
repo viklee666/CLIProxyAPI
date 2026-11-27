@@ -1,11 +1,11 @@
 package auth
 
 import (
+	"encoding/json"
 	"strings"
 
-	"github.com/MoeForge/moego/json"
-	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 )
 
 // compileAPIKeyModelAliasEntries builds the alias lookup table for tenant model

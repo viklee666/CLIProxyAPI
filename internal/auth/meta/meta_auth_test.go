@@ -2,6 +2,7 @@ package meta
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -9,8 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/MoeForge/moego/json"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 )
 
 func TestMetaAuth_StartDeviceFlow(t *testing.T) {

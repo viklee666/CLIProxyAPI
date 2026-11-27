@@ -1,15 +1,12 @@
 package management
 
 import (
-	"strconv"
+	"fmt"
 	"strings"
-	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/synthesizer"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	log "github.com/sirupsen/logrus"
-	"gopkg.in/yaml.v3"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/synthesizer"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
 type geminiKeyWithAuthIndex struct {
@@ -65,8 +62,14 @@ type openAICompatibilityWithAuthIndex struct {
 	AuthIndex             string                                   `json:"auth-index,omitempty"`
 }
 
-func liveAuthIndexFromManager(manager *coreauth.Manager) map[string]string {
+func (h *Handler) liveAuthIndexByID() map[string]string {
 	out := map[string]string{}
+	if h == nil {
+		return out
+	}
+	h.mu.Lock()
+	manager := h.authManager
+	h.mu.Unlock()
 	if manager == nil {
 		return out
 	}
@@ -92,60 +95,46 @@ func liveAuthIndexFromManager(manager *coreauth.Manager) map[string]string {
 }
 
 type apiKeyConfigIdentity interface {
-	config.GeminiKey | config.ClaudeKey | config.CodexKey
+	GetAPIKey() string
+	GetBaseURL() string
 }
 
 func apiKeyConfigAuthIndices[T apiKeyConfigIdentity](entries []T, kind string, liveIndexByID map[string]string) []string {
-	cfg := &config.Config{}
-	for _, entry := range entries {
-		switch key := any(entry).(type) {
-		case config.GeminiKey:
-			if kind == "gemini-interactions:apikey" {
-				cfg.InteractionsKey = append(cfg.InteractionsKey, key)
-			} else {
-				cfg.GeminiKey = append(cfg.GeminiKey, key)
-			}
-		case config.ClaudeKey:
-			cfg.ClaudeKey = append(cfg.ClaudeKey, key)
-		case config.CodexKey:
-			switch kind {
-			case "xai:apikey":
-				cfg.XAIKey = append(cfg.XAIKey, key)
-			case "meta:apikey":
-				cfg.MetaKey = append(cfg.MetaKey, key)
-			default:
-				cfg.CodexKey = append(cfg.CodexKey, key)
-			}
+	indices := make([]string, len(entries))
+	idGen := synthesizer.NewStableIDGenerator()
+	provider := strings.TrimSuffix(kind, ":apikey")
+	for i := range entries {
+		key := strings.TrimSpace(entries[i].GetAPIKey())
+		if key == "" {
+			continue
 		}
+		id, _ := idGen.Next(kind, key, entries[i].GetBaseURL())
+		indices[i] = configAuthIndex(liveIndexByID, &coreauth.Auth{
+			ID:       id,
+			Provider: provider,
+			Attributes: map[string]string{
+				"api_key":  key,
+				"base_url": strings.TrimSpace(entries[i].GetBaseURL()),
+			},
+		})
 	}
-	return synthesizedConfigAuthIndices(cfg, len(entries), liveIndexByID)
+	return indices
 }
 
 func vertexConfigAuthIndices(entries []config.VertexCompatKey, liveIndexByID map[string]string) []string {
-	return synthesizedConfigAuthIndices(&config.Config{VertexCompatAPIKey: entries}, len(entries), liveIndexByID)
-}
-
-// Use the watcher identity builder so live lookup and unloaded credential bindings
-// agree on proxy, prefix, headers and connection-pool identity.
-func synthesizeConfigIdentityAuths(cfg *config.Config) []*coreauth.Auth {
-	auths, err := synthesizer.NewConfigSynthesizer().Synthesize(&synthesizer.SynthesisContext{
-		Config:      cfg,
-		IDGenerator: synthesizer.NewStableIDGenerator(),
-	})
-	if err != nil {
-		log.WithError(err).Error("failed to derive management credential identities")
-		return nil
-	}
-	return auths
-}
-
-func synthesizedConfigAuthIndices(cfg *config.Config, count int, liveIndexByID map[string]string) []string {
-	indices := make([]string, count)
-	for _, auth := range synthesizeConfigIdentityAuths(cfg) {
-		index, err := strconv.Atoi(auth.Attributes["config_index"])
-		if err == nil && index >= 0 && index < len(indices) {
-			indices[index] = configAuthIndex(liveIndexByID, auth)
-		}
+	indices := make([]string, len(entries))
+	idGen := synthesizer.NewStableIDGenerator()
+	for i := range entries {
+		entry := entries[i]
+		id, _ := idGen.Next("vertex:apikey", entry.APIKey, entry.BaseURL, entry.ProxyURL)
+		indices[i] = configAuthIndex(liveIndexByID, &coreauth.Auth{
+			ID:       id,
+			Provider: "vertex",
+			Attributes: map[string]string{
+				"api_key":  strings.TrimSpace(entry.APIKey),
+				"base_url": strings.TrimSpace(entry.BaseURL),
+			},
+		})
 	}
 	return indices
 }
@@ -168,22 +157,39 @@ type openAICompatibilityAuthIndexSet struct {
 func openAICompatibilityAuthIndexSets(entries []config.OpenAICompatibility, liveIndexByID map[string]string) []openAICompatibilityAuthIndexSet {
 	normalized := normalizedOpenAICompatibilityEntries(entries)
 	sets := make([]openAICompatibilityAuthIndexSet, len(normalized))
+	idGen := synthesizer.NewStableIDGenerator()
 	for i := range normalized {
-		// Disabled records still need identities for group binding cleanup.
-		normalized[i].Disabled = false
-		sets[i].APIKeyIndices = make([]string, len(normalized[i].APIKeyEntries))
-	}
-	positions := make([]int, len(normalized))
-	for _, auth := range synthesizeConfigIdentityAuths(&config.Config{OpenAICompatibility: normalized}) {
-		index, err := strconv.Atoi(auth.Attributes["config_index"])
-		if err != nil || index < 0 || index >= len(sets) {
+		entry := normalized[i]
+		providerName := strings.ToLower(strings.TrimSpace(entry.Name))
+		if providerName == "" {
+			providerName = "openai-compatibility"
+		}
+		idKind := fmt.Sprintf("openai-compatibility:%s", providerName)
+		if len(entry.APIKeyEntries) == 0 {
+			id, _ := idGen.Next(idKind, entry.BaseURL)
+			sets[i].AuthIndex = configAuthIndex(liveIndexByID, &coreauth.Auth{
+				ID:       id,
+				Provider: "openai-compatibility",
+				Attributes: map[string]string{
+					"base_url":    strings.TrimSpace(entry.BaseURL),
+					"compat_name": entry.Name,
+				},
+			})
 			continue
 		}
-		if len(sets[index].APIKeyIndices) == 0 {
-			sets[index].AuthIndex = configAuthIndex(liveIndexByID, auth)
-		} else if positions[index] < len(sets[index].APIKeyIndices) {
-			sets[index].APIKeyIndices[positions[index]] = configAuthIndex(liveIndexByID, auth)
-			positions[index]++
+		sets[i].APIKeyIndices = make([]string, len(entry.APIKeyEntries))
+		for j := range entry.APIKeyEntries {
+			apiKeyEntry := entry.APIKeyEntries[j]
+			id, _ := idGen.Next(idKind, apiKeyEntry.APIKey, entry.BaseURL, apiKeyEntry.ProxyURL)
+			sets[i].APIKeyIndices[j] = configAuthIndex(liveIndexByID, &coreauth.Auth{
+				ID:       id,
+				Provider: "openai-compatibility",
+				Attributes: map[string]string{
+					"api_key":     strings.TrimSpace(apiKeyEntry.APIKey),
+					"base_url":    strings.TrimSpace(entry.BaseURL),
+					"compat_name": entry.Name,
+				},
+			})
 		}
 	}
 	return sets
@@ -209,23 +215,6 @@ func allOpenAICompatibilityAuthIndices(entries []config.OpenAICompatibility, liv
 		out = append(out, sets[i].all()...)
 	}
 	return out
-}
-
-func allConfigAuthIndices(cfg *config.Config, liveIndexByID map[string]string) []string {
-	if cfg == nil {
-		return nil
-	}
-	copyConfig := *cfg
-	copyConfig.OpenAICompatibility = normalizedOpenAICompatibilityEntries(cfg.OpenAICompatibility)
-	for i := range copyConfig.OpenAICompatibility {
-		copyConfig.OpenAICompatibility[i].Disabled = false
-	}
-	auths := synthesizeConfigIdentityAuths(&copyConfig)
-	indices := make([]string, 0, len(auths))
-	for _, auth := range auths {
-		indices = append(indices, configAuthIndex(liveIndexByID, auth))
-	}
-	return indices
 }
 
 // deletedAuthIndices returns live auth indices present in oldIndices but absent
@@ -259,568 +248,38 @@ func deletedAuthIndices(oldIndices, newIndices []string) []string {
 }
 
 func findAPIKeyConfigIndexByAuthIndex[T apiKeyConfigIdentity](entries []T, kind string, target string, liveIndexByID map[string]string) int {
-	return findConfigAuthIndex(apiKeyConfigAuthIndices(entries, kind, liveIndexByID), target)
-}
-
-func findVertexConfigIndexByAuthIndex(entries []config.VertexCompatKey, target string, liveIndexByID map[string]string) int {
-	return findConfigAuthIndex(vertexConfigAuthIndices(entries, liveIndexByID), target)
-}
-
-func findConfigAuthIndex(indices []string, target string) int {
 	target = strings.TrimSpace(target)
-	if target != "" {
-		for i, index := range indices {
-			if index == target {
-				return i
-			}
+	if target == "" || len(entries) == 0 || len(liveIndexByID) == 0 {
+		return -1
+	}
+	idGen := synthesizer.NewStableIDGenerator()
+	for i := range entries {
+		key := strings.TrimSpace(entries[i].GetAPIKey())
+		if key == "" {
+			continue
+		}
+		id, _ := idGen.Next(kind, key, entries[i].GetBaseURL())
+		if strings.TrimSpace(liveIndexByID[id]) == target {
+			return i
 		}
 	}
 	return -1
 }
 
-func (h *Handler) liveAuthIndexByID() map[string]string {
-	if h == nil {
-		return map[string]string{}
+func findVertexConfigIndexByAuthIndex(entries []config.VertexCompatKey, target string, liveIndexByID map[string]string) int {
+	target = strings.TrimSpace(target)
+	if target == "" || len(entries) == 0 || len(liveIndexByID) == 0 {
+		return -1
 	}
-	h.mu.Lock()
-	manager := h.authManager
-	h.mu.Unlock()
-	return liveAuthIndexFromManager(manager)
-}
-
-func yamlMapScalar(node *yaml.Node, key string) string {
-	if node == nil || node.Kind != yaml.MappingNode {
-		return ""
-	}
-	for i := 0; i+1 < len(node.Content); i += 2 {
-		if node.Content[i].Value == key {
-			return strings.TrimSpace(node.Content[i+1].Value)
+	idGen := synthesizer.NewStableIDGenerator()
+	for i := range entries {
+		entry := entries[i]
+		id, _ := idGen.Next("vertex:apikey", entry.APIKey, entry.BaseURL, entry.ProxyURL)
+		if strings.TrimSpace(liveIndexByID[id]) == target {
+			return i
 		}
 	}
-	return ""
-}
-
-func setMapScalar(mapping *yaml.Node, key, value string) {
-	if mapping == nil || mapping.Kind != yaml.MappingNode {
-		return
-	}
-	for i := 0; i+1 < len(mapping.Content); i += 2 {
-		if mapping.Content[i].Value == key {
-			mapping.Content[i+1].Value = value
-			mapping.Content[i+1].Tag = "!!str"
-			mapping.Content[i+1].Kind = yaml.ScalarNode
-			return
-		}
-	}
-	mapping.Content = append(mapping.Content,
-		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
-		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value},
-	)
-}
-
-func deleteMapKey(mapping *yaml.Node, key string) bool {
-	if mapping == nil || mapping.Kind != yaml.MappingNode {
-		return false
-	}
-	for i := 0; i+1 < len(mapping.Content); i += 2 {
-		if mapping.Content[i].Value == key {
-			mapping.Content = append(mapping.Content[:i], mapping.Content[i+2:]...)
-			return true
-		}
-	}
-	return false
-}
-
-func stripAPIKeysAuthIndexesFromGroup(group *yaml.Node) {
-	if group == nil || group.Kind != yaml.MappingNode {
-		return
-	}
-	deleteMapKey(group, "auth_index")
-	deleteMapKey(group, "auth-index")
-	keysNode := configV8Node(group, []string{"keys"})
-	if keysNode != nil && keysNode.Kind == yaml.SequenceNode {
-		for _, keyNode := range keysNode.Content {
-			if keyNode != nil && keyNode.Kind == yaml.MappingNode {
-				deleteMapKey(keyNode, "auth_index")
-				deleteMapKey(keyNode, "auth-index")
-			}
-		}
-	}
-}
-
-func stripAPIKeysAuthIndexesFromGroups(groupsNode *yaml.Node) {
-	if groupsNode == nil {
-		return
-	}
-	if groupsNode.Kind == yaml.SequenceNode {
-		for _, group := range groupsNode.Content {
-			stripAPIKeysAuthIndexesFromGroup(group)
-		}
-	} else if groupsNode.Kind == yaml.MappingNode {
-		stripAPIKeysAuthIndexesFromGroup(groupsNode)
-	}
-}
-
-func stripAPIKeysAuthIndexesFromProvidersMap(apiKeysNode *yaml.Node) {
-	if apiKeysNode == nil || apiKeysNode.Kind != yaml.MappingNode {
-		return
-	}
-	for i := 0; i+1 < len(apiKeysNode.Content); i += 2 {
-		stripAPIKeysAuthIndexesFromGroups(apiKeysNode.Content[i+1])
-	}
-}
-
-func stripAPIKeysAuthIndexesFromRoot(root *yaml.Node) {
-	if root == nil || root.Kind != yaml.MappingNode {
-		return
-	}
-	apiKeysNode := configV8Node(root, []string{"api-keys"})
-	if apiKeysNode != nil {
-		stripAPIKeysAuthIndexesFromProvidersMap(apiKeysNode)
-	}
-}
-
-func stripAPIKeysAuthIndexesFromUpdate(parts []string, update *yaml.Node) {
-	if update == nil || len(update.Content) == 0 {
-		return
-	}
-	node := update.Content[0]
-	if len(parts) == 0 {
-		stripAPIKeysAuthIndexesFromRoot(node)
-		return
-	}
-	if parts[0] != "api-keys" {
-		return
-	}
-	if len(parts) == 1 {
-		stripAPIKeysAuthIndexesFromProvidersMap(node)
-		return
-	}
-	stripAPIKeysAuthIndexesFromGroups(node)
-}
-
-func yamlMapScalarPresent(node *yaml.Node, key string) (string, bool) {
-	if node == nil || node.Kind != yaml.MappingNode {
-		return "", false
-	}
-	for i := 0; i+1 < len(node.Content); i += 2 {
-		if node.Content[i].Value == key {
-			if node.Content[i+1].Tag == "!!null" {
-				return "", false
-			}
-			return strings.TrimSpace(node.Content[i+1].Value), true
-		}
-	}
-	return "", false
-}
-
-func yamlMapHeadersPresent(node *yaml.Node, key string) (map[string]string, bool) {
-	if node == nil || node.Kind != yaml.MappingNode {
-		return nil, false
-	}
-	for i := 0; i+1 < len(node.Content); i += 2 {
-		if node.Content[i].Value == key {
-			if node.Content[i+1].Tag == "!!null" {
-				return nil, false
-			}
-			var h map[string]string
-			if errDecode := node.Content[i+1].Decode(&h); errDecode == nil {
-				return h, true
-			}
-			return nil, false
-		}
-	}
-	return nil, false
-}
-
-func resolveInheritedScalar(keyNode, groupNode *yaml.Node, field string) string {
-	if val, ok := yamlMapScalarPresent(keyNode, field); ok {
-		return val
-	}
-	if val, ok := yamlMapScalarPresent(groupNode, field); ok {
-		return val
-	}
-	return ""
-}
-
-func resolveInheritedHeaders(keyNode, groupNode *yaml.Node, field string) map[string]string {
-	if h, ok := yamlMapHeadersPresent(keyNode, field); ok {
-		return h
-	}
-	if h, ok := yamlMapHeadersPresent(groupNode, field); ok {
-		return h
-	}
-	return nil
-}
-
-func yamlMapNodePresent(node *yaml.Node, key string) *yaml.Node {
-	if node == nil || node.Kind != yaml.MappingNode {
-		return nil
-	}
-	for i := 0; i+1 < len(node.Content); i += 2 {
-		if node.Content[i].Value == key {
-			valNode := node.Content[i+1]
-			if valNode == nil || valNode.Tag == "!!null" {
-				return nil
-			}
-			return valNode
-		}
-	}
-	return nil
-}
-
-func resolveInheritedConnectionPool(keyNode, groupNode *yaml.Node) *config.ProxyConnectionPoolConfig {
-	groupPoolNode := yamlMapNodePresent(groupNode, "connection-pool")
-	keyPoolNode := yamlMapNodePresent(keyNode, "connection-pool")
-	if groupPoolNode == nil && keyPoolNode == nil {
-		return nil
-	}
-	mergedNode := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-	if groupPoolNode != nil && groupPoolNode.Kind == yaml.MappingNode {
-		for i := 0; i+1 < len(groupPoolNode.Content); i += 2 {
-			if groupPoolNode.Content[i+1].Tag == "!!null" {
-				continue
-			}
-			mergedNode.Content = append(mergedNode.Content, groupPoolNode.Content[i], groupPoolNode.Content[i+1])
-		}
-	}
-	if keyPoolNode != nil && keyPoolNode.Kind == yaml.MappingNode {
-		for i := 0; i+1 < len(keyPoolNode.Content); i += 2 {
-			if keyPoolNode.Content[i+1].Tag == "!!null" {
-				continue
-			}
-			field := keyPoolNode.Content[i].Value
-			replaced := false
-			for j := 0; j+1 < len(mergedNode.Content); j += 2 {
-				if mergedNode.Content[j].Value == field {
-					mergedNode.Content[j+1] = keyPoolNode.Content[i+1]
-					replaced = true
-					break
-				}
-			}
-			if !replaced {
-				mergedNode.Content = append(mergedNode.Content, keyPoolNode.Content[i], keyPoolNode.Content[i+1])
-			}
-		}
-	}
-	var pool config.ProxyConnectionPoolConfig
-	if errDecode := mergedNode.Decode(&pool); errDecode != nil {
-		return nil
-	}
-	return &pool
-}
-
-func normalizeModelPrefixHelper(prefix string) string {
-	trimmed := strings.TrimSpace(prefix)
-	trimmed = strings.Trim(trimmed, "/")
-	if trimmed == "" || strings.Contains(trimmed, "/") {
-		return ""
-	}
-	return trimmed
-}
-
-func formatCredentialDedupKey(key, base, proxyURL, prefix string, headers map[string]string, pool *config.ProxyConnectionPoolConfig) string {
-	var b strings.Builder
-	b.WriteString(strings.TrimSpace(key))
-	b.WriteByte(0)
-	b.WriteString(strings.TrimSpace(base))
-	b.WriteByte(0)
-	b.WriteString(strings.TrimSpace(proxyURL))
-	b.WriteByte(0)
-	b.WriteString(normalizeModelPrefixHelper(prefix))
-	b.WriteByte(0)
-	b.WriteString(config.FormatSortedHeaders(config.NormalizeHeaders(headers)))
-	b.WriteByte(0)
-	b.WriteString(config.FormatConnectionPoolDedupID(pool))
-	return b.String()
-}
-
-func (h *Handler) injectV8APIKeyAuthIndexesLocked(root *yaml.Node, data []byte) {
-	if h == nil || root == nil || root.Kind != yaml.MappingNode {
-		return
-	}
-	apiKeysNode := configV8Node(root, []string{"api-keys"})
-	if apiKeysNode == nil || apiKeysNode.Kind != yaml.MappingNode {
-		return
-	}
-
-	cfg, errParse := config.ParseConfigBytes(data)
-	if errParse != nil {
-		cfg = h.cfg
-	}
-	if cfg == nil {
-		return
-	}
-
-	synth := synthesizer.NewConfigSynthesizer()
-	synthCtx := &synthesizer.SynthesisContext{
-		Config:      cfg,
-		Now:         time.Now(),
-		IDGenerator: synthesizer.NewStableIDGenerator(),
-	}
-	auths, errSynth := synth.Synthesize(synthCtx)
-	if errSynth != nil {
-		return
-	}
-
-	liveIndexByID := liveAuthIndexFromManager(h.authManager)
-	resolveAuthIndex := func(a *coreauth.Auth) string {
-		if a == nil {
-			return ""
-		}
-		if idx := strings.TrimSpace(liveIndexByID[a.ID]); idx != "" {
-			return idx
-		}
-		return a.EnsureIndex()
-	}
-
-	authsByProvider := make(map[string][]*coreauth.Auth)
-	for _, a := range auths {
-		if a != nil {
-			authsByProvider[a.Provider] = append(authsByProvider[a.Provider], a)
-		}
-	}
-
-	providerAuthMap := make(map[string]map[string]string)
-	for _, p := range []string{"gemini", "interactions", "vertex"} {
-		providerAuthMap[p] = make(map[string]string)
-	}
-
-	for _, a := range authsByProvider["gemini"] {
-		if a == nil || a.Attributes == nil {
-			continue
-		}
-		idx, errConv := strconv.Atoi(a.Attributes["config_index"])
-		if errConv != nil || idx < 0 || idx >= len(cfg.GeminiKey) {
-			continue
-		}
-		e := cfg.GeminiKey[idx]
-		key := formatCredentialDedupKey(e.APIKey, e.BaseURL, e.ProxyURL, e.Prefix, e.Headers, e.ConnectionPool)
-		providerAuthMap["gemini"][key] = resolveAuthIndex(a)
-	}
-	for _, a := range authsByProvider["gemini-interactions"] {
-		if a == nil || a.Attributes == nil {
-			continue
-		}
-		idx, errConv := strconv.Atoi(a.Attributes["config_index"])
-		if errConv != nil || idx < 0 || idx >= len(cfg.InteractionsKey) {
-			continue
-		}
-		e := cfg.InteractionsKey[idx]
-		key := formatCredentialDedupKey(e.APIKey, e.BaseURL, e.ProxyURL, e.Prefix, e.Headers, e.ConnectionPool)
-		providerAuthMap["interactions"][key] = resolveAuthIndex(a)
-	}
-	for _, a := range authsByProvider["vertex"] {
-		if a == nil || a.Attributes == nil {
-			continue
-		}
-		idx, errConv := strconv.Atoi(a.Attributes["config_index"])
-		if errConv != nil || idx < 0 || idx >= len(cfg.VertexCompatAPIKey) {
-			continue
-		}
-		e := cfg.VertexCompatAPIKey[idx]
-		key := strings.TrimSpace(e.APIKey) + "|" + strings.TrimSpace(e.BaseURL) + "\x00" + config.FormatConnectionPoolDedupID(e.ConnectionPool)
-		providerAuthMap["vertex"][key] = resolveAuthIndex(a)
-	}
-
-	authByConfigIndex := make(map[string]map[string]*coreauth.Auth)
-	for _, p := range []string{"codex", "claude", "xai", "meta"} {
-		authByConfigIndex[p] = make(map[string]*coreauth.Auth)
-		for _, a := range authsByProvider[p] {
-			if a != nil && a.Attributes != nil {
-				authByConfigIndex[p][a.Attributes["config_index"]] = a
-			}
-		}
-	}
-
-	for i := 0; i+1 < len(apiKeysNode.Content); i += 2 {
-		providerName := strings.TrimSpace(apiKeysNode.Content[i].Value)
-		groupsNode := apiKeysNode.Content[i+1]
-		if groupsNode == nil || groupsNode.Kind != yaml.SequenceNode {
-			continue
-		}
-
-		if providerName == "openai-compatibility" {
-			validGroupIdx := 0
-			for _, group := range groupsNode.Content {
-				if group == nil || group.Kind != yaml.MappingNode {
-					continue
-				}
-				groupBase := strings.TrimSpace(yamlMapScalar(group, "base-url"))
-				if groupBase == "" {
-					continue
-				}
-				targetGroupIdxStr := strconv.Itoa(validGroupIdx)
-				validGroupIdx++
-
-				isOpenAICompatAuth := func(a *coreauth.Auth) bool {
-					if a == nil || a.Attributes == nil {
-						return false
-					}
-					if a.Attributes["config_index"] != targetGroupIdxStr {
-						return false
-					}
-					return a.Provider == "openai-compatibility" || strings.HasPrefix(a.Provider, "openai-compatible-")
-				}
-
-				keysNode := configV8Node(group, []string{"keys"})
-				if keysNode == nil || keysNode.Kind != yaml.SequenceNode || len(keysNode.Content) == 0 {
-					for _, a := range auths {
-						if isOpenAICompatAuth(a) && a.Attributes["api_key"] == "" {
-							if idx := resolveAuthIndex(a); idx != "" {
-								setMapScalar(group, "auth_index", idx)
-							}
-							break
-						}
-					}
-					continue
-				}
-
-				var groupAuths []*coreauth.Auth
-				for _, a := range auths {
-					if isOpenAICompatAuth(a) {
-						groupAuths = append(groupAuths, a)
-					}
-				}
-
-				for kIdx, keyNode := range keysNode.Content {
-					if keyNode == nil || keyNode.Kind != yaml.MappingNode {
-						continue
-					}
-					if kIdx < len(groupAuths) {
-						if idx := resolveAuthIndex(groupAuths[kIdx]); idx != "" {
-							setMapScalar(keyNode, "auth_index", idx)
-						}
-					}
-				}
-			}
-			continue
-		}
-
-		if providerName == "claude" {
-			rawIdx := 0
-			for _, group := range groupsNode.Content {
-				if group == nil || group.Kind != yaml.MappingNode {
-					continue
-				}
-				groupBase := strings.TrimSpace(yamlMapScalar(group, "base-url"))
-				keysNode := configV8Node(group, []string{"keys"})
-				if keysNode == nil || keysNode.Kind != yaml.SequenceNode {
-					continue
-				}
-				for _, keyNode := range keysNode.Content {
-					if keyNode == nil || keyNode.Kind != yaml.MappingNode {
-						continue
-					}
-					apiKey := strings.TrimSpace(yamlMapScalar(keyNode, "api-key"))
-					targetIdx := strconv.Itoa(rawIdx)
-					rawIdx++
-					if apiKey == "" && groupBase == "" {
-						continue
-					}
-					if a := authByConfigIndex["claude"][targetIdx]; a != nil {
-						if idx := resolveAuthIndex(a); idx != "" {
-							setMapScalar(keyNode, "auth_index", idx)
-						}
-					}
-				}
-			}
-			continue
-		}
-
-		if providerName == "codex" || providerName == "xai" {
-			validIdx := 0
-			for _, group := range groupsNode.Content {
-				if group == nil || group.Kind != yaml.MappingNode {
-					continue
-				}
-				groupBase := strings.TrimSpace(yamlMapScalar(group, "base-url"))
-				if groupBase == "" {
-					continue
-				}
-				keysNode := configV8Node(group, []string{"keys"})
-				if keysNode == nil || keysNode.Kind != yaml.SequenceNode {
-					continue
-				}
-				for _, keyNode := range keysNode.Content {
-					if keyNode == nil || keyNode.Kind != yaml.MappingNode {
-						continue
-					}
-					targetIdx := strconv.Itoa(validIdx)
-					validIdx++
-					if a := authByConfigIndex[providerName][targetIdx]; a != nil {
-						if idx := resolveAuthIndex(a); idx != "" {
-							setMapScalar(keyNode, "auth_index", idx)
-						}
-					}
-				}
-			}
-			continue
-		}
-
-		if providerName == "meta" {
-			validIdx := 0
-			for _, group := range groupsNode.Content {
-				if group == nil || group.Kind != yaml.MappingNode {
-					continue
-				}
-				keysNode := configV8Node(group, []string{"keys"})
-				if keysNode == nil || keysNode.Kind != yaml.SequenceNode {
-					continue
-				}
-				for _, keyNode := range keysNode.Content {
-					if keyNode == nil || keyNode.Kind != yaml.MappingNode {
-						continue
-					}
-					apiKey := strings.TrimSpace(yamlMapScalar(keyNode, "api-key"))
-					if apiKey == "" || strings.HasPrefix(apiKey, "dca:") {
-						continue
-					}
-					targetIdx := strconv.Itoa(validIdx)
-					validIdx++
-					if a := authByConfigIndex["meta"][targetIdx]; a != nil {
-						if idx := resolveAuthIndex(a); idx != "" {
-							setMapScalar(keyNode, "auth_index", idx)
-						}
-					}
-				}
-			}
-			continue
-		}
-
-		for _, group := range groupsNode.Content {
-			if group == nil || group.Kind != yaml.MappingNode {
-				continue
-			}
-			groupBase := strings.TrimSpace(yamlMapScalar(group, "base-url"))
-			keysNode := configV8Node(group, []string{"keys"})
-			if keysNode == nil || keysNode.Kind != yaml.SequenceNode {
-				continue
-			}
-			for _, keyNode := range keysNode.Content {
-				if keyNode == nil || keyNode.Kind != yaml.MappingNode {
-					continue
-				}
-				apiKey := strings.TrimSpace(yamlMapScalar(keyNode, "api-key"))
-				pool := resolveInheritedConnectionPool(keyNode, group)
-				if providerName == "vertex" {
-					vertexKey := apiKey + "|" + groupBase + "\x00" + config.FormatConnectionPoolDedupID(pool)
-					if idx, ok := providerAuthMap["vertex"][vertexKey]; ok {
-						setMapScalar(keyNode, "auth_index", idx)
-					}
-					continue
-				}
-
-				proxyURL := resolveInheritedScalar(keyNode, group, "proxy-url")
-				prefix := resolveInheritedScalar(keyNode, group, "prefix")
-				headers := resolveInheritedHeaders(keyNode, group, "headers")
-				dedupKey := formatCredentialDedupKey(apiKey, groupBase, proxyURL, prefix, headers, pool)
-				if idx, ok := providerAuthMap[providerName][dedupKey]; ok {
-					setMapScalar(keyNode, "auth_index", idx)
-				}
-			}
-		}
-	}
+	return -1
 }
 
 func (h *Handler) geminiKeysWithAuthIndex() []geminiKeyWithAuthIndex {
@@ -965,11 +424,7 @@ func (h *Handler) metaKeysWithAuthIndex() []metaKeyWithAuthIndex {
 		proxyURL := strings.TrimSpace(entry.ProxyURL)
 		prefix := strings.TrimSpace(entry.Prefix)
 		if key != "" || base != "" {
-			idParts := []string{key, base, proxyURL, prefix, config.FormatSortedHeaders(entry.Headers)}
-			if poolID := config.FormatConnectionPoolDedupID(entry.ConnectionPool); poolID != "" {
-				idParts = append(idParts, poolID)
-			}
-			id, _ := idGen.Next("meta:apikey", idParts...)
+			id, _ := idGen.Next("meta:apikey", key, base, proxyURL, prefix, config.FormatSortedHeaders(entry.Headers))
 			authIndex = liveIndexByID[id]
 		}
 		out[i] = metaKeyWithAuthIndex{

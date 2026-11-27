@@ -8,10 +8,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
-	"github.com/MoeForge/moego/regexp"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	log "github.com/sirupsen/logrus"
 )
 

@@ -5,52 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/MoeForge/moego/ojson"
+	"github.com/tidwall/gjson"
 )
-
-func TestConvertClaudeResponseToGemini_StreamPreservesMaxTokensFinishReason(t *testing.T) {
-	ctx := context.Background()
-	var param any
-	chunk := []byte(`data: {"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"input_tokens":10,"output_tokens":100}}`)
-
-	out := ConvertClaudeResponseToGemini(ctx, "claude-sonnet-4-5", nil, nil, chunk, &param)
-	if len(out) != 1 {
-		t.Fatalf("expected one output chunk, got %d", len(out))
-	}
-	if got := ojson.GetBytesNoCopy(out[0], "candidates.0.finishReason").String(); got != "MAX_TOKENS" {
-		t.Fatalf("finishReason = %q, want MAX_TOKENS; output=%s", got, out[0])
-	}
-}
-
-func TestConvertClaudeResponseToGemini_StreamWithoutStopReasonDefaultsToStop(t *testing.T) {
-	tests := []struct {
-		name  string
-		chunk string
-	}{
-		{
-			name:  "empty delta",
-			chunk: `data: {"type":"message_delta","delta":{},"usage":{"input_tokens":10,"output_tokens":100}}`,
-		},
-		{
-			name:  "missing delta",
-			chunk: `data: {"type":"message_delta","usage":{"input_tokens":10,"output_tokens":100}}`,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ctx := context.Background()
-			var param any
-			out := ConvertClaudeResponseToGemini(ctx, "claude-sonnet-4-5", nil, nil, []byte(tt.chunk), &param)
-			if len(out) != 1 {
-				t.Fatalf("expected one output chunk, got %d", len(out))
-			}
-			if got := ojson.GetBytesNoCopy(out[0], "candidates.0.finishReason").String(); got != "STOP" {
-				t.Fatalf("finishReason = %q, want STOP; output=%s", got, out[0])
-			}
-		})
-	}
-}
 
 func TestConvertClaudeResponseToGemini_StreamPreservesToolUseID(t *testing.T) {
 	ctx := context.Background()
@@ -74,7 +30,7 @@ func TestConvertClaudeResponseToGemini_StreamPreservesToolUseID(t *testing.T) {
 		t.Fatalf("expected content_block_stop to emit 1 chunk, got %d", len(out))
 	}
 
-	got := ojson.GetBytesNoCopy(out[0], "candidates.0.content.parts.0.functionCall.id").String()
+	got := gjson.GetBytes(out[0], "candidates.0.content.parts.0.functionCall.id").String()
 	if got != "toolu_gateway" {
 		t.Fatalf("expected functionCall.id %q, got %q; chunk=%s", "toolu_gateway", got, string(out[0]))
 	}
@@ -90,7 +46,7 @@ func TestConvertClaudeResponseToGeminiNonStreamPreservesToolUseID(t *testing.T) 
 
 	out := ConvertClaudeResponseToGeminiNonStream(ctx, "gemini-2.5-pro", nil, nil, raw, nil)
 
-	got := ojson.GetBytesNoCopy(out, "candidates.0.content.parts.0.functionCall.id").String()
+	got := gjson.GetBytes(out, "candidates.0.content.parts.0.functionCall.id").String()
 	if got != "toolu_gateway" {
 		t.Fatalf("expected functionCall.id %q, got %q; chunk=%s", "toolu_gateway", got, string(out))
 	}
@@ -105,9 +61,9 @@ func TestConvertClaudeResponseToGemini_StreamThinkingSignature(t *testing.T) {
 		wantSignature string
 	}{
 		{
-			name:          "foreign claude signature is omitted",
+			name:          "foreign claude signature maps to bypass sentinel",
 			signature:     "foreign_claude_sig_123",
-			wantSignature: "",
+			wantSignature: "skip_thought_signature_validator",
 		},
 		{
 			name:          "preserves valid gemini signature",
@@ -133,11 +89,11 @@ func TestConvertClaudeResponseToGemini_StreamThinkingSignature(t *testing.T) {
 				[]byte(`data: {"type":"message_stop"}`),
 			}
 
-			var emittedParts []ojson.Result
+			var emittedParts []gjson.Result
 			for _, chunk := range chunks {
 				out := ConvertClaudeResponseToGemini(ctx, "gemini-2.5-pro", nil, nil, chunk, &param)
 				for _, c := range out {
-					parts := ojson.GetBytesNoCopy(c, "candidates.0.content.parts").Array()
+					parts := gjson.GetBytes(c, "candidates.0.content.parts").Array()
 					emittedParts = append(emittedParts, parts...)
 				}
 			}
@@ -165,9 +121,9 @@ func TestConvertClaudeResponseToGeminiNonStream_ThinkingSignature(t *testing.T) 
 		wantSignature string
 	}{
 		{
-			name:          "foreign claude signature is omitted",
+			name:          "foreign claude signature maps to bypass sentinel",
 			signature:     "foreign_claude_sig_123",
-			wantSignature: "",
+			wantSignature: "skip_thought_signature_validator",
 		},
 		{
 			name:          "preserves valid gemini signature",
@@ -193,7 +149,7 @@ func TestConvertClaudeResponseToGeminiNonStream_ThinkingSignature(t *testing.T) 
 
 			out := ConvertClaudeResponseToGeminiNonStream(ctx, "gemini-2.5-pro", nil, nil, raw, nil)
 
-			thoughtPart := ojson.GetBytesNoCopy(out, "candidates.0.content.parts.0")
+			thoughtPart := gjson.GetBytes(out, "candidates.0.content.parts.0")
 			if !thoughtPart.Get("thought").Bool() || thoughtPart.Get("text").String() != "thinking text" {
 				t.Fatalf("expected thought part with text 'thinking text', got %s", thoughtPart.Raw)
 			}
@@ -201,7 +157,7 @@ func TestConvertClaudeResponseToGeminiNonStream_ThinkingSignature(t *testing.T) 
 				t.Fatalf("expected thoughtSignature %q, got %q", tt.wantSignature, got)
 			}
 
-			textPart := ojson.GetBytesNoCopy(out, "candidates.0.content.parts.1")
+			textPart := gjson.GetBytes(out, "candidates.0.content.parts.1")
 			if textPart.Get("text").String() != "final answer" {
 				t.Fatalf("expected text part 'final answer', got %s", textPart.Raw)
 			}

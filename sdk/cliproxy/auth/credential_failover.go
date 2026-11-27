@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
 type credentialFailoverContextKey struct{}
@@ -38,8 +38,8 @@ func credentialFailoverActive(ctx context.Context) bool {
 func withCredentialFailover(ctx context.Context, auth *Auth, opts cliproxyexecutor.Options, err error) context.Context {
 	if !isStoredCredential(auth) || pinnedAuthIDFromMetadata(opts.Metadata) != "" ||
 		cliproxyexecutor.RequestRetriesDisabled(ctx) || err == nil || (ctx != nil && ctx.Err() != nil) ||
-		isTerminalRequestStopError(err) || isCredentialTerminatedError(err) || isTOSViolationError(err) || isRequestInvalidError(err) ||
-		(!isRequestRetryRoundError(err) && statusCodeFromError(err) != http.StatusUnauthorized && !isModelSupportError(err)) {
+		isRequestStopError(err) || isRequestTerminatedError(err) || isRequestInvalidError(err) ||
+		(!isRequestRetryRoundError(err) && statusCodeFromError(err) != http.StatusUnauthorized && !isModelSupportResultError(resultErrorFromError(err))) {
 		return ctx
 	}
 	var localLimit *requestLimitError
@@ -81,7 +81,7 @@ func (m *Manager) credentialCandidatesForSelection(ctx context.Context, auths []
 			_, skip = failed[candidate.ID]
 			if !skip {
 				checkModel := m.selectionModelForAuth(candidate, model)
-				skip, _, _ = isAuthBlockedForModelForRequest(ctx, candidate, checkModel, now, headers...)
+				skip, _, _ = isAuthBlockedForModel(candidate, checkModel, now)
 			}
 		}
 		if skip && filtered == nil {

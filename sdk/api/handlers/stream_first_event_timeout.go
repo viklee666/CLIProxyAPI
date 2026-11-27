@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/net/context"
 )
@@ -148,8 +148,11 @@ func openStreamThroughFirstEvent(ctx context.Context, open firstEventStreamOpen)
 			if !ok {
 				return firstEventStreamOutcome{result: result, pending: pending, closed: true}
 			}
+			if chunk.Committed {
+				coreexecutor.DisableRequestRetries(ctx)
+			}
 			pending = append(pending, chunk)
-			if chunk.Err != nil || len(chunk.Payload) > 0 {
+			if chunk.Committed || chunk.Err != nil || len(chunk.Payload) > 0 {
 				return firstEventStreamOutcome{result: result, pending: pending}
 			}
 		}

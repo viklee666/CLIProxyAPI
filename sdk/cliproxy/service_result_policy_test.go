@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
 func TestBuilder_WithResultPolicy(t *testing.T) {
@@ -19,7 +19,6 @@ func TestBuilder_WithResultPolicy(t *testing.T) {
 		WithConfigPath(t.TempDir() + "/config.yaml").
 		WithResultPolicy(policy).
 		Build()
-	registerBuiltServiceCleanup(t, service)
 	if errBuild != nil {
 		t.Fatalf("Build() failed: %v", errBuild)
 	}

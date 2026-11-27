@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
 
 type timeoutThenPayloadStreamExecutor struct {
@@ -204,5 +204,25 @@ func TestStreamingFirstEventTimeoutConfigDefaultsAndClamps(t *testing.T) {
 	}
 	if got := StreamingFirstEventTimeoutRetries(cfg); got != 3 {
 		t.Fatalf("retries = %d, want 3", got)
+	}
+}
+
+func TestOpenStreamThroughFirstEventStopsAtSemanticCommit(t *testing.T) {
+	ctx := coreexecutor.WithRequestRetryState(context.Background())
+	chunks := make(chan coreexecutor.StreamChunk, 2)
+	chunks <- coreexecutor.StreamChunk{Committed: true}
+	chunks <- coreexecutor.StreamChunk{Payload: []byte("later output")}
+	close(chunks)
+	outcome := openStreamThroughFirstEvent(ctx, func(context.Context) (*coreexecutor.StreamResult, error) {
+		return &coreexecutor.StreamResult{Chunks: chunks}, nil
+	})
+	if outcome.err != nil || outcome.closed || len(outcome.pending) != 1 || !outcome.pending[0].Committed {
+		t.Fatalf("semantic commit did not stop bootstrap: %+v", outcome)
+	}
+	if !coreexecutor.RequestRetriesDisabled(ctx) {
+		t.Fatal("semantic output must prevent first-event replay even without translated bytes")
+	}
+	if chunk := <-outcome.result.Chunks; string(chunk.Payload) != "later output" {
+		t.Fatalf("bootstrap consumed later output: %+v", chunk)
 	}
 }

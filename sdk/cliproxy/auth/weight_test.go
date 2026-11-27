@@ -1,9 +1,8 @@
 package auth
 
 import (
+	"encoding/json"
 	"testing"
-
-	"github.com/MoeForge/moego/json"
 )
 
 func TestValidateAuthWeight(t *testing.T) {

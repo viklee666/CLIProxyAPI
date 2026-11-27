@@ -36,9 +36,6 @@ type keysTabModel struct {
 	adding    bool
 	editIdx   int
 	editInput textinput.Model
-	// pendingValue binds the key the user targeted when they pressed e/d, so a
-	// background refresh cannot make a later write hit a shifted entry.
-	pendingValue string
 }
 
 type keysDataMsg struct {
@@ -154,7 +151,7 @@ func (m keysTabModel) Update(msg tea.Msg) (keysTabModel, tea.Cmd) {
 					}
 				}
 				return m, func() tea.Msg {
-					err := m.client.EditAPIKey(editIdx, value, m.pendingValue)
+					err := m.client.EditAPIKey(editIdx, value)
 					if err != nil {
 						return keyActionMsg{err: err}
 					}
@@ -179,10 +176,9 @@ func (m keysTabModel) Update(msg tea.Msg) (keysTabModel, tea.Cmd) {
 			switch msg.String() {
 			case "y", "Y":
 				idx := m.confirm
-				expected := m.pendingValue
 				m.confirm = -1
 				return m, func() tea.Msg {
-					err := m.client.DeleteAPIKey(idx, expected)
+					err := m.client.DeleteAPIKey(idx)
 					if err != nil {
 						return keyActionMsg{err: err}
 					}
@@ -225,7 +221,6 @@ func (m keysTabModel) Update(msg tea.Msg) (keysTabModel, tea.Cmd) {
 				m.editing = true
 				m.adding = false
 				m.editIdx = m.cursor
-				m.pendingValue = m.keys[m.cursor]
 				m.editInput.SetValue(m.keys[m.cursor])
 				m.editInput.Prompt = T("edit_key_prompt")
 				m.editInput.Focus()
@@ -237,7 +232,6 @@ func (m keysTabModel) Update(msg tea.Msg) (keysTabModel, tea.Cmd) {
 			// Delete selected key
 			if m.cursor < len(m.keys) {
 				m.confirm = m.cursor
-				m.pendingValue = m.keys[m.cursor]
 				m.viewport.SetContent(m.renderContent())
 			}
 			return m, nil

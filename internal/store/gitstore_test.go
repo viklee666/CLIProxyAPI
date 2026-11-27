@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -11,12 +12,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/MoeForge/moego/json"
 	"github.com/go-git/go-git/v6"
 	gitconfig "github.com/go-git/go-git/v6/config"
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/object"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
 type testBranchSpec struct {
@@ -474,7 +474,7 @@ func TestGitTokenStoreRejectsPathsOutsideRepositoryBeforeMutation(t *testing.T) 
 	}
 }
 
-func TestGitTokenStorePersistConfigDoesNotPublishUnrelatedStagedDeletions(t *testing.T) {
+func TestGitTokenStorePersistConfigDropsUnrelatedStagedDeletions(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
@@ -541,7 +541,7 @@ func TestGitTokenStorePersistConfigDoesNotPublishUnrelatedStagedDeletions(t *tes
 		t.Fatalf("PersistConfig with corrupt index: %v", err)
 	}
 	assertRemoteTreePath(t, remoteDir, "master", "auths/protected.json", true)
-	assertRemoteFileContents(t, remoteDir, "master", "config/config.yaml", string(readSeedTestFile(t, configPath)))
+	assertRemoteFileContents(t, remoteDir, "master", "config/config.yaml", "version: two\n")
 }
 
 func TestGitTokenStorePersistConfigRepairsIndexAfterUnstagedPull(t *testing.T) {
@@ -566,7 +566,7 @@ func TestGitTokenStorePersistConfigRepairsIndexAfterUnstagedPull(t *testing.T) {
 		t.Fatalf("PersistConfig after unstaged pull: %v", err)
 	}
 	assertRemoteBranchContents(t, remoteDir, "master", "remote branch advanced\n")
-	assertRemoteFileContents(t, remoteDir, "master", "config/config.yaml", string(readSeedTestFile(t, configPath)))
+	assertRemoteFileContents(t, remoteDir, "master", "config/config.yaml", "source: local-config\n")
 }
 
 func TestGitTokenStorePersistConfigPreservesRemoteOnlyAuthAfterDivergence(t *testing.T) {
@@ -607,7 +607,7 @@ func TestGitTokenStorePersistConfigPreservesRemoteOnlyAuthAfterDivergence(t *tes
 	}
 
 	assertRemoteTreePath(t, remoteDir, "master", "auths/remote-only.json", true)
-	assertRemoteFileContents(t, remoteDir, "master", "config/config.yaml", string(readSeedTestFile(t, configPathA)))
+	assertRemoteFileContents(t, remoteDir, "master", "config/config.yaml", "source: store-a\n")
 }
 
 func TestGitTokenStoreRejectsStaleForcePush(t *testing.T) {
@@ -655,7 +655,7 @@ func TestGitTokenStoreRejectsStaleForcePush(t *testing.T) {
 		t.Fatalf("PersistConfig A after lease rejection: %v", err)
 	}
 	assertRemoteTreePath(t, remoteDir, "master", "auths/concurrent.json", true)
-	assertRemoteFileContents(t, remoteDir, "master", "config/config.yaml", string(readSeedTestFile(t, configPathA)))
+	assertRemoteFileContents(t, remoteDir, "master", "config/config.yaml", "source: stale-a\n")
 }
 
 func TestGitTokenStoreSaveRetryAfterLeaseConflictCommitsMatchingContent(t *testing.T) {
@@ -847,7 +847,7 @@ func TestGitTokenStoreConcurrentInitializationDoesNotOverwriteCreatedBranch(t *t
 	assertLocalFileContents(t, filepath.Join(workspaceDir, "config", "config.yaml"), winnerFiles["config/config.yaml"])
 }
 
-func TestEnsureRepositoryRetryPreservesStagedAuthDeletion(t *testing.T) {
+func TestEnsureRepositoryRetryRestoresTrackedAuthOnUpToDatePull(t *testing.T) {
 	root := t.TempDir()
 	remoteDir := setupGitRemoteRepository(t, root, "master",
 		testBranchSpec{name: "master", contents: "remote master branch\n"},
@@ -931,15 +931,20 @@ func TestEnsureRepositoryRetryPreservesStagedAuthDeletion(t *testing.T) {
 	if errEnsure := store.EnsureRepository(); errEnsure != nil {
 		t.Fatalf("EnsureRepository retry: %v", errEnsure)
 	}
-	if _, errStat := os.Stat(authPath); !errors.Is(errStat, os.ErrNotExist) {
-		t.Fatalf("synchronization discarded a local deletion: %v", errStat)
+	assertLocalFileContents(t, authPath, `{"access_token":"remote","disabled":false,"type":"codex"}`)
+	auths, errList := store.List(context.Background())
+	if errList != nil {
+		t.Fatalf("List after retry: %v", errList)
 	}
-	assertRemoteTreePath(t, remoteDir, "master", "auths/retry.json", true)
+	if len(auths) != 1 || auths[0].ID != "retry.json" {
+		t.Fatalf("List after retry = %#v, want retry.json", auths)
+	}
+
 	if errDelete := store.Delete(context.Background(), authPath); errDelete != nil {
 		t.Fatalf("explicit Delete after retry: %v", errDelete)
 	}
 	assertRemoteTreePath(t, remoteDir, "master", "auths/retry.json", false)
-	auths, errList := store.List(context.Background())
+	auths, errList = store.List(context.Background())
 	if errList != nil {
 		t.Fatalf("List after explicit Delete: %v", errList)
 	}
@@ -1054,7 +1059,7 @@ func TestEnsureRepositoryReconcilesRemoteConfigChangesAroundLocalAuth(t *testing
 	if errEnsure := storeA.EnsureRepository(); errEnsure != nil {
 		t.Fatalf("EnsureRepository A after remote config update: %v", errEnsure)
 	}
-	assertLocalFileContents(t, storeA.ConfigPath(), string(readSeedTestFile(t, storeB.ConfigPath())))
+	assertLocalFileContents(t, storeA.ConfigPath(), "source: remote-modified\n")
 	assertLocalFileContents(t, localAuthPath, localAuthContents)
 
 	if errRemove := os.Remove(storeB.ConfigPath()); errRemove != nil {
@@ -1117,7 +1122,7 @@ func TestEnsureRepositoryFailsClosedOnSamePathConflict(t *testing.T) {
 		t.Fatalf("EnsureRepository conflict error = %v, want fail-closed conflict", errEnsure)
 	}
 	assertLocalFileContents(t, storeA.ConfigPath(), "source: local\n")
-	assertRemoteFileContents(t, remoteDir, "master", "config/config.yaml", string(readSeedTestFile(t, storeB.ConfigPath())))
+	assertRemoteFileContents(t, remoteDir, "master", "config/config.yaml", "source: remote\n")
 }
 
 func TestInstallRecoveredGitDirectoryRetainsBackupWhenRestoreFails(t *testing.T) {
@@ -1494,7 +1499,6 @@ func TestGitTokenStoreFullPackfileCorruptionFailsClosedWithDirtyManagedFile(t *t
 			t.Fatalf("PersistConfig initial config: %v", errPersist)
 		}
 
-		remoteContents := string(readSeedTestFile(t, configPath))
 		localContents := "source: local-dirty\n"
 		if errWrite := os.WriteFile(configPath, []byte(localContents), 0o600); errWrite != nil {
 			t.Fatalf("write dirty config: %v", errWrite)
@@ -1506,7 +1510,7 @@ func TestGitTokenStoreFullPackfileCorruptionFailsClosedWithDirtyManagedFile(t *t
 			t.Fatalf("PersistConfig error = %v, want fail-closed recovery baseline error", errPersist)
 		}
 		assertLocalFileContents(t, configPath, localContents)
-		assertRemoteFileContents(t, remoteDir, "master", "config/config.yaml", remoteContents)
+		assertRemoteFileContents(t, remoteDir, "master", "config/config.yaml", "source: remote\n")
 	})
 
 	t.Run("auth", func(t *testing.T) {
@@ -1766,11 +1770,6 @@ func removeHeadFileObject(t *testing.T, repoDir, path string) {
 	if errHead != nil {
 		t.Fatalf("read repository head: %v", errHead)
 	}
-	// The synthetic corruption marker stands in for a synchronized commit.
-	// Recovery must not discard a commit that is only user-owned.
-	if errRecord := recordGitSync(repo, head.Name(), head.Hash()); errRecord != nil {
-		t.Fatalf("record fixture baseline: %v", errRecord)
-	}
 	commit, errCommit := repo.CommitObject(head.Hash())
 	if errCommit != nil {
 		t.Fatalf("read repository commit: %v", errCommit)
@@ -1799,21 +1798,13 @@ func corruptGitRepository(t *testing.T, repoDir string) {
 	if errOpen != nil {
 		t.Fatalf("open repository before corruption: %v", errOpen)
 	}
-	repoClosed := false
 	defer func() {
-		if !repoClosed {
-			if errClose := repo.Close(); errClose != nil {
-				t.Errorf("close repository before corruption: %v", errClose)
-			}
+		if errClose := repo.Close(); errClose != nil {
+			t.Errorf("close corrupted repository: %v", errClose)
 		}
 	}()
 	if errRepack := repo.RepackObjects(&git.RepackConfig{}); errRepack != nil {
 		t.Fatalf("repack repository objects: %v", errRepack)
-	}
-	errClose := repo.Close()
-	repoClosed = true
-	if errClose != nil {
-		t.Fatalf("close repacked repository: %v", errClose)
 	}
 	objectsDir := filepath.Join(repoDir, ".git", "objects")
 	objectEntries, errReadDir := os.ReadDir(objectsDir)
@@ -1839,16 +1830,7 @@ func corruptGitRepository(t *testing.T, repoDir string) {
 			t.Fatalf("remove packfile %s: %v", filepath.Base(packfile), errRemove)
 		}
 	}
-	corruptedRepo, errOpenCorrupted := git.PlainOpen(repoDir)
-	if errOpenCorrupted != nil {
-		t.Fatalf("open corrupted repository: %v", errOpenCorrupted)
-	}
-	defer func() {
-		if errCloseCorrupted := corruptedRepo.Close(); errCloseCorrupted != nil {
-			t.Errorf("close corrupted repository: %v", errCloseCorrupted)
-		}
-	}()
-	if errVerify := verifyRepositoryHead(corruptedRepo); !isRepositoryCorruptionError(errVerify) {
+	if errVerify := verifyRepositoryHead(repo); !isRepositoryCorruptionError(errVerify) {
 		t.Fatalf("verifyRepositoryHead error = %v, want repository corruption", errVerify)
 	}
 }

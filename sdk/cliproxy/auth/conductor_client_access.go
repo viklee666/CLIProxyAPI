@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
 // CredentialGroupResolver applies request-scoped client group access to credentials.

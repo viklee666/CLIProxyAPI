@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -9,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
 const (
@@ -150,8 +151,8 @@ func (r *priorityHealthRecord) append(at time.Time, success bool) {
 
 func priorityHealthExcludedError(err *Error) bool {
 	return err == nil || isRequestInvalidError(err) || isRequestStopError(err) ||
-		isRequestTerminatedError(err) || isCredentialTerminatedError(err) || isSchedulerRejectError(err) ||
-		isSessionAffinityRetryError(err) || err.Code == ErrorCodeStreamTruncated
+		isRequestTerminatedError(err) || isSessionAffinityRetryError(err) ||
+		err.Code == "scheduler_reject" || err.Code == "stream_truncated"
 }
 
 func priorityHealthResultModel(result Result) string {
@@ -168,7 +169,7 @@ func (h *priorityHealthTracker) observe(result Result) {
 	if h == nil || result.AuthID == "" || result.SkipQuotaObservation || result.Success && !result.CompletedResponse || !result.Success && priorityHealthExcludedError(result.Error) {
 		return
 	}
-	model := canonicalModelLookupKey(priorityHealthResultModel(result))
+	model := canonicalModelKey(priorityHealthResultModel(result))
 	if model == "" {
 		return
 	}
@@ -250,7 +251,7 @@ func (h *priorityHealthTracker) hasRecords(authID, model string, metadata map[st
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	record := h.records[priorityHealthRecordKey{authID: authID, model: canonicalModelLookupKey(model), scope: priorityHealthScope(metadata), registrationEpoch: h.registrations[authID]}]
+	record := h.records[priorityHealthRecordKey{authID: authID, model: canonicalModelKey(model), scope: priorityHealthScope(metadata), registrationEpoch: h.registrations[authID]}]
 	return record != nil && (record.count > 0 || record.streak > 0)
 }
 
@@ -271,7 +272,7 @@ func (h *priorityHealthTracker) unhealthyInScope(auth *Auth, model, scope string
 }
 
 func (h *priorityHealthTracker) unhealthy(auth *Auth, model string, metadata map[string]any, now time.Time) bool {
-	return h.unhealthyInScope(auth, canonicalModelLookupKey(model), priorityHealthScope(metadata), now)
+	return h.unhealthyInScope(auth, canonicalModelKey(model), priorityHealthScope(metadata), now)
 }
 
 func (h *priorityHealthTracker) concurrencyAtLimit(auth *Auth) bool {
@@ -313,7 +314,7 @@ func (h *priorityHealthTracker) filterViable(auths []*Auth, model string, metada
 		return auths
 	}
 	scope := priorityHealthScope(metadata)
-	model = canonicalModelLookupKey(model)
+	model = canonicalModelKey(model)
 	var filtered []*Auth
 	for i, auth := range auths {
 		skip := auth == nil || isAuthDisabled(auth) || h.unhealthyInScope(auth, model, scope, now) || h.concurrencyAtLimit(auth)
@@ -328,4 +329,41 @@ func (h *priorityHealthTracker) filterViable(auths []*Auth, model string, metada
 		return filtered
 	}
 	return auths
+}
+
+func isAuthDisabled(auth *Auth) bool {
+	return auth == nil || auth.Disabled || auth.Status == StatusDisabled
+}
+
+func isWeightedSelector(selector Selector) bool {
+	if affinity, ok := selector.(*SessionAffinitySelector); ok && affinity != nil {
+		selector = affinity.fallback
+	}
+	_, weighted := selector.(*WeightedRoundRobinSelector)
+	return weighted
+}
+
+func filterAuthsExcluding(auths []*Auth, excluded map[string]struct{}) []*Auth {
+	if len(excluded) == 0 {
+		return auths
+	}
+	var filtered []*Auth
+	for i, auth := range auths {
+		_, skip := excluded[auth.ID]
+		if skip && filtered == nil {
+			filtered = make([]*Auth, 0, len(auths)-1)
+			filtered = append(filtered, auths[:i]...)
+		} else if !skip && filtered != nil {
+			filtered = append(filtered, auth)
+		}
+	}
+	if filtered != nil {
+		return filtered
+	}
+	return auths
+}
+
+func isSessionAffinityRetryError(err error) bool {
+	var authErr *Error
+	return errors.As(err, &authErr) && authErr != nil && authErr.Code == "session_auth_retry"
 }

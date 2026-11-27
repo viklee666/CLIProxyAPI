@@ -9,8 +9,8 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/clientaccess"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/tenant"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/clientaccess"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/tenant"
 )
 
 func TestDeleteTenantRevokesAccessBeforeResourceCleanup(t *testing.T) {

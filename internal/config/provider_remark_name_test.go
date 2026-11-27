@@ -1,7 +1,7 @@
 package config
 
 import (
-	"github.com/MoeForge/moego/json"
+	"encoding/json"
 	"testing"
 )
 

@@ -7,13 +7,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	"github.com/tidwall/gjson"
 )
 
 func TestResponsesWebsocketCompactionPinSurvivesPriorityChange(t *testing.T) {
@@ -79,7 +79,7 @@ func TestResponsesWebsocketCompactionPinSurvivesPriorityChange(t *testing.T) {
 				if errRead != nil {
 					t.Fatal(errRead)
 				}
-				if ojson.GetBytesNoCopy(payload, "type").String() != wsEventTypeCompleted {
+				if gjson.GetBytes(payload, "type").String() != wsEventTypeCompleted {
 					t.Fatalf("response = %s, want response.completed", payload)
 				}
 			}
@@ -152,7 +152,7 @@ func TestResponsesWebsocketRetainsPinnedAuthAfterPriorityChange(t *testing.T) {
 						if errRead != nil {
 							t.Fatal(errRead)
 						}
-						if ojson.GetBytesNoCopy(payload, "type").String() != wsEventTypeCompleted {
+						if gjson.GetBytes(payload, "type").String() != wsEventTypeCompleted {
 							t.Fatalf("response = %s, want response.completed", payload)
 						}
 					}

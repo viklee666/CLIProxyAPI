@@ -14,15 +14,16 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/buildinfo"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/clientaccess"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginstore"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/tenant"
-	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/buildinfo"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/clientaccess"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginstore"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/tenant"
+	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type attemptInfo struct {
@@ -69,11 +70,6 @@ type Handler struct {
 	clientAccess            *clientaccess.Service
 	tenantService           *tenant.Service
 	tenantAuthSync          func(context.Context) error
-	authCache               managementAuthCache
-	siwcOAuthFactory        func(*config.Config, string) siwcOAuthService
-	siwcCommitMu            sync.Mutex
-	v8AuthUploadMu          sync.Mutex
-	pluginLoginSaveMu       sync.Mutex
 }
 
 type configReloadSnapshot struct {
@@ -87,7 +83,7 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 	envSecret = strings.TrimSpace(envSecret)
 
 	h := &Handler{
-		cfg:                 cfg.CloneForRuntime(),
+		cfg:                 cfg,
 		configFilePath:      configFilePath,
 		failedAttempts:      make(map[string]*attemptInfo),
 		authManager:         manager,
@@ -135,90 +131,13 @@ func NewHandlerWithoutConfigFilePath(cfg *config.Config, manager *coreauth.Manag
 }
 
 // SetConfig updates the in-memory config reference when the server hot-reloads.
-// A config parsed from an older version of the config file is ignored: a later
-// save already changed the file, and the reload for that save publishes it.
 func (h *Handler) SetConfig(cfg *config.Config) {
 	if h == nil {
 		return
 	}
-	cloned := cfg.CloneForRuntime()
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.isStaleConfigFileSnapshotLocked(cloned) {
-		log.Debug("management: ignoring config reload parsed from an older config file version")
-		return
-	}
-	prevSecretHash := ""
-	if h.cfg != nil {
-		prevSecretHash = h.cfg.RemoteManagement.SecretKey
-	}
-	h.cfg = cloned
-	nextSecretHash := ""
-	if cloned != nil {
-		nextSecretHash = cloned.RemoteManagement.SecretKey
-	}
-	if prevSecretHash != nextSecretHash {
-		h.authCache.invalidate()
-	}
-}
-
-// configSnapshot returns an independent copy of h.cfg under h.mu, for code that runs outside the request holding it.
-func (h *Handler) configSnapshot() *config.Config {
-	if h == nil {
-		return nil
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.cfg == nil {
-		return nil
-	}
-	if cloned := h.cfg.CloneForRuntime(); cloned != nil {
-		return cloned
-	}
-	copied := *h.cfg
-	return &copied
-}
-
-// pluginHostSnapshot reads h.pluginHost under h.mu.
-func (h *Handler) pluginHostSnapshot() *pluginhost.Host {
-	if h == nil {
-		return nil
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.pluginHost
-}
-
-// oauthConfigWithProxy returns a configuration snapshot for an OAuth session.
-// When proxyURL is non-empty, it returns a cloned config with ProxyURL overridden
-// without mutating the shared handler configuration.
-func (h *Handler) oauthConfigWithProxy(proxyURL string) *config.Config {
-	cfg := h.configSnapshot()
-	proxyURL = strings.TrimSpace(proxyURL)
-	if proxyURL == "" {
-		return cfg
-	}
-	if cfg == nil {
-		return &config.Config{
-			SDKConfig: config.SDKConfig{ProxyURL: proxyURL},
-		}
-	}
-	cfg.ProxyURL = proxyURL
-	return cfg
-}
-
-// isStaleConfigFileSnapshotLocked reports whether cfg was parsed from config file
-// bytes that are no longer on disk. Management saves hold h.mu, so none can land
-// during the check. Callers must hold h.mu.
-func (h *Handler) isStaleConfigFileSnapshotLocked(cfg *config.Config) bool {
-	if cfg == nil || cfg.SourceHash == "" || h.configFilePath == "" {
-		return false
-	}
-	data, errRead := config.ReadConfigFile(h.configFilePath)
-	if errRead != nil {
-		return false
-	}
-	return config.ComputeSourceHash(data) != cfg.SourceHash
+	h.cfg = cfg
+	h.mu.Unlock()
 }
 
 // SetAuthManager updates the auth manager reference used by management endpoints.
@@ -227,9 +146,7 @@ func (h *Handler) SetAuthManager(manager *coreauth.Manager) {
 		return
 	}
 	h.mu.Lock()
-	if h.authManager != manager {
-		h.authManager = manager
-	}
+	h.authManager = manager
 	h.mu.Unlock()
 	h.invalidateAuthFileCandidateCatalog()
 }
@@ -261,9 +178,7 @@ func (h *Handler) SetPluginHost(host *pluginhost.Host) {
 		return
 	}
 	h.mu.Lock()
-	if h.pluginHost != host {
-		h.pluginHost = host
-	}
+	h.pluginHost = host
 	h.mu.Unlock()
 }
 
@@ -293,7 +208,7 @@ func (h *Handler) reloadSnapshotConfigLocked() configReloadSnapshot {
 // saveConfigAndSnapshotLocked saves h.cfg and returns a full runtime config snapshot.
 // Callers must hold h.mu.
 func (h *Handler) saveConfigAndSnapshotLocked(c *gin.Context) (configReloadSnapshot, bool) {
-	if errSave := config.SaveConfigPreserveComments(h.configFilePath, h.cfg, c.GetBool(ConfigV8ContextKey)); errSave != nil {
+	if errSave := config.SaveConfigPreserveComments(h.configFilePath, h.cfg); errSave != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", errSave)})
 		return configReloadSnapshot{}, false
 	}
@@ -403,58 +318,37 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 			provided = c.GetHeader("X-Management-Key")
 		}
 
-		snapshot := h.managementAuthSnapshot()
-		allowed, statusCode, errMsg := h.authenticateManagementKey(snapshot, clientIP, localClient, provided)
+		allowed, statusCode, errMsg := h.AuthenticateManagementKey(clientIP, localClient, provided)
 		if !allowed {
 			c.AbortWithStatusJSON(statusCode, gin.H{"error": errMsg})
 			return
 		}
-		if c.Request.Method != http.MethodOptions {
-			setHeader := func(id string) { c.Header(ServerIDHeader, id) }
-			setHeader(snapshot.serverID)
-			c.Set(managementIdentityKey, managementIdentity{id: snapshot.serverID, setHeader: setHeader})
-		}
 		c.Next()
-	}
-}
-
-type managementAuthConfig struct {
-	allowRemote bool
-	secretHash  string
-	serverID    string
-}
-
-func (h *Handler) managementAuthSnapshot() managementAuthConfig {
-	if h == nil {
-		return managementAuthConfig{}
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.cfg == nil {
-		return managementAuthConfig{}
-	}
-	return managementAuthConfig{
-		allowRemote: h.cfg.RemoteManagement.AllowRemote,
-		secretHash:  h.cfg.RemoteManagement.SecretKey,
-		serverID:    h.cfg.ServerID,
 	}
 }
 
 // AuthenticateManagementKey verifies the provided management key for the given client.
 // It mirrors the behaviour of Middleware() so non-HTTP callers can reuse the same logic.
 func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, provided string) (bool, int, string) {
-	return h.authenticateManagementKey(h.managementAuthSnapshot(), clientIP, localClient, provided)
-}
-
-func (h *Handler) authenticateManagementKey(cfg managementAuthConfig, clientIP string, localClient bool, provided string) (bool, int, string) {
 	const maxFailures = 5
 	const banDuration = 30 * time.Minute
 
 	if h == nil {
 		return false, http.StatusForbidden, "remote management disabled"
 	}
-	allowRemote := cfg.allowRemote || h.allowRemoteOverride
-	secretHash := cfg.secretHash
+
+	cfg := h.cfg
+	var (
+		allowRemote bool
+		secretHash  string
+	)
+	if cfg != nil {
+		allowRemote = cfg.RemoteManagement.AllowRemote
+		secretHash = cfg.RemoteManagement.SecretKey
+	}
+	if h.allowRemoteOverride {
+		allowRemote = true
+	}
 	envSecret := h.envSecret
 
 	now := time.Now()
@@ -524,7 +418,7 @@ func (h *Handler) authenticateManagementKey(cfg managementAuthConfig, clientIP s
 		return true, 0, ""
 	}
 
-	if secretHash == "" || !h.authCache.verify(secretHash, provided) {
+	if secretHash == "" || bcrypt.CompareHashAndPassword([]byte(secretHash), []byte(provided)) != nil {
 		fail()
 		return false, http.StatusUnauthorized, "invalid management key"
 	}
@@ -532,6 +426,13 @@ func (h *Handler) authenticateManagementKey(cfg managementAuthConfig, clientIP s
 	reset()
 
 	return true, 0, ""
+}
+
+// persist saves the current in-memory config to disk.
+func (h *Handler) persist(c *gin.Context) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.persistLocked(c)
 }
 
 // persistLocked saves the current in-memory config to disk.
@@ -544,7 +445,7 @@ func (h *Handler) persistLocked(c *gin.Context) bool {
 // for provider auth records deleted by the same management operation.
 func (h *Handler) persistLockedWithDeletedAuthIndices(c *gin.Context, authIndices []string) bool {
 	// Preserve comments when writing
-	if err := config.SaveConfigPreserveComments(h.configFilePath, h.cfg, c.GetBool(ConfigV8ContextKey)); err != nil {
+	if err := config.SaveConfigPreserveComments(h.configFilePath, h.cfg); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", err)})
 		return false
 	}
@@ -563,8 +464,7 @@ func (h *Handler) persistLockedWithDeletedAuthIndices(c *gin.Context, authIndice
 	return true
 }
 
-// Helper methods for simple types. The setter and the save run under h.mu, so a
-// reload publishing h.cfg cannot replace it between the change and the save.
+// Helper methods for simple types
 func (h *Handler) updateBoolField(c *gin.Context, set func(bool)) {
 	var body struct {
 		Value *bool `json:"value"`
@@ -573,10 +473,8 @@ func (h *Handler) updateBoolField(c *gin.Context, set func(bool)) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
 	set(*body.Value)
-	h.persistLocked(c)
+	h.persist(c)
 }
 
 func (h *Handler) updateIntField(c *gin.Context, set func(int)) {
@@ -587,10 +485,8 @@ func (h *Handler) updateIntField(c *gin.Context, set func(int)) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
 	set(*body.Value)
-	h.persistLocked(c)
+	h.persist(c)
 }
 
 func (h *Handler) updateStringField(c *gin.Context, set func(string)) {
@@ -601,8 +497,6 @@ func (h *Handler) updateStringField(c *gin.Context, set func(string)) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
 	set(*body.Value)
-	h.persistLocked(c)
+	h.persist(c)
 }

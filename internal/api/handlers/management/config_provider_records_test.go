@@ -8,9 +8,9 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/synthesizer"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/synthesizer"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
 func TestPostGeminiKeyAppendsOneRecord(t *testing.T) {
@@ -129,19 +129,18 @@ func TestPatchProviderRemarkNames(t *testing.T) {
 
 func TestPatchCodexKeyMatchesAuthIndexAndUpdatesAllExecutionFields(t *testing.T) {
 	const (
-		apiKey  = "codex-key"
-		baseURL = "https://codex.example/v1"
+		apiKey    = "codex-key"
+		baseURL   = "https://codex.example/v1"
+		authIndex = "auth-index-1"
 	)
 	idGen := synthesizer.NewStableIDGenerator()
-	authID, _ := idGen.Next("codex:apikey", apiKey, baseURL, "", "", config.FormatSortedHeaders(map[string]string{"X-Old": "keep-until-replaced"}))
+	authID, _ := idGen.Next("codex:apikey", apiKey, baseURL)
 	manager := coreauth.NewManager(nil, nil, nil)
-	auth := &coreauth.Auth{
-		ID:         authID,
-		Provider:   "codex",
-		Attributes: map[string]string{"api_key": apiKey, "base_url": baseURL},
-	}
-	authIndex := auth.EnsureIndex()
-	if _, err := manager.Register(context.Background(), auth); err != nil {
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       authID,
+		Index:    authIndex,
+		Provider: "codex",
+	}); err != nil {
 		t.Fatalf("register auth: %v", err)
 	}
 
@@ -162,7 +161,7 @@ func TestPatchCodexKeyMatchesAuthIndexAndUpdatesAllExecutionFields(t *testing.T)
 	ctx, _ := gin.CreateTestContext(rec)
 	ctx.Request = httptest.NewRequest(http.MethodPatch, "/v0/management/codex-api-key", strings.NewReader(`{
 		"match":"",
-		"match-auth-index":"`+authIndex+`",
+		"match-auth-index":"auth-index-1",
 		"value":{
 			"name":"Display only",
 			"priority":9,

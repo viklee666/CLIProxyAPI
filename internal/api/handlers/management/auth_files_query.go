@@ -13,10 +13,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/clientaccess"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/clientaccess"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	"github.com/tidwall/gjson"
 )
 
 const (
@@ -300,14 +300,8 @@ func (h *Handler) listAuthFilesQuery(c *gin.Context) {
 
 	files := make([]gin.H, 0, end-start)
 	if q.view != "count" {
-		quota := authFileQuotaContext{}
-		if q.view == "detail" {
-			if host := h.pluginHostSnapshot(); host != nil {
-				quota.pluginIDs = host.QuotaProviderPluginIDs(c.Request.Context())
-			}
-		}
 		for i := start; i < end; i++ {
-			entry := h.authFileQueryEntry(filtered[i], q.view, quota)
+			entry := h.authFileQueryEntry(filtered[i], q.view)
 			if entry != nil {
 				if filtered[i].auth != nil && h.authManager != nil && !h.authManager.HomeEnabled() {
 					entry["cooldowns"] = coreauth.CooldownSnapshotForAuth(filtered[i].auth, responseTime.UTC())
@@ -470,16 +464,16 @@ func (h *Handler) authFileCandidatesFromDisk() ([]authFileCandidate, error) {
 		}
 		path := filepath.Join(h.cfg.AuthDir, entry.Name())
 		data, _ := os.ReadFile(path)
-		provider := strings.ToLower(strings.TrimSpace(ojson.GetBytes(data, "type").String()))
-		planType := strings.ToLower(strings.TrimSpace(ojson.GetBytes(data, "plan_type").String()))
+		provider := strings.ToLower(strings.TrimSpace(gjson.GetBytes(data, "type").String()))
+		planType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(data, "plan_type").String()))
 		if planType == "" {
-			planType = strings.ToLower(strings.TrimSpace(ojson.GetBytes(data, "planType").String()))
+			planType = strings.ToLower(strings.TrimSpace(gjson.GetBytes(data, "planType").String()))
 		}
-		email := strings.TrimSpace(ojson.GetBytes(data, "email").String())
-		projectID := strings.TrimSpace(ojson.GetBytes(data, "project_id").String())
-		note := strings.TrimSpace(ojson.GetBytes(data, "note").String())
-		priority := int(ojson.GetBytes(data, "priority").Int())
-		disabled := ojson.GetBytes(data, "disabled").Bool()
+		email := strings.TrimSpace(gjson.GetBytes(data, "email").String())
+		projectID := strings.TrimSpace(gjson.GetBytes(data, "project_id").String())
+		note := strings.TrimSpace(gjson.GetBytes(data, "note").String())
+		priority := int(gjson.GetBytes(data, "priority").Int())
+		disabled := gjson.GetBytes(data, "disabled").Bool()
 		fileEntry := gin.H{
 			"name":     entry.Name(),
 			"type":     provider,
@@ -502,13 +496,13 @@ func (h *Handler) authFileCandidatesFromDisk() ([]authFileCandidate, error) {
 		if planType != "" {
 			fileEntry["plan_type"] = planType
 		}
-		if websockets := ojson.GetBytes(data, "websockets"); websockets.Exists() {
+		if websockets := gjson.GetBytes(data, "websockets"); websockets.Exists() {
 			switch websockets.Type {
-			case ojson.True:
+			case gjson.True:
 				fileEntry["websockets"] = true
-			case ojson.False:
+			case gjson.False:
 				fileEntry["websockets"] = false
-			case ojson.String:
+			case gjson.String:
 				if parsed, errParse := strconv.ParseBool(strings.TrimSpace(websockets.String())); errParse == nil {
 					fileEntry["websockets"] = parsed
 				}
@@ -661,7 +655,7 @@ func sortAuthFileCandidates(candidates []authFileCandidate, q authFileQuery) {
 	})
 }
 
-func (h *Handler) authFileQueryEntry(candidate authFileCandidate, view string, quota authFileQuotaContext) gin.H {
+func (h *Handler) authFileQueryEntry(candidate authFileCandidate, view string) gin.H {
 	if candidate.entry != nil {
 		return candidate.entry
 	}
@@ -669,7 +663,7 @@ func (h *Handler) authFileQueryEntry(candidate authFileCandidate, view string, q
 		return nil
 	}
 	if view == "detail" {
-		return h.buildAuthFileEntry(candidate.auth, quota)
+		return h.buildAuthFileEntry(candidate.auth)
 	}
 	auth := candidate.auth
 	entry := gin.H{

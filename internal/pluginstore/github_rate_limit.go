@@ -1,6 +1,7 @@
 package pluginstore
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -8,8 +9,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/MoeForge/moego/json"
 )
 
 // RateLimitError reports a GitHub API cooldown without exposing response bodies

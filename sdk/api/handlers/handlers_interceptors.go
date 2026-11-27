@@ -1,20 +1,17 @@
 package handlers
 
 import (
-	"maps"
+	"encoding/json"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
-	"github.com/MoeForge/moego/json"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	"golang.org/x/net/context"
 )
 
@@ -118,29 +115,8 @@ type requestLifecycleTracker struct {
 }
 
 func (h *BaseAPIHandler) newRequestLifecycleTracker(ctx context.Context, sourceFormat, model, requestedModel string, stream bool, metadata map[string]any, skipPluginID string) *requestLifecycleTracker {
-	var requestID string
-	if metadata != nil {
-		if existing, _ := metadata[coreexecutor.RequestIDMetadataKey].(string); strings.TrimSpace(existing) != "" {
-			requestID = strings.TrimSpace(existing)
-		}
-	}
-	if requestID == "" {
-		requestID = coreauth.ContinuitySessionRequestID(ctx)
-	}
-	if requestID == "" {
-		requestID = uuid.NewString()
-	}
+	requestID := uuid.NewString()
 	traceID := logging.GetRequestID(ctx)
-	if metadata != nil {
-		if existing, _ := metadata[coreexecutor.RequestIDMetadataKey].(string); strings.TrimSpace(existing) == "" {
-			metadata[coreexecutor.RequestIDMetadataKey] = requestID
-		}
-		if traceID != "" {
-			if existing, _ := metadata[coreexecutor.TraceIDMetadataKey].(string); strings.TrimSpace(existing) == "" {
-				metadata[coreexecutor.TraceIDMetadataKey] = traceID
-			}
-		}
-	}
 	return &requestLifecycleTracker{
 		ctx:          ctx,
 		host:         h.interceptorHost(),
@@ -267,11 +243,6 @@ func nextStreamChunk(ctx context.Context, pending *[]coreexecutor.StreamChunk, c
 		case <-ctx.Done():
 			return coreexecutor.StreamChunk{}, false, true
 		case chunk, ok = <-chunks:
-			// A channel closed together with the cancellation was cut by it: the select above picks at random when both are
-			// ready, and the plain close would be reported as a success.
-			if !ok && ctx.Err() != nil {
-				return coreexecutor.StreamChunk{}, false, true
-			}
 		}
 	} else {
 		chunk, ok = <-chunks
@@ -367,13 +338,7 @@ func (h *BaseAPIHandler) interceptorHost() PluginInterceptorHost {
 	if h == nil {
 		return nil
 	}
-	h.runtimeMu.RLock()
-	host := h.PluginHost
-	h.runtimeMu.RUnlock()
-	if isNilPluginInterceptorHost(host) {
-		return nil
-	}
-	return host
+	return h.PluginHost
 }
 
 func streamInterceptorsEnabled(host PluginInterceptorHost) bool {
@@ -403,7 +368,6 @@ type requestAfterAuthCapture struct {
 	body                    []byte
 	originalRequest         []byte
 	originalRequestReplaced bool
-	path                    string
 }
 
 func (c *requestAfterAuthCapture) record(req coreexecutor.RequestAfterAuthInterceptRequest, resp coreexecutor.RequestAfterAuthInterceptResponse) {
@@ -411,15 +375,14 @@ func (c *requestAfterAuthCapture) record(req coreexecutor.RequestAfterAuthInterc
 		return
 	}
 	headers := mergeRequestInterceptorHeaders(req.Headers, resp.Headers, resp.ClearHeaders)
-	var body []byte
+	body := cloneBytes(req.Body)
 	var originalRequest []byte
 	originalRequestReplaced := false
 	if len(resp.Body) > 0 {
-		body = resp.Body
-		originalRequest = resp.Body
+		body = cloneBytes(resp.Body)
+		originalRequest = cloneBytes(resp.Body)
 		originalRequestReplaced = true
 	}
-	path := strings.TrimSpace(resp.Path)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -428,7 +391,6 @@ func (c *requestAfterAuthCapture) record(req coreexecutor.RequestAfterAuthInterc
 	c.body = body
 	c.originalRequest = originalRequest
 	c.originalRequestReplaced = originalRequestReplaced
-	c.path = path
 }
 
 func (c *requestAfterAuthCapture) apply(req coreexecutor.Request, opts coreexecutor.Options) (coreexecutor.Request, coreexecutor.Options) {
@@ -440,18 +402,10 @@ func (c *requestAfterAuthCapture) apply(req coreexecutor.Request, opts coreexecu
 	if !c.set {
 		return req, opts
 	}
-	if c.originalRequestReplaced {
-		req.Payload = c.body
-		opts.OriginalRequest = c.originalRequest
-	}
+	req.Payload = cloneBytes(c.body)
 	opts.Headers = cloneHeader(c.headers)
-	if c.path != "" {
-		if opts.Metadata == nil {
-			opts.Metadata = make(map[string]any, 1)
-		} else {
-			opts.Metadata = maps.Clone(opts.Metadata)
-		}
-		opts.Metadata[coreexecutor.RequestPathMetadataKey] = c.path
+	if c.originalRequestReplaced {
+		opts.OriginalRequest = cloneBytes(c.originalRequest)
 	}
 	return req, opts
 }
@@ -525,62 +479,18 @@ func (h *BaseAPIHandler) applyRequestInterceptorsBeforeAuth(ctx context.Context,
 		RequestedModel: requestedModel,
 		Stream:         opts.Stream,
 		Headers:        cloneHeader(opts.Headers),
-		Body:           req.Payload,
-		CallerScope:    callerScopeFromMetadata(opts.Metadata),
+		Body:           cloneBytes(req.Payload),
 		Metadata:       opts.Metadata,
 	}, skipPluginID)
 	opts.Headers = finalInterceptorHeaders(opts.Headers, resp.Headers)
 	if len(resp.Body) > 0 {
-		req.Payload = resp.Body
-		opts.OriginalRequest = resp.Body
-	}
-	if strings.TrimSpace(resp.Path) != "" {
-		if opts.Metadata == nil {
-			opts.Metadata = make(map[string]any, 1)
-		} else {
-			opts.Metadata = maps.Clone(opts.Metadata)
-		}
-		opts.Metadata[coreexecutor.RequestPathMetadataKey] = strings.TrimSpace(resp.Path)
+		req.Payload = cloneBytes(resp.Body)
+		opts.OriginalRequest = cloneBytes(resp.Body)
 	}
 	if resp.Terminate {
 		return req, opts, requestTerminationError(resp)
 	}
 	return req, opts, nil
-}
-
-func (h *BaseAPIHandler) requestBeforeAuthInterceptor(requestID, skipPluginID string) coreexecutor.RequestBeforeAuthInterceptor {
-	if !requestInterceptorsEnabled(h.interceptorHost()) {
-		return nil
-	}
-	return func(ctx context.Context, req coreexecutor.RequestAfterAuthInterceptRequest) coreexecutor.RequestAfterAuthInterceptResponse {
-		host := h.interceptorHost()
-		if !requestInterceptorsEnabled(host) {
-			return coreexecutor.RequestAfterAuthInterceptResponse{}
-		}
-		resp := interceptRequestBeforeAuth(ctx, host, pluginapi.RequestInterceptRequest{
-			RequestID:      requestID,
-			TraceID:        logging.GetRequestID(ctx),
-			SourceFormat:   req.SourceFormat.String(),
-			ToFormat:       "",
-			Model:          req.Model,
-			RequestedModel: req.RequestedModel,
-			Stream:         req.Stream,
-			Headers:        cloneHeader(req.Headers),
-			Body:           req.Body,
-			CallerScope:    callerScopeFromMetadata(req.Metadata),
-			Metadata:       req.Metadata,
-		}, skipPluginID)
-		return coreexecutor.RequestAfterAuthInterceptResponse{
-			Path:            strings.TrimSpace(resp.Path),
-			Headers:         resp.Headers,
-			Body:            resp.Body,
-			ClearHeaders:    resp.ClearHeaders,
-			Terminate:       resp.Terminate,
-			StatusCode:      normalizedTerminationStatus(resp.StatusCode),
-			ResponseHeaders: resp.ResponseHeaders,
-			ResponseBody:    resp.ResponseBody,
-		}
-	}
 }
 
 func (h *BaseAPIHandler) requestAfterAuthInterceptor(capture *requestAfterAuthCapture, requestID, skipPluginID string) coreexecutor.RequestAfterAuthInterceptor {
@@ -589,7 +499,7 @@ func (h *BaseAPIHandler) requestAfterAuthInterceptor(capture *requestAfterAuthCa
 	}
 	return func(ctx context.Context, req coreexecutor.RequestAfterAuthInterceptRequest) coreexecutor.RequestAfterAuthInterceptResponse {
 		resp := h.applyRequestInterceptorsAfterAuth(ctx, req, requestID, skipPluginID)
-		if capture != nil && !resp.Terminate {
+		if capture != nil {
 			capture.record(req, resp)
 		}
 		return resp
@@ -651,30 +561,26 @@ func (h *BaseAPIHandler) applyRequestInterceptorsAfterAuth(ctx context.Context, 
 		RequestedModel: req.RequestedModel,
 		Stream:         req.Stream,
 		Headers:        cloneHeader(req.Headers),
-		Body:           req.Body,
-		CallerScope:    callerScopeFromMetadata(req.Metadata),
+		Body:           cloneBytes(req.Body),
 		Metadata:       req.Metadata,
 	}, skipPluginID)
 	return coreexecutor.RequestAfterAuthInterceptResponse{
-		Path:            strings.TrimSpace(resp.Path),
 		Headers:         resp.Headers,
 		Body:            resp.Body,
 		ClearHeaders:    resp.ClearHeaders,
 		Terminate:       resp.Terminate,
-		TerminateScope:  resp.TerminateScope,
 		StatusCode:      normalizedTerminationStatus(resp.StatusCode),
 		ResponseHeaders: resp.ResponseHeaders,
 		ResponseBody:    resp.ResponseBody,
 	}
 }
 
-func (h *BaseAPIHandler) applyResponseInterceptors(ctx context.Context, kind, requestID, handlerType, normalizedModel, requestedModel string, opts coreexecutor.Options, rawResponseHeaders, responseHeaders http.Header, originalRequest, requestBody, body []byte, statusCode int, skipPluginID string, passthrough bool) ([]byte, http.Header) {
+func (h *BaseAPIHandler) applyResponseInterceptors(ctx context.Context, requestID, handlerType, normalizedModel, requestedModel string, opts coreexecutor.Options, rawResponseHeaders, responseHeaders http.Header, originalRequest, requestBody, body []byte, statusCode int, skipPluginID string) ([]byte, http.Header) {
 	host := h.interceptorHost()
 	if host == nil {
 		return body, responseHeaders
 	}
 	resp := interceptResponse(ctx, host, pluginapi.ResponseInterceptRequest{
-		Kind:            kind,
 		RequestID:       requestID,
 		SourceFormat:    handlerType,
 		Model:           normalizedModel,
@@ -688,56 +594,11 @@ func (h *BaseAPIHandler) applyResponseInterceptors(ctx context.Context, kind, re
 		StatusCode:      statusCode,
 		Metadata:        opts.Metadata,
 	}, skipPluginID)
-	responseHeaders = downstreamHeadersAfterInterceptors(rawResponseHeaders, finalInterceptorHeaders(rawResponseHeaders, resp.Headers), passthrough)
+	responseHeaders = downstreamHeadersAfterInterceptors(rawResponseHeaders, finalInterceptorHeaders(rawResponseHeaders, resp.Headers), PassthroughHeadersEnabled(h.Cfg))
 	if len(resp.Body) > 0 {
 		body = cloneBytes(resp.Body)
 	}
 	return body, responseHeaders
-}
-
-// ModelDetailIDContextKey requests selection from the final, plugin-filtered catalog.
-const ModelDetailIDContextKey = "cliproxy.model_detail_id"
-
-// Metadata keys carrying downstream caller identity to model-directory interceptors.
-const (
-	modelListAccessProviderMetadataKey = "access_provider"
-	modelListFrontendAuthMetadataKey   = "frontend_auth_metadata"
-)
-
-// modelListInterceptorMetadata assembles the caller identity metadata forwarded to model-list
-// response interceptors and lifecycle events, mirroring the metadata built for execution paths.
-func modelListInterceptorMetadata(c *gin.Context) map[string]any {
-	if c == nil {
-		return nil
-	}
-	var meta map[string]any
-	setMeta := func(key string, value any) {
-		if meta == nil {
-			meta = make(map[string]any)
-		}
-		meta[key] = value
-	}
-	if callerScope := requestCallerScope(c); callerScope != "" {
-		setMeta(coreexecutor.CallerScopeMetadataKey, callerScope)
-	}
-	if provider, ok := c.Get("accessProvider"); ok {
-		if providerName, isString := provider.(string); isString && strings.TrimSpace(providerName) != "" {
-			setMeta(modelListAccessProviderMetadataKey, strings.TrimSpace(providerName))
-		}
-	}
-	if rawMetadata, ok := c.Get("accessMetadata"); ok {
-		switch authMetadata := rawMetadata.(type) {
-		case map[string]string:
-			if len(authMetadata) > 0 {
-				setMeta(modelListFrontendAuthMetadataKey, maps.Clone(authMetadata))
-			}
-		case map[string]any:
-			if len(authMetadata) > 0 {
-				setMeta(modelListFrontendAuthMetadataKey, maps.Clone(authMetadata))
-			}
-		}
-	}
-	return meta
 }
 
 // WriteModelListResponse serializes the model-list payload, applies plugin response interceptors
@@ -763,7 +624,6 @@ func (h *BaseAPIHandler) WriteModelListResponse(c *gin.Context, sourceFormat str
 		"Content-Type": []string{"application/json; charset=utf-8"},
 	}
 
-	var lifecycle *requestLifecycleTracker
 	host := h.interceptorHost()
 	// Global model-list rewrites cannot widen an access-controlled catalog.
 	if host != nil && !h.IsModelCatalogScoped(c) {
@@ -775,10 +635,8 @@ func (h *BaseAPIHandler) WriteModelListResponse(c *gin.Context, sourceFormat str
 				ctx = reqCtx
 			}
 		}
-		metadata := modelListInterceptorMetadata(c)
-		lifecycle = h.newRequestLifecycleTracker(ctx, sourceFormat, "", "", false, metadata, "")
+		lifecycle := h.newRequestLifecycleTracker(ctx, sourceFormat, "", "", false, nil, "")
 		resp := interceptResponse(ctx, host, pluginapi.ResponseInterceptRequest{
-			Kind:            pluginapi.ResponseInterceptKindModelList,
 			RequestID:       lifecycle.requestID(),
 			SourceFormat:    sourceFormat,
 			Model:           "",
@@ -790,7 +648,7 @@ func (h *BaseAPIHandler) WriteModelListResponse(c *gin.Context, sourceFormat str
 			RequestBody:     nil,
 			Body:            cloneBytes(body),
 			StatusCode:      http.StatusOK,
-			Metadata:        metadata,
+			Metadata:        nil,
 		}, "")
 		if len(resp.Body) > 0 {
 			body = cloneBytes(resp.Body)
@@ -800,44 +658,9 @@ func (h *BaseAPIHandler) WriteModelListResponse(c *gin.Context, sourceFormat str
 				c.Writer.Header()[key] = append([]string(nil), values...)
 			}
 		}
+		lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	}
 
-	if modelID, detail := c.Get(ModelDetailIDContextKey); detail {
-		c.Writer.Header().Del("Content-Length")
-		var catalog struct {
-			Data   []json.RawMessage `json:"data"`
-			Models []json.RawMessage `json:"models"`
-		}
-		if errUnmarshal := json.Unmarshal(body, &catalog); errUnmarshal != nil {
-			lifecycle.complete(pluginapi.RequestCompletionFailed, http.StatusBadGateway, errUnmarshal)
-			c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{"message": "Invalid model catalog", "type": "api_error"}})
-			return
-		}
-		var selected json.RawMessage
-		for _, model := range append(catalog.Data, catalog.Models...) {
-			var entry struct {
-				ID   string `json:"id"`
-				Slug string `json:"slug"`
-			}
-			if errUnmarshal := json.Unmarshal(model, &entry); errUnmarshal != nil {
-				continue
-			}
-			if entry.ID == "" {
-				entry.ID = entry.Slug
-			}
-			if entry.ID != "" && entry.ID == modelID {
-				selected = model
-				break
-			}
-		}
-		if selected == nil {
-			lifecycle.complete(pluginapi.RequestCompletionFailed, http.StatusNotFound, nil)
-			c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"message": "Model not found", "type": "invalid_request_error", "code": "model_not_found"}})
-			return
-		}
-		body = selected
-	}
-	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	if c.Writer.Header().Get("Content-Type") == "" {
 		c.Header("Content-Type", "application/json; charset=utf-8")
 	}

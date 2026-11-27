@@ -33,25 +33,6 @@ func TestGetAvailableModelsForClientsScopesCatalogToRequestedClients(t *testing.
 	}
 }
 
-func TestTenantCatalogRetainsCredentialsInQuotaCooldown(t *testing.T) {
-	for _, reason := range []string{"quota", "credential_quota"} {
-		t.Run(reason, func(t *testing.T) {
-			r := newTestModelRegistry()
-			r.RegisterClient("tenant-a", "openai", []*ModelInfo{{ID: "tenant-model", Object: "model"}})
-			r.RegisterClient("tenant-b", "openai", []*ModelInfo{{ID: "other-model", Object: "model"}})
-			r.SuspendClientModel("tenant-a", "tenant-model", reason)
-			models := r.GetAvailableModelsForClients("openai", []string{"tenant-a"})
-			if len(models) != 1 || models[0]["id"] != "tenant-model" {
-				t.Fatalf("scoped catalog in %s cooldown = %#v", reason, models)
-			}
-			infos := r.GetAvailableModelInfosForClients([]string{"tenant-a"})
-			if len(infos) != 1 || infos[0].ID != "tenant-model" {
-				t.Fatalf("scoped model infos in %s cooldown = %#v", reason, infos)
-			}
-		})
-	}
-}
-
 func TestGetAvailableModelInfosForClientsPreservesThinkingAndScopesClients(t *testing.T) {
 	r := newTestModelRegistry()
 	r.RegisterClient("tenant-a", "openai", []*ModelInfo{

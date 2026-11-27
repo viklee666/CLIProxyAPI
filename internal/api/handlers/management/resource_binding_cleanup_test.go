@@ -11,10 +11,10 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/clientaccess"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/synthesizer"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/clientaccess"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/synthesizer"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
 type testProviderAuth struct {
@@ -192,7 +192,7 @@ func TestDeleteAIProviderRemovesClientAccessCredentialBindings(t *testing.T) {
 			name: "gemini",
 			configure: func(cfg *config.Config) []testProviderAuth {
 				cfg.GeminiKey = []config.GeminiKey{{APIKey: "gemini-key", BaseURL: "https://gemini.example.com"}}
-				id, _ := synthesizer.NewStableIDGenerator().Next("gemini:apikey", "gemini-key", "https://gemini.example.com", "", "", "")
+				id, _ := synthesizer.NewStableIDGenerator().Next("gemini:apikey", "gemini-key", "https://gemini.example.com")
 				return []testProviderAuth{{id: id, index: "auth-gemini"}}
 			},
 			target: "/v0/management/gemini-api-key?index=0",
@@ -202,7 +202,7 @@ func TestDeleteAIProviderRemovesClientAccessCredentialBindings(t *testing.T) {
 			name: "interactions",
 			configure: func(cfg *config.Config) []testProviderAuth {
 				cfg.InteractionsKey = []config.GeminiKey{{APIKey: "interactions-key", BaseURL: "https://interactions.example.com"}}
-				id, _ := synthesizer.NewStableIDGenerator().Next("gemini-interactions:apikey", "interactions-key", "https://interactions.example.com", "", "", "")
+				id, _ := synthesizer.NewStableIDGenerator().Next("gemini-interactions:apikey", "interactions-key", "https://interactions.example.com")
 				return []testProviderAuth{{id: id, index: "auth-interactions"}}
 			},
 			target: "/v0/management/interactions-api-key?index=0",
@@ -212,7 +212,7 @@ func TestDeleteAIProviderRemovesClientAccessCredentialBindings(t *testing.T) {
 			name: "claude",
 			configure: func(cfg *config.Config) []testProviderAuth {
 				cfg.ClaudeKey = []config.ClaudeKey{{APIKey: "claude-key", BaseURL: "https://claude.example.com"}}
-				id, _ := synthesizer.NewStableIDGenerator().Next("claude:apikey", "claude-key", "https://claude.example.com", "", "", "")
+				id, _ := synthesizer.NewStableIDGenerator().Next("claude:apikey", "claude-key", "https://claude.example.com")
 				return []testProviderAuth{{id: id, index: "auth-claude"}}
 			},
 			target: "/v0/management/claude-api-key?index=0",
@@ -222,7 +222,7 @@ func TestDeleteAIProviderRemovesClientAccessCredentialBindings(t *testing.T) {
 			name: "codex",
 			configure: func(cfg *config.Config) []testProviderAuth {
 				cfg.CodexKey = []config.CodexKey{{APIKey: "codex-key", BaseURL: "https://codex.example.com"}}
-				id, _ := synthesizer.NewStableIDGenerator().Next("codex:apikey", "codex-key", "https://codex.example.com", "", "", "")
+				id, _ := synthesizer.NewStableIDGenerator().Next("codex:apikey", "codex-key", "https://codex.example.com")
 				return []testProviderAuth{{id: id, index: "auth-codex"}}
 			},
 			target: "/v0/management/codex-api-key?index=0",
@@ -232,7 +232,7 @@ func TestDeleteAIProviderRemovesClientAccessCredentialBindings(t *testing.T) {
 			name: "xai",
 			configure: func(cfg *config.Config) []testProviderAuth {
 				cfg.XAIKey = []config.XAIKey{{APIKey: "xai-key", BaseURL: "https://xai.example.com"}}
-				id, _ := synthesizer.NewStableIDGenerator().Next("xai:apikey", "xai-key", "https://xai.example.com", "", "", "")
+				id, _ := synthesizer.NewStableIDGenerator().Next("xai:apikey", "xai-key", "https://xai.example.com")
 				return []testProviderAuth{{id: id, index: "auth-xai"}}
 			},
 			target: "/v0/management/xai-api-key?index=0",
@@ -302,7 +302,7 @@ func TestPutAIProviderRemovesClientAccessCredentialBindings(t *testing.T) {
 			name: "gemini",
 			configure: func(cfg *config.Config) []testProviderAuth {
 				cfg.GeminiKey = []config.GeminiKey{{APIKey: "gemini-key", BaseURL: "https://gemini.example.com"}}
-				id, _ := synthesizer.NewStableIDGenerator().Next("gemini:apikey", "gemini-key", "https://gemini.example.com", "", "", "")
+				id, _ := synthesizer.NewStableIDGenerator().Next("gemini:apikey", "gemini-key", "https://gemini.example.com")
 				return []testProviderAuth{{id: id, index: "auth-gemini"}}
 			},
 			target:  "/v0/management/gemini-api-key",
@@ -312,7 +312,7 @@ func TestPutAIProviderRemovesClientAccessCredentialBindings(t *testing.T) {
 			name: "interactions",
 			configure: func(cfg *config.Config) []testProviderAuth {
 				cfg.InteractionsKey = []config.GeminiKey{{APIKey: "interactions-key", BaseURL: "https://interactions.example.com"}}
-				id, _ := synthesizer.NewStableIDGenerator().Next("gemini-interactions:apikey", "interactions-key", "https://interactions.example.com", "", "", "")
+				id, _ := synthesizer.NewStableIDGenerator().Next("gemini-interactions:apikey", "interactions-key", "https://interactions.example.com")
 				return []testProviderAuth{{id: id, index: "auth-interactions"}}
 			},
 			target:  "/v0/management/interactions-api-key",
@@ -322,7 +322,7 @@ func TestPutAIProviderRemovesClientAccessCredentialBindings(t *testing.T) {
 			name: "claude",
 			configure: func(cfg *config.Config) []testProviderAuth {
 				cfg.ClaudeKey = []config.ClaudeKey{{APIKey: "claude-key", BaseURL: "https://claude.example.com"}}
-				id, _ := synthesizer.NewStableIDGenerator().Next("claude:apikey", "claude-key", "https://claude.example.com", "", "", "")
+				id, _ := synthesizer.NewStableIDGenerator().Next("claude:apikey", "claude-key", "https://claude.example.com")
 				return []testProviderAuth{{id: id, index: "auth-claude"}}
 			},
 			target:  "/v0/management/claude-api-key",
@@ -332,7 +332,7 @@ func TestPutAIProviderRemovesClientAccessCredentialBindings(t *testing.T) {
 			name: "codex",
 			configure: func(cfg *config.Config) []testProviderAuth {
 				cfg.CodexKey = []config.CodexKey{{APIKey: "codex-key", BaseURL: "https://codex.example.com"}}
-				id, _ := synthesizer.NewStableIDGenerator().Next("codex:apikey", "codex-key", "https://codex.example.com", "", "", "")
+				id, _ := synthesizer.NewStableIDGenerator().Next("codex:apikey", "codex-key", "https://codex.example.com")
 				return []testProviderAuth{{id: id, index: "auth-codex"}}
 			},
 			target:  "/v0/management/codex-api-key",
@@ -342,7 +342,7 @@ func TestPutAIProviderRemovesClientAccessCredentialBindings(t *testing.T) {
 			name: "xai",
 			configure: func(cfg *config.Config) []testProviderAuth {
 				cfg.XAIKey = []config.XAIKey{{APIKey: "xai-key", BaseURL: "https://xai.example.com"}}
-				id, _ := synthesizer.NewStableIDGenerator().Next("xai:apikey", "xai-key", "https://xai.example.com", "", "", "")
+				id, _ := synthesizer.NewStableIDGenerator().Next("xai:apikey", "xai-key", "https://xai.example.com")
 				return []testProviderAuth{{id: id, index: "auth-xai"}}
 			},
 			target:  "/v0/management/xai-api-key",

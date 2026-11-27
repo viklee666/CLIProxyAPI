@@ -14,7 +14,7 @@ import (
 // oauthProvider represents an OAuth provider option.
 type oauthProvider struct {
 	name       string
-	apiPath    string // legacy v0 management path segment (e.g. "codex-auth-url")
+	apiPath    string // management API path
 	emoji      string
 	deviceFlow bool // true for RFC 8628 device-code providers
 }
@@ -23,8 +23,7 @@ var oauthProviders = []oauthProvider{
 	{"Claude (Anthropic)", "anthropic-auth-url", "🟧", false},
 	{"Codex (OpenAI)", "codex-auth-url", "🟩", false},
 	{"Antigravity", "antigravity-auth-url", "🟪", false},
-	{"Kimi (kimi.com)", "kimi-auth-url", "🟫", true},
-	{"Kimi (kimi.ai)", "kimi-ai-auth-url", "🟫", true},
+	{"Kimi", "kimi-auth-url", "🟫", true},
 	{"xAI", "xai-auth-url", "⬛", true},
 	{"Meta", "meta-auth-url", "🔵", true},
 }
@@ -45,7 +44,6 @@ type oauthTabModel struct {
 	authURL       string // auth URL to display
 	authState     string // OAuth state parameter
 	providerName  string // current provider name
-	providerKey   string // v8 provider identifier for the callback
 	userCode      string // device-code user_code (optional)
 	deviceFlow    bool   // true when waiting on device authorization
 	expiresIn     int    // device-code / poll timeout in seconds
@@ -78,7 +76,6 @@ type oauthStartMsg struct {
 	url          string
 	state        string
 	providerName string
-	providerKey  string
 	userCode     string
 	deviceFlow   bool
 	expiresIn    int
@@ -136,7 +133,6 @@ func (m oauthTabModel) Update(msg tea.Msg) (oauthTabModel, tea.Cmd) {
 		m.authURL = msg.url
 		m.authState = msg.state
 		m.providerName = msg.providerName
-		m.providerKey = msg.providerKey
 		m.userCode = msg.userCode
 		m.deviceFlow = msg.deviceFlow
 		m.expiresIn = msg.expiresIn
@@ -284,8 +280,8 @@ func (m oauthTabModel) Update(msg tea.Msg) (oauthTabModel, tea.Cmd) {
 
 func (m oauthTabModel) startOAuth(provider oauthProvider, generation int) tea.Cmd {
 	return func() tea.Msg {
-		// Call the shared v8 auth-url endpoint (falls back to the v0 route).
-		data, err := m.client.StartOAuthFlow(provider.apiPath)
+		// Call the auth URL endpoint with is_webui=true
+		data, err := m.client.getJSON("/v0/management/" + provider.apiPath + "?is_webui=true")
 		if err != nil {
 			return oauthStartMsg{generation: generation, err: fmt.Errorf("failed to start %s login: %w", provider.name, err)}
 		}
@@ -308,7 +304,6 @@ func (m oauthTabModel) startOAuth(provider oauthProvider, generation int) tea.Cm
 			url:          authURL,
 			state:        state,
 			providerName: provider.name,
-			providerKey:  oauthV8Provider[provider.apiPath],
 			userCode:     userCode,
 			deviceFlow:   deviceFlow,
 			expiresIn:    expiresIn,
@@ -348,19 +343,35 @@ func (m oauthTabModel) cancelOAuthSession(state string) tea.Cmd {
 
 func (m oauthTabModel) submitCallback(callbackURL string) tea.Cmd {
 	return func() tea.Msg {
-		// The v8 provider key recorded when the flow started; derive it from the
-		// provider list as a fallback for sessions started before this field.
-		providerKey := m.providerKey
-		if providerKey == "" {
-			for _, p := range oauthProviders {
-				if p.name == m.providerName {
-					providerKey = oauthV8Provider[p.apiPath]
-					break
+		// Determine provider from current context
+		providerKey := ""
+		for _, p := range oauthProviders {
+			if p.name == m.providerName {
+				// Map provider name to the canonical key the API expects
+				switch p.apiPath {
+				case "anthropic-auth-url":
+					providerKey = "anthropic"
+				case "codex-auth-url":
+					providerKey = "codex"
+				case "antigravity-auth-url":
+					providerKey = "antigravity"
+				case "kimi-auth-url":
+					providerKey = "kimi"
+				case "xai-auth-url":
+					providerKey = "xai"
+				case "meta-auth-url":
+					providerKey = "meta"
 				}
+				break
 			}
 		}
 
-		err := m.client.SubmitOAuthCallback(providerKey, callbackURL, m.authState)
+		body := map[string]string{
+			"provider":     providerKey,
+			"redirect_url": callbackURL,
+			"state":        m.authState,
+		}
+		err := m.client.postJSON("/v0/management/oauth-callback", body)
 		if err != nil {
 			return oauthCallbackSubmitMsg{err: err}
 		}

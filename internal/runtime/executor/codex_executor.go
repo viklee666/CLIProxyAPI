@@ -1,8 +1,8 @@
 package executor
 
 import (
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
 // CodexExecutor is a stateless executor for Codex (OpenAI Responses API entrypoint).
@@ -27,6 +27,3 @@ func (e *CodexExecutor) streamBootstrapPolicy(auth *cliproxyauth.Auth) (enabled,
 	}
 	return credentialFile || e != nil && e.cfg != nil && e.cfg.Codex.StreamBootstrapBuffering, credentialFile
 }
-
-// SupportsApplyPatch reports the actual executor contract, independent of its provider name.
-func (e *CodexExecutor) SupportsApplyPatch() bool { return e != nil }

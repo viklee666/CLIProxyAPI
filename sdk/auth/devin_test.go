@@ -3,6 +3,7 @@ package auth
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -12,9 +13,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/MoeForge/moego/json"
-	devinauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/devin"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	devinauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/devin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 )
 
 func TestDevinAuthenticatorProviderAndRefreshLead(t *testing.T) {

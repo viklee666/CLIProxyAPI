@@ -9,8 +9,8 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/clientaccess"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/tenant"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/clientaccess"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/tenant"
 )
 
 func (h *Handler) tenantManagementServices() (*tenant.Service, *clientaccess.Service, func(context.Context) error) {

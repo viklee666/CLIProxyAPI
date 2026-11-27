@@ -1,21 +1,18 @@
 package handlers
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"net/http"
-	"strings"
 
-	"github.com/MoeForge/moego/json"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	"golang.org/x/net/context"
 )
 
@@ -28,11 +25,6 @@ type PluginExecutorHost interface {
 
 type pluginExecutorFormatResolver interface {
 	PluginExecutorRequestToFormat(string, coreexecutor.Request, coreexecutor.Options) sdktranslator.Format
-}
-
-type pluginExecutorAttributionHost interface {
-	ExecutePluginExecutorWithAttribution(context.Context, string, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, *pluginapi.UsageAttribution, error)
-	ExecutePluginExecutorStreamWithAttribution(context.Context, string, coreexecutor.Request, coreexecutor.Options) (*coreexecutor.StreamResult, *pluginapi.UsageAttribution, error)
 }
 
 // ExecuteWithAuthManager executes a non-streaming request via the core auth manager.
@@ -52,8 +44,6 @@ func (h *BaseAPIHandler) executeWithAuthManager(ctx context.Context, handlerType
 
 func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entryProtocol, exitProtocol, modelName string, rawJSON []byte, alt string, allowImageModel bool, execOptions modelExecutionOptions) ([]byte, http.Header, *interfaces.ErrorMessage) {
 	originalRequestedModel := modelName
-	// Speech-only models are reachable solely through the speech entry protocol.
-	execOptions.AllowSpeechModel = isModelExecutionSpeechProtocol(entryProtocol)
 	routeDecision := h.applyModelRouter(ctx, entryProtocol, modelName, rawJSON, false, execOptions)
 	responseProtocol := modelExecutionResponseProtocol(entryProtocol, exitProtocol)
 	if errMsg := validateNativeInteractionsExecution(entryProtocol, execOptions, routeDecision); errMsg != nil {
@@ -68,10 +58,6 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	}
 	providers = adjustExecutionProvidersForEntryProtocol(entryProtocol, providers)
 	reqMeta := requestExecutionMetadata(ctx)
-	if execOptions.Path != "" {
-		reqMeta[coreexecutor.RequestPathMetadataKey] = execOptions.Path
-	}
-	addCallerScopeMetadata(reqMeta, execOptions.CallerScope)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = originalRequestedModel
 	addAuthSelectionModelMetadata(reqMeta, execOptions.AuthSelectionModel)
 	addModelExecutionSourceMetadata(reqMeta, execOptions.InternalSource)
@@ -86,23 +72,18 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 		Model:   normalizedModel,
 		Payload: payload,
 	}
-	originalRequest := rawJSON
-	if ctxOriginal := originalRequestFromContext(ctx); len(ctxOriginal) > 0 {
-		originalRequest = ctxOriginal
-	}
 	afterAuthCapture := &requestAfterAuthCapture{}
 	lifecycle := h.newRequestLifecycleTracker(ctx, entryProtocol, normalizedModel, originalRequestedModel, false, reqMeta, execOptions.SkipInterceptorPluginID)
 	opts := coreexecutor.Options{
 		Stream:                      false,
 		Alt:                         alt,
-		OriginalRequest:             originalRequest,
+		OriginalRequest:             rawJSON,
 		SourceFormat:                sdktranslator.FromString(entryProtocol),
 		ResponseFormat:              sdktranslator.FromString(responseProtocol),
 		Headers:                     modelExecutionHeaders(ctx, execOptions.Headers),
 		Query:                       modelExecutionQuery(ctx, execOptions.Query),
 		RequestAfterAuthInterceptor: h.requestAfterAuthInterceptor(afterAuthCapture, lifecycle.requestID(), execOptions.SkipInterceptorPluginID),
 		WebSocketResponseObserver:   h.webSocketResponseObserver(lifecycle.requestID(), execOptions.SkipInterceptorPluginID),
-		ProxyURL:                    execOptions.ProxyURL,
 	}
 	opts.Metadata = reqMeta
 	ctx = enrichContextWithSessionHierarchy(ctx, opts.Headers, req.Payload, opts.Metadata)
@@ -112,7 +93,7 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 		lifecycle.completeError(ctx, interceptErr)
 		return nil, nil, interceptErr
 	}
-	ctx = coreauth.WithFreshRequestContinuitySession(enrichContextWithSessionHierarchy(ctx, opts.Headers, req.Payload, opts.Metadata))
+	ctx = enrichContextWithSessionHierarchy(ctx, opts.Headers, req.Payload, opts.Metadata)
 	resp, err := h.AuthManager.Execute(ctx, providers, req, opts)
 	if err != nil {
 		err = enrichAuthSelectionError(err, providers, normalizedModel)
@@ -123,9 +104,8 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	executedReq, executedOpts := afterAuthCapture.apply(req, opts)
 	ctx = enrichContextWithSessionHierarchy(ctx, executedOpts.Headers, executedReq.Payload, executedOpts.Metadata)
 	rawResponseHeaders := cloneHeader(resp.Headers)
-	passthroughHeaders := executionPassthroughHeaders(h.CurrentConfig(), execOptions.InternalSource)
-	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, passthroughHeaders)
-	body, responseHeaders := h.applyResponseInterceptors(ctx, pluginapi.ResponseInterceptKindExecution, lifecycle.requestID(), responseProtocol, normalizedModel, originalRequestedModel, executedOpts, rawResponseHeaders, responseHeaders, executedOpts.OriginalRequest, executedReq.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID, passthroughHeaders)
+	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, PassthroughHeadersEnabled(h.Cfg))
+	body, responseHeaders := h.applyResponseInterceptors(ctx, lifecycle.requestID(), responseProtocol, normalizedModel, originalRequestedModel, executedOpts, rawResponseHeaders, responseHeaders, executedOpts.OriginalRequest, executedReq.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID)
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	return body, responseHeaders, nil
 }
@@ -148,7 +128,6 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 	}
 	providers = adjustExecutionProvidersForEntryProtocol(handlerType, providers)
 	reqMeta := requestExecutionMetadata(ctx)
-	addCallerScopeMetadata(reqMeta, execOptions.CallerScope)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = originalRequestedModel
 	addAuthSelectionModelMetadata(reqMeta, execOptions.AuthSelectionModel)
 	setReasoningEffortMetadata(reqMeta, handlerType, normalizedModel, rawJSON)
@@ -173,7 +152,6 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 		Query:                       modelExecutionQuery(ctx, execOptions.Query),
 		RequestAfterAuthInterceptor: h.requestAfterAuthInterceptor(afterAuthCapture, lifecycle.requestID(), execOptions.SkipInterceptorPluginID),
 		WebSocketResponseObserver:   h.webSocketResponseObserver(lifecycle.requestID(), execOptions.SkipInterceptorPluginID),
-		ProxyURL:                    execOptions.ProxyURL,
 	}
 	opts.Metadata = reqMeta
 	ctx = enrichContextWithSessionHierarchy(ctx, opts.Headers, req.Payload, opts.Metadata)
@@ -194,9 +172,8 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 	executedReq, executedOpts := afterAuthCapture.apply(req, opts)
 	ctx = enrichContextWithSessionHierarchy(ctx, executedOpts.Headers, executedReq.Payload, executedOpts.Metadata)
 	rawResponseHeaders := cloneHeader(resp.Headers)
-	passthroughHeaders := executionPassthroughHeaders(h.CurrentConfig(), execOptions.InternalSource)
-	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, passthroughHeaders)
-	body, responseHeaders := h.applyResponseInterceptors(ctx, pluginapi.ResponseInterceptKindCountTokens, lifecycle.requestID(), handlerType, normalizedModel, originalRequestedModel, executedOpts, rawResponseHeaders, responseHeaders, executedOpts.OriginalRequest, executedReq.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID, passthroughHeaders)
+	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, PassthroughHeadersEnabled(h.Cfg))
+	body, responseHeaders := h.applyResponseInterceptors(ctx, lifecycle.requestID(), handlerType, normalizedModel, originalRequestedModel, executedOpts, rawResponseHeaders, responseHeaders, executedOpts.OriginalRequest, executedReq.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID)
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	return body, responseHeaders, nil
 }
@@ -230,20 +207,9 @@ func (h *BaseAPIHandler) executeWithPluginExecutor(ctx context.Context, entryPro
 	var reporter *helps.UsageReporter
 	if !execOptions.InternalSource {
 		reporter = helps.NewUsageReporter(execCtx, executorPluginID, modelName, nil)
-		reporter.ApplyPluginExecutorAttribution(executorPluginID, nil)
 		reporter.SetTranslatedReasoningEffort(req.Payload, entryProtocol)
-		reporter.StartResponseTTFT()
 	}
-	var (
-		resp        coreexecutor.Response
-		attribution *pluginapi.UsageAttribution
-		errExecute  error
-	)
-	if attrHost, ok := host.(pluginExecutorAttributionHost); ok && attrHost != nil {
-		resp, attribution, errExecute = attrHost.ExecutePluginExecutorWithAttribution(execCtx, executorPluginID, req, opts)
-	} else {
-		resp, errExecute = host.ExecutePluginExecutor(execCtx, executorPluginID, req, opts)
-	}
+	resp, errExecute := host.ExecutePluginExecutor(execCtx, executorPluginID, req, opts)
 	if errExecute != nil {
 		if reporter != nil && !nestedTracker.hasNestedExecution() {
 			reporter.PublishFailure(execCtx, errExecute)
@@ -253,16 +219,13 @@ func (h *BaseAPIHandler) executeWithPluginExecutor(ctx context.Context, entryPro
 		return nil, nil, errMsg
 	}
 	if reporter != nil && !nestedTracker.hasNestedExecution() {
-		reporter.ApplyPluginExecutorAttribution(executorPluginID, attribution)
-		reporter.RecordFirstPacket()
 		detail := parsePluginExecutorResponseUsage(responseProtocol, resp.Payload)
 		reporter.Publish(execCtx, detail)
 		reporter.EnsurePublished(execCtx)
 	}
 	rawResponseHeaders := cloneHeader(resp.Headers)
-	passthroughHeaders := executionPassthroughHeaders(h.CurrentConfig(), execOptions.InternalSource)
-	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, passthroughHeaders)
-	body, responseHeaders := h.applyResponseInterceptors(execCtx, pluginapi.ResponseInterceptKindExecution, lifecycle.requestID(), responseProtocol, modelName, originalRequestedModel, opts, rawResponseHeaders, responseHeaders, opts.OriginalRequest, req.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID, passthroughHeaders)
+	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, PassthroughHeadersEnabled(h.Cfg))
+	body, responseHeaders := h.applyResponseInterceptors(execCtx, lifecycle.requestID(), responseProtocol, modelName, originalRequestedModel, opts, rawResponseHeaders, responseHeaders, opts.OriginalRequest, req.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID)
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	return body, responseHeaders, nil
 }
@@ -299,19 +262,14 @@ func (h *BaseAPIHandler) countWithPluginExecutor(ctx context.Context, handlerTyp
 		return nil, nil, errMsg
 	}
 	rawResponseHeaders := cloneHeader(resp.Headers)
-	passthroughHeaders := executionPassthroughHeaders(h.CurrentConfig(), execOptions.InternalSource)
-	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, passthroughHeaders)
-	body, responseHeaders := h.applyResponseInterceptors(ctx, pluginapi.ResponseInterceptKindCountTokens, lifecycle.requestID(), handlerType, modelName, originalRequestedModel, opts, rawResponseHeaders, responseHeaders, opts.OriginalRequest, req.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID, passthroughHeaders)
+	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, PassthroughHeadersEnabled(h.Cfg))
+	body, responseHeaders := h.applyResponseInterceptors(ctx, lifecycle.requestID(), handlerType, modelName, originalRequestedModel, opts, rawResponseHeaders, responseHeaders, opts.OriginalRequest, req.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID)
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	return body, responseHeaders, nil
 }
 
 func (h *BaseAPIHandler) pluginExecutorRequest(ctx context.Context, entryProtocol, responseProtocol, modelName, originalRequestedModel string, rawJSON []byte, alt string, stream bool, execOptions modelExecutionOptions) (coreexecutor.Request, coreexecutor.Options) {
 	reqMeta := requestExecutionMetadata(ctx)
-	if execOptions.Path != "" {
-		reqMeta[coreexecutor.RequestPathMetadataKey] = execOptions.Path
-	}
-	addCallerScopeMetadata(reqMeta, execOptions.CallerScope)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = originalRequestedModel
 	addAuthSelectionModelMetadata(reqMeta, execOptions.AuthSelectionModel)
 	addModelExecutionSourceMetadata(reqMeta, execOptions.InternalSource)
@@ -322,22 +280,17 @@ func (h *BaseAPIHandler) pluginExecutorRequest(ctx context.Context, entryProtoco
 	if len(payload) == 0 {
 		payload = nil
 	}
-	originalRequest := rawJSON
-	if ctxOriginal := originalRequestFromContext(ctx); len(ctxOriginal) > 0 {
-		originalRequest = ctxOriginal
-	}
 	req := coreexecutor.Request{Model: modelName, Payload: payload}
 	opts := coreexecutor.Options{
 		Stream:                    stream,
 		Alt:                       alt,
-		OriginalRequest:           originalRequest,
+		OriginalRequest:           rawJSON,
 		SourceFormat:              sdktranslator.FromString(entryProtocol),
 		ResponseFormat:            sdktranslator.FromString(responseProtocol),
 		Headers:                   modelExecutionHeaders(ctx, execOptions.Headers),
 		Query:                     modelExecutionQuery(ctx, execOptions.Query),
 		WebSocketResponseObserver: h.webSocketResponseObserver("", execOptions.SkipInterceptorPluginID),
 		Metadata:                  reqMeta,
-		ProxyURL:                  execOptions.ProxyURL,
 	}
 	return req, opts
 }
@@ -359,21 +312,13 @@ func (h *BaseAPIHandler) applyRequestInterceptorsAfterPluginExecutorRoute(ctx co
 		RequestedModel: originalRequestedModel,
 		Stream:         opts.Stream,
 		Headers:        cloneHeader(opts.Headers),
-		Body:           req.Payload,
+		Body:           cloneBytes(req.Payload),
 		Metadata:       opts.Metadata,
 	}, requestID, skipPluginID)
 	opts.Headers = mergeRequestInterceptorHeaders(opts.Headers, resp.Headers, resp.ClearHeaders)
 	if len(resp.Body) > 0 {
-		req.Payload = resp.Body
-		opts.OriginalRequest = resp.Body
-	}
-	if path := strings.TrimSpace(resp.Path); path != "" {
-		if opts.Metadata == nil {
-			opts.Metadata = make(map[string]any, 1)
-		} else {
-			opts.Metadata = maps.Clone(opts.Metadata)
-		}
-		opts.Metadata[coreexecutor.RequestPathMetadataKey] = path
+		req.Payload = cloneBytes(resp.Body)
+		opts.OriginalRequest = cloneBytes(resp.Body)
 	}
 	if resp.Terminate {
 		return req, opts, directTerminationError(resp.StatusCode, resp.ResponseHeaders, resp.ResponseBody)
@@ -385,45 +330,15 @@ func ExecutionErrorMessage(err error) *interfaces.ErrorMessage {
 	return executionErrorMessage(err)
 }
 
-func stripOverlappingHeaders(addon, primary http.Header) http.Header {
-	if len(addon) == 0 {
-		return nil
-	}
-	if len(primary) == 0 {
-		return addon
-	}
-	for primaryKey := range primary {
-		addon.Del(primaryKey)
-		for addonKey := range addon {
-			if strings.EqualFold(addonKey, primaryKey) {
-				delete(addon, addonKey)
-			}
-		}
-	}
-	if len(addon) == 0 {
-		return nil
-	}
-	return addon
-}
-
 func executionErrorMessage(err error) *interfaces.ErrorMessage {
-	var addon http.Header
-	var he interface{ Headers() http.Header }
-	if errors.As(err, &he) && he != nil {
-		if hdr := he.Headers(); hdr != nil {
-			addon = hdr.Clone()
-		}
-	}
 	var terminated *coreexecutor.RequestTerminatedError
 	if errors.As(err, &terminated) && terminated != nil {
-		termHeaders := terminated.ResponseHeaders()
 		return &interfaces.ErrorMessage{
 			StatusCode:     normalizedTerminationStatus(terminated.StatusCode()),
 			Error:          err,
 			DirectResponse: true,
 			Body:           terminated.ResponseBody(),
-			Headers:        termHeaders,
-			Addon:          stripOverlappingHeaders(addon, termHeaders),
+			Headers:        terminated.ResponseHeaders(),
 		}
 	}
 	status := http.StatusInternalServerError
@@ -451,7 +366,12 @@ func executionErrorMessage(err error) *interfaces.ErrorMessage {
 			DirectResponse: true,
 			Body:           body,
 			Headers:        headers,
-			Addon:          stripOverlappingHeaders(addon, headers),
+		}
+	}
+	var addon http.Header
+	if he, ok := err.(interface{ Headers() http.Header }); ok && he != nil {
+		if hdr := he.Headers(); hdr != nil {
+			addon = hdr.Clone()
 		}
 	}
 	return &interfaces.ErrorMessage{StatusCode: status, Error: err, Addon: addon}
@@ -461,19 +381,11 @@ func (h *BaseAPIHandler) pluginExecutorHost() PluginExecutorHost {
 	if h == nil {
 		return nil
 	}
-	h.runtimeMu.RLock()
-	routerHost := h.ModelRouterHost
-	pluginHost := h.PluginHost
-	h.runtimeMu.RUnlock()
-	if !isNilPluginModelRouterHost(routerHost) {
-		if executorHost, ok := routerHost.(PluginExecutorHost); ok && executorHost != nil {
-			return executorHost
-		}
+	if executorHost, ok := h.ModelRouterHost.(PluginExecutorHost); ok && executorHost != nil {
+		return executorHost
 	}
-	if !isNilPluginInterceptorHost(pluginHost) {
-		if executorHost, ok := pluginHost.(PluginExecutorHost); ok && executorHost != nil {
-			return executorHost
-		}
+	if executorHost, ok := h.PluginHost.(PluginExecutorHost); ok && executorHost != nil {
+		return executorHost
 	}
 	return nil
 }

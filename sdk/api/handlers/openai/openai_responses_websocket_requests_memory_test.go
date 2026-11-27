@@ -2,6 +2,7 @@ package openai
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -9,8 +10,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-
-	"github.com/MoeForge/moego/json"
 )
 
 const (

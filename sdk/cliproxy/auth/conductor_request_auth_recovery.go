@@ -7,8 +7,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
 // RequestAuthRecoverer lets an executor repair request-scoped auth metadata
@@ -37,10 +35,7 @@ func executorSupportsRequestAuthRecovery(executor ProviderExecutor, auth *Auth) 
 }
 
 func (m *Manager) tryRecoverRequestAuth(ctx context.Context, executor ProviderExecutor, auth *Auth, execErr error, alreadyTried bool) (*Auth, bool, error) {
-	if m == nil || alreadyTried || execErr == nil || auth.AuthSourceKind() == AuthSourceConfig || cliproxyexecutor.RequestRetriesDisabled(ctx) || !executorSupportsRequestAuthRecovery(executor, auth) {
-		return auth, false, nil
-	}
-	if _, matched := matchRequestScopedErrorAction(auth, execErr, m.requestScopedErrorConfig(ctx)); matched {
+	if m == nil || alreadyTried || execErr == nil || auth.AuthSourceKind() == AuthSourceConfig || !executorSupportsRequestAuthRecovery(executor, auth) {
 		return auth, false, nil
 	}
 	recoverer, ok := executor.(RequestAuthRecoverer)
@@ -62,31 +57,22 @@ func (m *Manager) tryRecoverRequestAuth(ctx context.Context, executor ProviderEx
 		return updated, true, errRecover
 	}
 
-	if ctx == nil {
-		ctx = context.Background()
+	lockValue, _ := m.requestPrepareLocks.LoadOrStore(id, &requestAuthPrepareLock{})
+	lock, ok := lockValue.(*requestAuthPrepareLock)
+	if !ok || lock == nil {
+		updated, errRecover := recoverer.RecoverRequestAuth(ctx, auth.Clone(), execErr)
+		return updated, true, errRecover
 	}
-	releaseRefresh, errLock := m.lockRefreshContext(ctx, id)
-	if errLock != nil {
-		return auth, true, errLock
-	}
-	defer releaseRefresh()
+
+	lock.mu.Lock()
+	defer lock.mu.Unlock()
 
 	target := auth.Clone()
-	registered := false
 	m.mu.RLock()
 	if current := m.auths[id]; current != nil {
 		target = current.Clone()
-		registered = true
 	}
 	m.mu.RUnlock()
-	if auth.RegistrationEpoch != 0 {
-		if !registered {
-			return auth, true, errVerifyCredentialRemoved
-		}
-		if target.RegistrationEpoch != auth.RegistrationEpoch {
-			return auth, true, errVerifyCredentialSuperseded
-		}
-	}
 
 	if currentState := recoverer.RequestAuthRecoveryState(target); currentState != failedState {
 		return target, true, nil
@@ -95,7 +81,6 @@ func (m *Manager) tryRecoverRequestAuth(ctx context.Context, executor ProviderEx
 		return target, false, nil
 	}
 
-	base := target.Clone()
 	updated, errRecover := recoverer.RecoverRequestAuth(ctx, target, execErr)
 	if errRecover != nil {
 		return auth, true, errRecover
@@ -104,20 +89,11 @@ func (m *Manager) tryRecoverRequestAuth(ctx context.Context, executor ProviderEx
 		return target, true, nil
 	}
 
-	var saved *Auth
-	var errUpdate error
-	if registered {
-		saved, errUpdate = m.UpdatePreparedAuth(context.WithoutCancel(ctx), base, updated)
-	} else {
-		saved, errUpdate = m.Update(context.WithoutCancel(ctx), updated)
-	}
+	saved, errUpdate := m.Update(ctx, updated)
 	if errUpdate != nil {
 		return updated, true, errUpdate
 	}
 	if saved == nil {
-		if registered {
-			return auth, true, errVerifyCredentialRemoved
-		}
 		saved = updated
 	}
 	if observer, okObserver := executor.(RequestAuthRecoveryObserver); okObserver && observer != nil {

@@ -2,7 +2,7 @@ package live
 
 import (
 	"context"
-	"github.com/MoeForge/moego/json"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,11 +13,11 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executionregistry"
-	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executionregistry"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
 type liveTestOwnership struct{}
